@@ -36,11 +36,11 @@ def main() -> None:
     ff7r_rebirth_tools = importlib.util.module_from_spec(spec)
     sys.modules["ff7r_rebirth_tools"] = ff7r_rebirth_tools
     spec.loader.exec_module(ff7r_rebirth_tools)
-    from ff7r_rebirth_tools.game_packages import (
+    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
         PackageAssetSession,
         import_skeletal_mesh_asset,
     )
-    from ff7r_rebirth_tools.skeleton.importer import (
+    from ff7r_rebirth_tools.core.blender.skeletons import (
         _bones_from_bridge,
         build_armature_from_bones,
     )
@@ -95,6 +95,7 @@ def main() -> None:
         "materials": len(mesh.materials),
         "vertexGroups": len(obj.vertex_groups),
         "armature": armature_obj.name,
+        "parent": obj.parent.name if obj.parent else None,
         "armatureBones": len(armature_obj.data.bones),
         "weightedVertices": weighted_vertices,
         "influences": influence_count,
@@ -109,6 +110,7 @@ def main() -> None:
     # the mesh itself references 326 of them through its section bone maps.
     assert result["armatureBones"] == 403, result
     assert modifier is not None and modifier.object == armature_obj, result
+    assert obj.parent == armature_obj, result
     assert result["vertexGroups"] > 0, result
     assert result["weightedVertices"] == result["vertices"], result
     assert result["influences"] > result["vertices"], result

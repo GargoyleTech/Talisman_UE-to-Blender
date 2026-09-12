@@ -38,7 +38,7 @@ def main() -> None:
     ff7r_rebirth_tools = importlib.util.module_from_spec(spec)
     sys.modules["ff7r_rebirth_tools"] = ff7r_rebirth_tools
     spec.loader.exec_module(ff7r_rebirth_tools)
-    from ff7r_rebirth_tools.game_packages import (
+    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
         PackageAssetSession,
         import_static_mesh_asset,
     )

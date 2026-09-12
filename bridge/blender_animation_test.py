@@ -3,7 +3,7 @@
 Rebirth stores animation as an ACL 1.x compressed clip that CUE4Parse cannot read;
 the bridge decodes it itself (see docs/REBIRTH_ANIMSEQUENCE_FORMAT.md). This covers
 the whole path: bridge decode, JSON transport, and the axis conversion in
-addon/animations.py.
+addon/games/rebirth/importers/animations.py.
 
 Two independent things are asserted.
 
@@ -42,10 +42,10 @@ bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
 prefs = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
 prefs.rebirth_install_root = r"G:\SteamLibrary\steamapps\common\FINAL FANTASY VII REBIRTH"
 prefs.rebirth_oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
-prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\4.26.1-0+++UE4+Release-4.26-End (1).usmap"
+prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
 
 from ff7r_rebirth_tools import animations, game_packages
-from ff7r_rebirth_tools.skeleton import importer as skel
+from ff7r_rebirth_tools.core.blender import skeletons as skel
 
 bpy.ops.import_scene.ff7r_rebirth_skeleton_game_packages(
     "EXEC_DEFAULT", virtual_path=SKELETON, armature_name="Cloud_Package_Skeleton",

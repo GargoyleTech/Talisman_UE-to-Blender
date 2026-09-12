@@ -20,17 +20,30 @@ is read live from a copy of the game you already own; see
   process that reads package data straight out of a mounted game install.
   See [`bridge/README.md`](bridge/README.md) to rebuild it.
 
+Inside the add-on, reusable infrastructure lives in `core/`, reusable decoded
+formats live in `formats/`, engine/material/import differences live in
+`games/<title>/`, and Blender-facing menus and preferences live in `ui/`.
+Remake, Rebirth, and Crisis Core have profiles; Revelation is an empty
+placeholder for future support.
+
 ## Installing the add-on
 
 1. Grab `ff7r_rebirth_tools-<version>.zip` from the releases page, or build one
    yourself with `python build_addon_zip.py` (writes into `dist/`).
 2. In Blender: **Edit > Preferences > Add-ons > Install from Disk**, select
    the zip, then enable **FF7R Rebirth Tools**.
-3. For reading data directly from game install to function, in the add-on preferences fill in your own paths for the following — none are prefilled:
+3. For reading data directly from a game install, fill in the applicable paths in
+   the add-on preferences:
+   - **Remake Intergrade Install Folder** — your REMAKE INTERGRADE install,
+     containing `End/Content/Paks`. Its bundled Oodle DLL is detected automatically.
+   - **Remake Mapping File** — the compatible mapping required by Remake's
+     unversioned cooked properties. `~/Downloads/Mappings.usmap` is detected when present.
    - **Rebirth Install Folder** — your REBIRTH install, containing `End/Content/Paks`.
    - **Rebirth Mapping File** — a `.usmap` for the game.
    - **Oodle DLL** — an `oo2core_*.dll` you already have from an installed
      Unreal Engine title (FF7 REMAKE INTERGRADE ships one, but Rebirth doesn't). Not bundled here — see [NOTICE.md](NOTICE.md).
+   - **Crisis Core Reunion Install Folder / Mapping File** — the install containing
+     `CCFF7R/Content/Paks` and its compatible `.usmap`.
 
 Disable any older standalone FF7R UMAP importer / FF7R Actions add-ons first
 — they share several operator IDs with this one.

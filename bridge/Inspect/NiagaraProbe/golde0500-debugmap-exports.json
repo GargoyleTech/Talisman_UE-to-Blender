@@ -1,0 +1,222 @@
+[
+  {
+    "Type": "EndAssetActor",
+    "Name": "EV_GOLDE_0500_Asset",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'EndAssetActor'",
+    "Outer": {
+      "ObjectName": "Level'EV_GOLDE_0500:PersistentLevel'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.1"
+    },
+    "Properties": {
+      "AssetUserData": [
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/FR/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_Voice__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_Facial__Pack'",
+          "ObjectPath": "/Game/Cut/Game/8400-GOLDE/EV_GOLDE_0500/Facial/US/Build/EV_GOLDE_0500_Facial__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/FR/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_Voice__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/FR/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_Voice__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_2_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/DE/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_2_Voice__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_2_Facial__Pack'",
+          "ObjectPath": "/Game/Cut/Game/8400-GOLDE/EV_GOLDE_0500/Facial/US/Build/EV_GOLDE_0500_2_Facial__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_2_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/DE/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_2_Voice__Pack.0"
+        },
+        {
+          "ObjectName": "EndAssetPack'EV_GOLDE_0500_2_Voice__Pack'",
+          "ObjectPath": "/Game/Sound/Voice/DE/Cut/8400-GOLDE/EV_GOLDE_0500/Build/EV_GOLDE_0500_2_Voice__Pack.0"
+        }
+      ],
+      "Tags": [
+        "EV_GOLDE_0500_Asset"
+      ]
+    }
+  },
+  {
+    "Type": "Level",
+    "Name": "PersistentLevel",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'Level'",
+    "Outer": {
+      "ObjectName": "World'EV_GOLDE_0500'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.4"
+    },
+    "Properties": {
+      "Model": {
+        "ObjectName": "Model'EV_GOLDE_0500:PersistentLevel.Model_0'",
+        "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.2"
+      },
+      "LevelBuildDataId": "61B4E450-4FA1BB73-2E5A9496-0E08B3B9",
+      "WorldSettings": {
+        "ObjectName": "WorldSettings'EV_GOLDE_0500:PersistentLevel.WorldSettings'",
+        "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.5"
+      }
+    },
+    "Actors": [
+      {
+        "ObjectName": "WorldSettings'EV_GOLDE_0500:PersistentLevel.WorldSettings'",
+        "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.5"
+      },
+      null,
+      {
+        "ObjectName": "EndAssetActor'EV_GOLDE_0500:PersistentLevel.EV_GOLDE_0500_Asset'",
+        "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.0"
+      }
+    ],
+    "URL": {
+      "Protocol": "unreal",
+      "Host": "",
+      "Port": 7777,
+      "Valid": true,
+      "Map": "/Game/Level/Game/EndGame",
+      "Op": [],
+      "Portal": ""
+    },
+    "Model": {
+      "ObjectName": "Model'EV_GOLDE_0500:PersistentLevel.Model_0'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.2"
+    },
+    "ModelComponents": [],
+    "LevelScriptActor": null,
+    "NavListStart": null,
+    "NavListEnd": null,
+    "PrecomputedVisibilityHandler": {
+      "PrecomputedVisibilityCellBucketOriginXY": {
+        "X": 0.0,
+        "Y": 0.0
+      },
+      "PrecomputedVisibilityCellSizeXY": 0.0,
+      "PrecomputedVisibilityCellSizeZ": 0.0,
+      "PrecomputedVisibilityCellBucketSizeXY": 0,
+      "PrecomputedVisibilityNumCellBuckets": 0,
+      "PrecomputedVisibilityCellBuckets": []
+    },
+    "PrecomputedVolumeDistanceField": {
+      "VolumeMaxDistance": 0.0,
+      "VolumeBox": {
+        "Min": {
+          "X": 0.0,
+          "Y": 0.0,
+          "Z": 0.0
+        },
+        "Max": {
+          "X": 0.0,
+          "Y": 0.0,
+          "Z": 0.0
+        },
+        "IsValid": 0
+      },
+      "VolumeSizeX": 0,
+      "VolumeSizeY": 0,
+      "VolumeSizeZ": 0,
+      "Data": []
+    }
+  },
+  {
+    "Type": "Model",
+    "Name": "Model_0",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'Model'",
+    "Outer": {
+      "ObjectName": "Level'EV_GOLDE_0500:PersistentLevel'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.1"
+    },
+    "Bounds": {
+      "Origin": {
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 0.0
+      },
+      "BoxExtent": {
+        "X": 0.0,
+        "Y": 0.0,
+        "Z": 0.0
+      },
+      "SphereRadius": 0.0
+    },
+    "Vectors": [],
+    "Points": [],
+    "Nodes": [],
+    "Surfs": [],
+    "NumSharedSides": 4,
+    "VertexBuffer": {
+      "Vertices": []
+    },
+    "LightingGuid": "A1A8AB56-472C4C31-E1737386-3434DBDA",
+    "LightmassSettings": []
+  },
+  {
+    "Type": "NavigationSystemModuleConfig",
+    "Name": "NavigationSystemModuleConfig_0",
+    "Flags": "RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NavigationSystemModuleConfig'",
+    "Outer": {
+      "ObjectName": "WorldSettings'EV_GOLDE_0500:PersistentLevel.WorldSettings'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.5"
+    },
+    "Properties": {
+      "bAutoSpawnMissingNavData": true,
+      "NavigationSystemClass": {
+        "AssetPathName": "/Script/NavigationSystem.NavigationSystemV1",
+        "SubPathString": ""
+      }
+    }
+  },
+  {
+    "Type": "World",
+    "Name": "EV_GOLDE_0500",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'World'",
+    "Package": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500",
+    "PersistentLevel": {
+      "ObjectName": "Level'EV_GOLDE_0500:PersistentLevel'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.1"
+    },
+    "ExtraReferencedObjects": [],
+    "StreamingLevels": []
+  },
+  {
+    "Type": "WorldSettings",
+    "Name": "WorldSettings",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'WorldSettings'",
+    "Outer": {
+      "ObjectName": "Level'EV_GOLDE_0500:PersistentLevel'",
+      "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.1"
+    },
+    "Properties": {
+      "NavigationSystemConfig": {
+        "ObjectName": "NavigationSystemModuleConfig'EV_GOLDE_0500:PersistentLevel.WorldSettings.NavigationSystemModuleConfig_0'",
+        "ObjectPath": "/Game/Level/Debug/Cut/8400-GOLDE/EV_GOLDE_0500.3"
+      },
+      "BookmarkArray": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  }
+]

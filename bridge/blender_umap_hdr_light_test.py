@@ -1,0 +1,102 @@
+"""Blender regression for sparse package lists and HDR fixture lights."""
+import json
+from pathlib import Path
+import sys
+import math
+import bpy
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from addon.games.rebirth.materials import rmi_surface
+from addon.formats.ue_map import lights, map_import
+
+dump = Path(r'O:\Games\Rebirth Tools\FModel\Output\Exports\End\Content\Level\Game\Field\2350-GOLDS\Layout\2350-GOLDS_SQGhost_Light.json')
+data = json.loads(dump.read_text(encoding='utf-8'))
+# Retain original export offsets, as a full FModel list does.
+fixture = [entry if 'PersistentLevel.Light_17B12' in
+           entry.get('Outer', {}).get('ObjectName', '') else {} for entry in data]
+
+for sparse in (False, True):
+    for obj in list(bpy.data.objects):
+        if obj.name.startswith('Light_17B12'):
+            bpy.data.objects.remove(obj, do_unlink=True)
+    entries = fixture
+    if sparse:
+        entries = [json.loads(json.dumps(e)) for e in fixture if e]
+        # Bridge ownership references use full object paths, not list offsets.
+        for entry in entries:
+            outer = entry['Outer']
+            outer['ObjectPath'] = outer['ObjectName'].split("'")[1]
+            parent = entry.get('Properties', {}).get('AttachParent')
+            if parent:
+                parent['ObjectPath'] = parent['ObjectName'].split("'")[1]
+    map_import.import_map_entries(entries, 'hdr_test.json', 1.0, 1.0)
+    light = bpy.data.objects['Light_17B12.SpotLight'].data
+    assert math.isclose(light.energy, 10000.0)
+    expected = (124.0 / 255.0, 0.0, 1.0)
+    assert all(math.isclose(a, b, rel_tol=1e-6) for a, b in zip(light.color, expected))
+    assert not light.use_temperature
+    assert any(node.label == lights.UE_LIGHT_FALLOFF_NODE_LABEL
+               for node in light.node_tree.nodes)
+    mesh = bpy.data.objects['Light_17B12']
+    expected_emissive = (1538.6997, 0.0, 15470.784)
+    assert all(math.isclose(a, b, rel_tol=1e-6)
+               for a, b in zip(mesh['ExternalEmissiveContext'], expected_emissive))
+    print('HDR_LIGHT_PASS', 'bridge-shaped' if sparse else 'full-dump',
+          light.energy, tuple(light.color), tuple(mesh['ExternalEmissiveContext']))
+
+# Light_17B6 serializes only InnerFullConeAngle=60.  Its missing outer value
+# is UE's default 90-degree cone, so the remaining third is edge falloff.
+cone_test = bpy.data.lights.new('MissingOuterConeTest', 'SPOT')
+lights.apply_spot_cone_properties(cone_test, {'InnerFullConeAngle': 60.0})
+assert math.isclose(cone_test.spot_size, math.radians(90.0), abs_tol=1e-6)
+assert math.isclose(cone_test.spot_blend, 1.0 / 3.0, abs_tol=1e-6)
+print('SPOT_CONE_FALLBACK_PASS', math.degrees(cone_test.spot_size), cone_test.spot_blend)
+
+# Mesh import selects a declared non-neutral context before neutral material
+# defaults, and never overwrites a value the object already owns.
+context_mesh = bpy.data.meshes.new('ExternalContextMesh')
+context_obj = bpy.data.objects.new('ExternalContextObject', context_mesh)
+bpy.context.scene.collection.objects.link(context_obj)
+neutral = bpy.data.materials.new('ExternalContextNeutral')
+neutral['ff7r_external_emissive'] = True
+neutral['ff7r_external_emissive_context'] = (1.0, 1.0, 1.0)
+authored = bpy.data.materials.new('ExternalContextAuthored')
+authored['ff7r_external_emissive'] = True
+authored['ff7r_external_emissive_context'] = (2.0, 0.5, 4.0)
+context_mesh.materials.append(neutral)
+context_mesh.materials.append(authored)
+assert rmi_surface.initialize_external_emissive_context(context_obj)
+assert tuple(context_obj['ExternalEmissiveContext']) == (2.0, 0.5, 4.0)
+context_obj['ExternalEmissiveContext'] = (7.0, 8.0, 9.0)
+assert not rmi_surface.initialize_external_emissive_context(context_obj)
+assert tuple(context_obj['ExternalEmissiveContext']) == (7.0, 8.0, 9.0)
+camera_only = bpy.data.materials.new('EmissiveCameraOnly')
+camera_only['ff7r_emissive'] = True
+context_mesh.materials.append(camera_only)
+assert rmi_surface.initialize_external_emissive_context(context_obj)
+assert context_obj['EmissiveCameraOnly'] is True
+print('EXTERNAL_EMISSIVE_CONTEXT_PASS', tuple(context_obj['ExternalEmissiveContext']))
+
+# Existing saved RMI groups are migrated in place so their linked materials do
+# not need regeneration merely to rename the object attribute.
+emissive_group = bpy.data.node_groups.new('FF7R Emissive', 'ShaderNodeTree')
+legacy_attribute = emissive_group.nodes.new('ShaderNodeAttribute')
+legacy_attribute.attribute_name = 'ExternalEmissiveTint'
+rmi_surface._migrate_external_emissive_attribute()
+assert legacy_attribute.attribute_name == 'ExternalEmissiveContext'
+print('EXTERNAL_EMISSIVE_MIGRATION_PASS')
+
+# Existing per-variant RMI materials receive the camera-ray branch in place.
+legacy_material = bpy.data.materials.new('LegacyRMI')
+legacy_tree = legacy_material.node_tree
+legacy_tree.nodes.clear()
+legacy_strength = legacy_tree.nodes.new('ShaderNodeMath')
+legacy_strength.name = 'EmissionStrength'
+legacy_bsdf = legacy_tree.nodes.new('ShaderNodeBsdfPrincipled')
+legacy_bsdf.name = 'Principled BSDF'
+legacy_tree.links.new(legacy_strength.outputs[0], legacy_bsdf.inputs['Emission Strength'])
+rmi_surface._migrate_camera_only_emission(legacy_material)
+assert legacy_tree.nodes.get('EmissionCameraOnly') is not None
+assert any(link.to_socket == legacy_bsdf.inputs['Emission Strength']
+           and link.from_node.name == 'EmissionCameraOnly' for link in legacy_tree.links)
+print('EMISSIVE_CAMERA_ONLY_MIGRATION_PASS')

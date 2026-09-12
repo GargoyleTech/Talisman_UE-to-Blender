@@ -1,10 +1,12 @@
 ﻿using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Text;
 using System.Collections;
 using System.Reflection;
 using System.Buffers.Binary;
 using System.Runtime;
 using CUE4Parse.FileProvider;
+using CUE4Parse.Encryption.Aes;
 using CUE4Parse.Compression;
 using CUE4Parse.MappingsProvider;
 using CUE4Parse.MappingsProvider.Usmap;
@@ -13,10 +15,12 @@ using CUE4Parse.UE4.Assets;
 using CUE4Parse.UE4.Assets.Exports.Animation;
 using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Assets.Exports.Component.SkeletalMesh;
+using CUE4Parse.UE4.Assets.Exports.Component;
 using CUE4Parse.UE4.Assets.Exports.Component.StaticMesh;
 using CUE4Parse.UE4.Assets.Exports.SkeletalMesh;
 using CUE4Parse.UE4.Assets.Exports.StaticMesh;
 using CUE4Parse.UE4.Assets.Exports.Texture;
+using CUE4Parse.UE4.AssetRegistry;
 using CUE4Parse.UE4.Assets.Objects;
 using CUE4Parse.UE4.Assets.Readers;
 using CUE4Parse.UE4.IO.Objects;
@@ -32,8 +36,73 @@ using Ff7r.Rebirth;
 
 if (args.Length < 1)
 {
-    Console.Error.WriteLine("Usage: RebirthPackageLister <game-directory> [output-json|-] [oodle-dll] [path-filter] [asset-path] [usmap] [dds-output] [raw-output] [summary]");
+    Console.Error.WriteLine("Usage: FF7RGameAssetBridge <game-directory> [output-json|-] [oodle-dll] [path-filter] [asset-path] [usmap] [dds-output] [raw-output] [summary] [game-profile]");
+    Console.Error.WriteLine("game-profile: auto (default), rebirth, remake, or crisis-core");
     return 2;
+}
+
+static string ResolvePackageDirectory(string gameDirectory)
+{
+    // Accept an install root, a game's Content folder, or the Paks directory
+    // itself.  Rebirth and Remake share End/Content/Paks; Crisis Core uses
+    // CCFF7R/Content/Paks.
+    var candidates = new[]
+    {
+        gameDirectory,
+        Path.Combine(gameDirectory, "End", "Content", "Paks"),
+        Path.Combine(gameDirectory, "CCFF7R", "Content", "Paks"),
+        Path.Combine(gameDirectory, "Content", "Paks"),
+        Path.Combine(gameDirectory, "Paks"),
+    };
+    return candidates.FirstOrDefault(candidate =>
+        Directory.Exists(candidate) &&
+        Directory.EnumerateFiles(candidate, "*.pak", SearchOption.TopDirectoryOnly).Any())
+        ?? throw new DirectoryNotFoundException(
+            "Could not find a Paks directory beneath the supplied game directory.");
+}
+
+static (string Name, EGame Version, string? AesKey) ResolveGameProfile(
+    string gameDirectory, string packageDirectory, string? requestedProfile)
+{
+    var requested = requestedProfile?.Trim().ToLowerInvariant();
+    if (requested is not null and not "" and not "auto")
+    {
+        return requested switch
+        {
+            "rebirth" => ("Final Fantasy VII Rebirth", EGame.GAME_FinalFantasy7Rebirth, null),
+            "remake" or "remake-intergrade" => (
+                "Final Fantasy VII Remake Intergrade",
+                EGame.GAME_FinalFantasy7Remake,
+                "0x23989837645C9D28BA58072B2076E895B853A7C9E1C5591B814C4FD2A2D7B782"),
+            "crisis-core" or "crisiscore" or "ccff7r" => (
+                "Crisis Core -Final Fantasy VII- Reunion",
+                EGame.GAME_UE4_27,
+                "0x277041CBB2888087611DB5CBFEA119462920E1F67092C87E87825725E38B320F"),
+            _ => throw new ArgumentException(
+                $"Unknown game profile '{requestedProfile}'. Use auto, rebirth, remake, or crisis-core."),
+        };
+    }
+
+    if (gameDirectory.EndsWith("CCFF7R", StringComparison.OrdinalIgnoreCase) ||
+        packageDirectory.Contains("CCFF7R", StringComparison.OrdinalIgnoreCase) ||
+        File.Exists(Path.Combine(gameDirectory, "CCFF7R.exe")))
+    {
+        return (
+            "Crisis Core -Final Fantasy VII- Reunion",
+            EGame.GAME_UE4_27,
+            "0x277041CBB2888087611DB5CBFEA119462920E1F67092C87E87825725E38B320F");
+    }
+
+    if (File.Exists(Path.Combine(gameDirectory, "ff7remake.exe")) ||
+        Directory.EnumerateFiles(packageDirectory, "pakchunk0_s*-WindowsNoEditor.pak").Any())
+    {
+        return (
+            "Final Fantasy VII Remake Intergrade",
+            EGame.GAME_FinalFantasy7Remake,
+            "0x23989837645C9D28BA58072B2076E895B853A7C9E1C5591B814C4FD2A2D7B782");
+    }
+
+    return ("Final Fantasy VII Rebirth", EGame.GAME_FinalFantasy7Rebirth, null);
 }
 
 var gameDirectory = Path.GetFullPath(args[0]);
@@ -58,8 +127,22 @@ static object? ConvertValue(object? value, int depth = 0)
         return ConvertValue(value.GetType().GetProperty("Value")?.GetValue(value), depth + 1);
 
     var type = value.GetType();
+    if (type.Name == "FGuid")
+        return value.ToString();
+    if (value is FSoftObjectPath softObjectPath)
+    {
+        // Owner is a package back-reference. Reflecting it recursively expands
+        // the package's entire import/export maps once per soft reference.
+        return new Dictionary<string, object?>
+        {
+            ["AssetPathName"] = softObjectPath.AssetPathName.ToString(),
+            ["SubPathString"] = softObjectPath.SubPathString,
+        };
+    }
     if (value is FPackageIndex packageIndex)
     {
+        if (PropertyConversionContext.PackageIndexConverter is not null)
+            return PropertyConversionContext.PackageIndexConverter(packageIndex);
         var resolved = packageIndex.ResolvedObject;
         var objectPath = resolved?.GetPathName() ?? packageIndex.Name.ToString();
         if (string.IsNullOrWhiteSpace(objectPath))
@@ -138,6 +221,18 @@ static object? ConvertValue(object? value, int depth = 0)
             convertedItems.Add(ConvertValue(item, depth + 1));
         return convertedItems;
     }
+    if (type.Name is "MapProperty" or "FMapProperty")
+    {
+        var itemsMember = type.GetMember("Properties", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .FirstOrDefault();
+        var items = itemsMember switch
+        {
+            System.Reflection.PropertyInfo property => property.GetValue(value),
+            FieldInfo field => field.GetValue(value),
+            _ => null,
+        };
+        return ConvertValue(items, depth + 1);
+    }
     if (type.Name.EndsWith("Property", StringComparison.Ordinal) &&
         type.Name is not "FPropertyTag" and not "StructProperty")
     {
@@ -145,6 +240,19 @@ static object? ConvertValue(object? value, int depth = 0)
             ?? type.GetProperty("Value", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(value);
         if (genericValue is not null && !ReferenceEquals(genericValue, value))
             return ConvertValue(genericValue, depth + 1);
+    }
+    if (value is IDictionary dictionary)
+    {
+        var entries = new List<object?>();
+        foreach (DictionaryEntry entry in dictionary)
+        {
+            entries.Add(new Dictionary<string, object?>
+            {
+                ["Key"] = ConvertValue(entry.Key, depth + 1),
+                ["Value"] = ConvertValue(entry.Value, depth + 1),
+            });
+        }
+        return entries;
     }
     if (value is IEnumerable sequence && value is not string &&
         !value.ToString()!.Contains("FStructFallback", StringComparison.Ordinal))
@@ -232,9 +340,21 @@ static Dictionary<string, object?> ConvertFPropertyTag(object value, Type type, 
     var generic = tag?.GetType().GetProperty("GenericValue", allInstanceFields)?.GetValue(tag)
         ?? tag?.GetType().GetField("GenericValue", allInstanceFields)?.GetValue(tag)
         ?? tag;
+    // UE serializes a static-array UPROPERTY (e.g. MovieScene3DTransformSection's
+    // "FMovieSceneDoubleChannel Translation[3]") as one tag per element, all
+    // sharing the same FName and distinguished only by ArrayIndex.  Without the
+    // suffix every element collapses onto a single dictionary key and only the
+    // last one survives -- which silently zeroed cutscene light/camera Y and Z.
+    // FModel's own JSON writer suffixes indices past the first, and the Blender
+    // importers were written against that naming ("Translation", "Translation[1]",
+    // "Translation[2]"), so match it exactly.
+    var tagName = type.GetField("Name")?.GetValue(value)?.ToString();
+    var arrayIndex = type.GetField("ArrayIndex", allInstanceFields)?.GetValue(value) as int?;
+    if (tagName is not null && arrayIndex is > 0)
+        tagName = $"{tagName}[{arrayIndex}]";
     return new Dictionary<string, object?>
     {
-        ["name"] = type.GetField("Name")?.GetValue(value)?.ToString(),
+        ["name"] = tagName,
         ["propertyType"] = type.GetField("PropertyType")?.GetValue(value)?.ToString(),
         ["value"] = ConvertValue(generic, depth + 1)
     };
@@ -248,6 +368,13 @@ static object? NormalizeKdiValue(object? value)
             entry => entry.Key,
             entry => NormalizeKdiValue(entry.Value));
         if (normalized.Count == 1 && normalized.TryGetValue("StructType", out var inner))
+            return inner;
+        // CUE4Parse stores MapProperty entries beneath its own ``Properties``
+        // member. FModel's JSON writes that member's entries directly, which is
+        // what the existing cutscene importer expects for BindingReferences and
+        // MovieScene ObjectBindings.
+        if (normalized.Count == 1 && normalized.TryGetValue("Properties", out inner) &&
+            inner is List<object?>)
             return inner;
         return normalized;
     }
@@ -350,6 +477,86 @@ static Dictionary<string, object?> ExportMaterialInstancePackage(CUE4Parse.UE4.A
     };
 }
 
+static bool IsNiagaraExport(CUE4Parse.UE4.Assets.Exports.UObject export)
+    => export.ExportType.ToString().Contains("Niagara", StringComparison.OrdinalIgnoreCase);
+
+static Dictionary<string, object?> ExportNiagaraPackage(CUE4Parse.UE4.Assets.IPackage package)
+{
+    // Rebirth's supplied usmap has no entries for the first active fields in
+    // UNiagaraSystem (the first one requested by the cooked header is field 75,
+    // while the map only describes fields through 47). CUE4Parse therefore
+    // cannot advance through the owning system object. Its emitter, renderer,
+    // and script subexports still deserialize independently, frequently with
+    // useful authored settings before any unsupported nested Niagara type.
+    // Keep those properties available, but represent every result as partial so
+    // callers do not mistake this for a complete Niagara graph decoder.
+    var allExports = package.GetExports().ToArray();
+    var exports = new List<object?>();
+    var systems = new List<object?>();
+
+    for (var exportIndex = 0; exportIndex < allExports.Length; exportIndex++)
+    {
+        var export = allExports[exportIndex];
+        if (!IsNiagaraExport(export))
+            continue;
+
+        var type = export.ExportType.ToString();
+        var properties = new List<object?>();
+        foreach (var property in export.Properties)
+        {
+            try
+            {
+                properties.Add(ConvertValue(property));
+            }
+            catch (Exception exception)
+            {
+                // One bad nested value must not hide the rest of this exported
+                // object. The failure is included in the report rather than
+                // treated as a fabricated default property.
+                properties.Add(new Dictionary<string, object?>
+                {
+                    ["status"] = "unreadable",
+                    ["property"] = property.Name.Text,
+                    ["error"] = exception.Message,
+                });
+            }
+        }
+
+        var isSystem = string.Equals(type, "NiagaraSystem", StringComparison.OrdinalIgnoreCase);
+        var status = isSystem && properties.Count == 0
+            ? "opaque_missing_schema"
+            : "partial";
+        var item = new Dictionary<string, object?>
+        {
+            ["exportIndex"] = exportIndex,
+            ["name"] = export.Name.ToString(),
+            ["type"] = type,
+            ["fullName"] = export.GetFullName(),
+            ["propertyStatus"] = status,
+            ["properties"] = properties,
+        };
+        exports.Add(item);
+        if (isSystem)
+            systems.Add(item);
+    }
+
+    return new Dictionary<string, object?>
+    {
+        ["sourceType"] = "partial CUE4Parse Niagara package export",
+        ["exportCount"] = exports.Count,
+        ["systemStatus"] = systems.Count == 0
+            ? "no NiagaraSystem export"
+            : "opaque system fields due to incomplete Rebirth NiagaraSystem schema",
+        ["limitations"] = new[]
+        {
+            "The Rebirth usmap does not describe the first active cooked NiagaraSystem field, so system-level emitter handles, parameter overrides, compiled data, and exposed parameters cannot be decoded safely.",
+            "Emitter, renderer, script, and data-interface subexports are independently deserialized and may stop after a nested unsupported Niagara type. Their returned properties are therefore partial, not defaults.",
+        },
+        ["systems"] = systems,
+        ["exports"] = exports,
+    };
+}
+
 static byte[] WrapBlockCompressedAsDds(
     int width,
     int height,
@@ -406,23 +613,218 @@ static byte[] WrapBlockCompressedAsDds(
     return output;
 }
 
+static bool TryReadRemakeResidentMip(
+    DefaultFileProvider provider,
+    string assetPath,
+    UTexture2D texture,
+    out int width,
+    out int height,
+    out byte[] mipData,
+    out EPixelFormat format)
+{
+    width = texture.PlatformData?.SizeX > 0 ? texture.PlatformData.SizeX : texture.ImportedSize.X;
+    height = texture.PlatformData?.SizeY > 0 ? texture.PlatformData.SizeY : texture.ImportedSize.Y;
+    mipData = [];
+    format = texture.Format;
+    if (format == EPixelFormat.PF_Unknown)
+    {
+        // Remake's custom platform-data layout is skipped by the parser, but its
+        // pixel format name is still stored verbatim in the package's sidecars.
+        // Use that self-describing marker rather than a filename heuristic.
+        var formatNames = new Dictionary<string, EPixelFormat>(StringComparer.Ordinal)
+        {
+            ["PF_DXT1"] = EPixelFormat.PF_DXT1,
+            ["PF_DXT3"] = EPixelFormat.PF_DXT3,
+            ["PF_DXT5"] = EPixelFormat.PF_DXT5,
+            ["PF_BC4"] = EPixelFormat.PF_BC4,
+            ["PF_BC5"] = EPixelFormat.PF_BC5,
+            ["PF_BC6H"] = EPixelFormat.PF_BC6H,
+            ["PF_BC7"] = EPixelFormat.PF_BC7,
+        };
+        foreach (var sidecar in new[] { assetPath, Path.ChangeExtension(assetPath, ".uexp") })
+        {
+            if (!provider.Files.TryGetValue(sidecar.Replace('\\', '/'), out var file)) continue;
+            var bytes = file.Read(null);
+            // Some Remake packages place FName text in the ordinary ANSI name
+            // table while others store it as UTF-16.  Both forms occur in the
+            // shipped assets, including the 7th Slum rubble textures.
+            var asciiText = Encoding.ASCII.GetString(bytes);
+            var unicodeText = Encoding.Unicode.GetString(bytes);
+            var match = formatNames.FirstOrDefault(pair =>
+                asciiText.Contains(pair.Key, StringComparison.Ordinal) ||
+                unicodeText.Contains(pair.Key, StringComparison.Ordinal));
+            if (!string.IsNullOrEmpty(match.Key))
+            {
+                format = match.Value;
+                break;
+            }
+        }
+        if (format == EPixelFormat.PF_Unknown)
+        {
+            // A minority of Remake textures omit the platform format string
+            // entirely. Their cooked naming convention is consistent for the
+            // material channels supported by the add-on, so use it only as a
+            // last resort after both package-string representations failed.
+            var textureName = Path.GetFileNameWithoutExtension(assetPath);
+            format = textureName.Contains("_N", StringComparison.OrdinalIgnoreCase)
+                ? EPixelFormat.PF_BC5
+                : textureName.Contains("_O", StringComparison.OrdinalIgnoreCase) ||
+                  textureName.Contains("Coverage", StringComparison.OrdinalIgnoreCase)
+                    ? EPixelFormat.PF_BC4
+                    : EPixelFormat.PF_DXT1;
+        }
+    }
+    var bytesPerBlock = format switch
+    {
+        EPixelFormat.PF_DXT1 or EPixelFormat.PF_BC4 => 8,
+        EPixelFormat.PF_DXT3 or EPixelFormat.PF_DXT5 or EPixelFormat.PF_BC5 or
+            EPixelFormat.PF_BC6H or EPixelFormat.PF_BC7 => 16,
+        _ => 0,
+    };
+    if (width <= 0 || height <= 0 || bytesPerBlock == 0)
+        return false;
+
+    // Remake's platform record places the resident top mip before the normal
+    // mip array. CUE4Parse currently reads that record but discards it. The
+    // corresponding .ubulk payload begins with that mip, so recover exactly
+    // its block-compressed byte range without guessing at later mip offsets.
+    var bulkPath = Path.ChangeExtension(assetPath, ".ubulk").Replace('\\', '/');
+    if (!provider.Files.TryGetValue(bulkPath, out var bulkFile))
+        return false;
+    var bulk = bulkFile.Read(null);
+    // Some streamed Remake textures retain only a lower resident mip in the
+    // bulk container.  Export the largest complete resident level instead of
+    // rejecting an otherwise usable texture because its imported size names a
+    // streamed top level.
+    long requiredBytes;
+    while (true)
+    {
+        requiredBytes = checked((long)((width + 3) / 4) * ((height + 3) / 4) * bytesPerBlock);
+        if (bulk.Length >= requiredBytes || (width <= 4 && height <= 4))
+            break;
+        width = Math.Max(4, width / 2);
+        height = Math.Max(4, height / 2);
+    }
+    if (bulk.Length < requiredBytes)
+        return false;
+    mipData = bulk.AsSpan(0, checked((int)requiredBytes)).ToArray();
+    return true;
+}
+
+static bool TryReadInlinePackageMip(
+    DefaultFileProvider provider,
+    string assetPath,
+    UTexture2D texture,
+    out int width,
+    out int height,
+    out byte[] mipData)
+{
+    width = height = 0;
+    mipData = [];
+    var format = texture.Format;
+    var bytesPerBlock = format switch
+    {
+        EPixelFormat.PF_DXT1 or EPixelFormat.PF_BC4 => 8,
+        EPixelFormat.PF_DXT3 or EPixelFormat.PF_DXT5 or EPixelFormat.PF_BC5 or
+            EPixelFormat.PF_BC6H or EPixelFormat.PF_BC7 => 16,
+        _ => 0,
+    };
+    if (bytesPerBlock == 0) return false;
+
+    var uassetPath = assetPath.Replace('\\', '/');
+    var uexpPath = Path.ChangeExtension(uassetPath, ".uexp");
+    if (!provider.Files.TryGetValue(uassetPath, out var uassetFile) ||
+        !provider.Files.TryGetValue(uexpPath, out var uexpFile))
+        return false;
+    var uassetLength = uassetFile.Read(null).Length;
+    var uexp = uexpFile.Read(null);
+
+    // Small cooked textures can keep their mips at offsets in the package
+    // sidecar. CUE4Parse exposes those headers even when its deferred bulk
+    // reader returns no Data, so honour the header rather than assuming every
+    // mip lives in a .ubulk companion.
+    foreach (var candidate in texture.PlatformData?.Mips ?? [])
+    {
+        if (candidate?.BulkData is not { } bulk || candidate.SizeX <= 0 || candidate.SizeY <= 0)
+            continue;
+        var header = bulk.Header;
+        if (header.SizeOnDisk == 0 || (header.BulkDataFlags &
+            (CUE4Parse.UE4.Assets.Objects.EBulkDataFlags.BULKDATA_SerializeCompressedZLIB |
+             CUE4Parse.UE4.Assets.Objects.EBulkDataFlags.BULKDATA_CompressedLZO)) != 0)
+            continue;
+        var requiredBytes = checked(((candidate.SizeX + 3) / 4) * ((candidate.SizeY + 3) / 4) * bytesPerBlock);
+        if (header.SizeOnDisk < requiredBytes) continue;
+        foreach (var dataOffset in new[] { header.OffsetInFile - uassetLength, header.OffsetInFile })
+        {
+            if (dataOffset < 0 || dataOffset + requiredBytes > uexp.Length) continue;
+            width = candidate.SizeX;
+            height = candidate.SizeY;
+            mipData = uexp.AsSpan(checked((int)dataOffset), requiredBytes).ToArray();
+            return true;
+        }
+    }
+    return false;
+}
+
 static Dictionary<string, object?> ExportTextureDds(
+    DefaultFileProvider provider,
+    string assetPath,
     CUE4Parse.UE4.Assets.IPackage package,
     string? ddsOutput)
 {
     var texture = package.GetExports().OfType<UTexture2D>().FirstOrDefault();
     if (texture is null)
         throw new InvalidOperationException("Package does not contain a Texture2D export.");
-    var mip = texture.GetFirstMip();
-    var mipData = mip.BulkData.Data ?? throw new InvalidOperationException("Texture mip data is unavailable.");
-    var blockCompressed = texture.Format is
+    var mips = texture.PlatformData?.Mips ?? [];
+    var mip = mips.FirstOrDefault(candidate => candidate?.BulkData?.Data is { Length: > 0 });
+    var pixelFormat = texture.Format;
+    int width;
+    int height;
+    byte[] mipData;
+    if (mip is null)
+    {
+        if (TryReadInlinePackageMip(provider, assetPath, texture, out width, out height, out mipData))
+        {
+            // Texture.Format already describes the recovered conventional mip.
+        }
+        else if (TryReadRemakeResidentMip(provider, assetPath, texture, out width, out height, out mipData, out var remakeFormat))
+        {
+            pixelFormat = remakeFormat;
+        }
+        else
+        {
+            var expectedBulkPath = Path.ChangeExtension(assetPath, ".ubulk").Replace('\\', '/');
+            var relatedFiles = string.Join(", ", provider.Files.Keys
+                .Where(path => path.Contains(Path.GetFileNameWithoutExtension(assetPath), StringComparison.OrdinalIgnoreCase))
+                .Take(8));
+            var mipHeaders = string.Join("; ", mips
+                .Where(candidate => candidate?.BulkData is not null)
+                .Select(candidate =>
+                {
+                    var header = candidate!.BulkData!.Header;
+                    return $"{candidate.SizeX}x{candidate.SizeY} flags=0x{(uint)header.BulkDataFlags:X} size={header.SizeOnDisk} offset={header.OffsetInFile}";
+                }));
+            throw new InvalidOperationException(
+                $"Texture has no readable mip (platform data: {(texture.PlatformData is null ? "null" : "present")}, mips: {mips.Length}, " +
+                $"format: {texture.Format}, platform size: {texture.PlatformData?.SizeX}x{texture.PlatformData?.SizeY}, " +
+                $"imported size: {texture.ImportedSize.X}x{texture.ImportedSize.Y}, expected bulk: {expectedBulkPath}, " +
+                $"bulk exists: {provider.Files.ContainsKey(expectedBulkPath)}, related files: {relatedFiles}, mip headers: {mipHeaders}).");
+        }
+    }
+    else
+    {
+        width = mip.SizeX;
+        height = mip.SizeY;
+        mipData = mip.BulkData.Data!;
+    }
+    var blockCompressed = pixelFormat is
         EPixelFormat.PF_DXT1 or EPixelFormat.PF_DXT3 or EPixelFormat.PF_DXT5 or
         EPixelFormat.PF_BC4 or EPixelFormat.PF_BC5 or EPixelFormat.PF_BC6H or
         EPixelFormat.PF_BC7;
     var ddsBytes = blockCompressed
-        ? WrapBlockCompressedAsDds(mip.SizeX, mip.SizeY, mipData, texture.Format, texture.SRGB)
+        ? WrapBlockCompressedAsDds(width, height, mipData, pixelFormat, texture.SRGB)
         : TextureEncoder.Encode(
-            new CTexture(mip.SizeX, mip.SizeY, texture.Format, mipData),
+            new CTexture(width, height, pixelFormat, mipData),
             ETextureFormat.Dds,
             texture.SRGB,
             out _);
@@ -430,9 +832,9 @@ static Dictionary<string, object?> ExportTextureDds(
         File.WriteAllBytes(Path.GetFullPath(ddsOutput), ddsBytes);
     return new Dictionary<string, object?>
     {
-        ["width"] = mip.SizeX,
-        ["height"] = mip.SizeY,
-        ["pixelFormat"] = texture.Format.ToString(),
+        ["width"] = width,
+        ["height"] = height,
+        ["pixelFormat"] = pixelFormat.ToString(),
         ["srgb"] = texture.SRGB,
         ["fileExtension"] = "dds",
         ["byteLength"] = ddsBytes.Length,
@@ -444,6 +846,7 @@ static Dictionary<string, object?> ExportStaticMeshLod(
     string meshName,
     FStaticMeshLODResources sourceLod,
     FStaticMaterial[] staticMaterials,
+    ResolvedObject?[] fallbackMaterials,
     int lodIndex,
     string sourceType,
     string renderData)
@@ -455,9 +858,13 @@ static Dictionary<string, object?> ExportStaticMeshLod(
     var vertexItems = vertexBuffer.UV;
     var indices = sourceLod.IndexBuffer?.Buffer
         ?? throw new InvalidOperationException("StaticMesh index data is unavailable.");
+    var colors = sourceLod.ColorVertexBuffer?.Data;
     if (positions.Length != vertexItems.Length)
         throw new InvalidOperationException(
             $"StaticMesh position/attribute count mismatch ({positions.Length} vs {vertexItems.Length}).");
+    if (colors is { Length: > 0 } && colors.Length != positions.Length)
+        throw new InvalidOperationException(
+            $"StaticMesh position/color count mismatch ({positions.Length} vs {colors.Length}).");
 
     var uvChannels = new List<object?>();
     for (var channelIndex = 0; channelIndex < vertexBuffer.NumTexCoords; channelIndex++)
@@ -475,11 +882,18 @@ static Dictionary<string, object?> ExportStaticMeshLod(
         var staticMaterial = section.MaterialIndex >= 0 && section.MaterialIndex < staticMaterials.Length
             ? staticMaterials[section.MaterialIndex]
             : null;
+        var fallbackMaterial = section.MaterialIndex >= 0 && section.MaterialIndex < fallbackMaterials.Length
+            ? fallbackMaterials[section.MaterialIndex]
+            : null;
+        var materialPath = staticMaterial?.MaterialInterface?.GetPathName() ?? fallbackMaterial?.GetPathName();
+        var materialName = MaterialNameFromSlotOrPath(
+            staticMaterial?.MaterialSlotName.Text ?? fallbackMaterial?.Name.Text,
+            materialPath);
         return (object?)new Dictionary<string, object?>
         {
             ["materialIndex"] = section.MaterialIndex,
-            ["materialName"] = staticMaterial?.MaterialSlotName.ToString(),
-            ["materialPath"] = staticMaterial?.MaterialInterface?.GetPathName(),
+            ["materialName"] = materialName,
+            ["materialPath"] = materialPath,
             ["firstIndex"] = section.FirstIndex,
             ["triangleCount"] = section.NumTriangles,
             ["castShadow"] = section.bCastShadow,
@@ -501,26 +915,52 @@ static Dictionary<string, object?> ExportStaticMeshLod(
         ["tangents"] = vertexItems.Select(item =>
             new[] { item.Normal[0].X, item.Normal[0].Y, item.Normal[0].Z, item.Normal[2].W }).ToArray(),
         ["uvChannels"] = uvChannels,
-        ["colors"] = sourceLod.ColorVertexBuffer?.Data.Select(color =>
-            new[] { (int) color.R, (int) color.G, (int) color.B, (int) color.A }).ToArray(),
+        ["colors"] = colors is { Length: > 0 }
+            ? colors.Select(color =>
+                new[] { (int) color.R, (int) color.G, (int) color.B, (int) color.A }).ToArray()
+            : null,
         ["indices"] = indices,
         ["sections"] = sections,
     };
+}
+
+// Remake's cooked mesh records can omit MaterialSlotName even though their
+// MaterialInterface reference is intact.  Use that object's asset name before
+// letting the Blender importer fall back to Material_0, Material_1, etc.
+static string? MaterialNameFromSlotOrPath(string? slotName, string? materialPath)
+{
+    if (!string.IsNullOrWhiteSpace(slotName) &&
+        !string.Equals(slotName, "None", StringComparison.OrdinalIgnoreCase))
+        return slotName;
+    if (string.IsNullOrWhiteSpace(materialPath))
+        return null;
+
+    var path = materialPath.Trim().Trim('\'');
+    var extensionIndex = path.LastIndexOf('.');
+    var assetName = extensionIndex >= 0 ? path[(extensionIndex + 1)..] : Path.GetFileName(path);
+    return string.IsNullOrWhiteSpace(assetName) ? null : assetName;
 }
 
 static Dictionary<string, object?> ExportStaticMeshAsset(UStaticMesh sourceMesh)
 {
     var lods = sourceMesh.RenderData?.LODs
         ?? throw new InvalidOperationException(
-            "StaticMesh render data is unavailable. This Rebirth layout requires " +
+            "StaticMesh render data is unavailable. Packed layouts require " +
             "CUE4Parse's packed-tangent support from 2026-08-28 or newer.");
     var lodIndex = Array.FindIndex(lods, lod =>
         !lod.SkipLod && lod.PositionVertexBuffer is { NumVertices: > 0 } &&
         lod.VertexBuffer is { NumVertices: > 0 } && lod.IndexBuffer is { Length: > 0 });
     if (lodIndex < 0)
         throw new InvalidOperationException("StaticMesh has no importable conventional LOD.");
+    // Remake serializes these as cooked UPROPERTY data. Its native render-data
+    // reader can consume the empty legacy array that follows instead, leaving
+    // UStaticMesh.StaticMaterials blank even though the mapped property has
+    // every MaterialInterface reference intact.
+    var staticMaterials = sourceMesh.StaticMaterials ?? [];
+    if (staticMaterials.Length == 0)
+        staticMaterials = sourceMesh.GetOrDefault<FStaticMaterial[]>("StaticMaterials", []);
     return ExportStaticMeshLod(
-        sourceMesh.Name.ToString(), lods[lodIndex], sourceMesh.StaticMaterials ?? [],
+        sourceMesh.Name.ToString(), lods[lodIndex], staticMaterials, sourceMesh.Materials ?? [],
         lodIndex, "UStaticMesh", "ConventionalLOD");
 }
 
@@ -1268,6 +1708,153 @@ static bool TryDecodeRebirthSkeletalPackedFrames(
     return true;
 }
 
+static Dictionary<string, object?> ExportSkeletalMeshAsset(
+    USkeletalMesh sourceMesh,
+    CUE4Parse.UE4.Assets.IPackage package,
+    string gameName,
+    string contentRoot)
+{
+    var lods = sourceMesh.LODModels ?? [];
+    var lodIndex = Array.FindIndex(lods, lod =>
+        !lod.SkipLod &&
+        (lod.VertexBufferGPUSkin.VertsFloat.Length > 0 || lod.VertexBufferGPUSkin.VertsHalf.Length > 0) &&
+        lod.Indices?.Buffer is { Length: > 0 });
+    if (lodIndex < 0)
+        throw new InvalidOperationException("SkeletalMesh has no importable conventional LOD.");
+
+    var sourceLod = lods[lodIndex];
+    // FF7 Remake environment SkeletalMeshes commonly use half-precision UVs.
+    // CUE4Parse stores those in VertsHalf rather than VertsFloat, despite both
+    // being ordinary FSkelMeshVertexBase streams with the same position,
+    // normal, influence, and decoded-UV surface needed by the exporter.
+    dynamic[] vertices = (sourceLod.VertexBufferGPUSkin.VertsFloat.Length > 0
+        ? sourceLod.VertexBufferGPUSkin.VertsFloat.Cast<dynamic>()
+        : sourceLod.VertexBufferGPUSkin.VertsHalf.Cast<dynamic>()).ToArray();
+    var indices = sourceLod.Indices!.Buffer!;
+    var referenceBones = sourceMesh.ReferenceSkeleton.FinalRefBoneInfo;
+    var vertexSections = Enumerable.Repeat(-1, vertices.Length).ToArray();
+    for (var sectionIndex = 0; sectionIndex < sourceLod.Sections.Length; sectionIndex++)
+    {
+        var section = sourceLod.Sections[sectionIndex];
+        var firstVertex = checked((int)section.BaseVertexIndex);
+        var lastVertex = checked(firstVertex + section.NumVertices);
+        if (firstVertex < 0 || lastVertex > vertices.Length)
+            throw new InvalidOperationException($"SkeletalMesh section {sectionIndex} vertex range is invalid.");
+        for (var vertexIndex = firstVertex; vertexIndex < lastVertex; vertexIndex++)
+            vertexSections[vertexIndex] = sectionIndex;
+    }
+    if (vertexSections.Any(sectionIndex => sectionIndex < 0))
+        throw new InvalidOperationException("SkeletalMesh has vertices outside all render sections.");
+
+    // Conventional FF7 titles can reconstruct the GPU vertex buffer from the
+    // legacy render-item streams.  That reconstruction sets the LOD's UV count
+    // but does not copy it onto VertexBufferGPUSkin.NumTexCoords, even though
+    // each FGPUVertFloat still contains its UV array.  Prefer the LOD metadata,
+    // validate it against the decoded vertices, and fall back to that decoded
+    // stream when the metadata is absent.
+    var encodedUvChannelCount = vertices.Min(vertex => vertex.UV.Length);
+    var declaredUvChannelCount = Math.Max(
+        sourceLod.NumTexCoords,
+        sourceLod.VertexBufferGPUSkin.NumTexCoords);
+    var uvChannelCount = declaredUvChannelCount is > 0 and <= 8 &&
+        declaredUvChannelCount <= encodedUvChannelCount
+        ? declaredUvChannelCount
+        : encodedUvChannelCount;
+    var uvChannels = new List<object?>();
+    for (var channelIndex = 0; channelIndex < uvChannelCount; channelIndex++)
+    {
+        var capturedChannel = channelIndex;
+        uvChannels.Add(vertices.Select(vertex =>
+        {
+            var uv = vertex.UV[capturedChannel];
+            return new[] { uv.U, uv.V };
+        }).ToArray());
+    }
+
+    var weights = new List<object?>(vertices.Length);
+    for (var vertexIndex = 0; vertexIndex < vertices.Length; vertexIndex++)
+    {
+        var influence = vertices[vertexIndex].Infs;
+        var section = sourceLod.Sections[vertexSections[vertexIndex]];
+        var vertexWeights = new List<object?>();
+        if (influence is not null)
+        {
+            var divisor = influence.bUse16BitBoneWeight ? 65535.0f : 255.0f;
+            for (var influenceIndex = 0; influenceIndex < influence.BoneIndex.Length; influenceIndex++)
+            {
+                var weight = influence.BoneWeight[influenceIndex];
+                if (weight == 0)
+                    continue;
+                var localBoneIndex = influence.BoneIndex[influenceIndex];
+                if (localBoneIndex >= section.BoneMap.Length)
+                    throw new InvalidOperationException(
+                        $"SkeletalMesh vertex {vertexIndex} has an invalid section-local bone index.");
+                var skeletonBoneIndex = section.BoneMap[localBoneIndex];
+                if (skeletonBoneIndex >= referenceBones.Length)
+                    throw new InvalidOperationException(
+                        $"SkeletalMesh vertex {vertexIndex} references an invalid skeleton bone.");
+                vertexWeights.Add(new[] { (float)skeletonBoneIndex, weight / divisor });
+            }
+        }
+        weights.Add(vertexWeights);
+    }
+
+    var materials = sourceMesh.SkeletalMaterials;
+    var sections = sourceLod.Sections.Select(section =>
+    {
+        var material = section.MaterialIndex >= 0 && section.MaterialIndex < materials.Length
+            ? materials[section.MaterialIndex]
+            : null;
+        var materialPath = material?.Material?.GetPathName();
+        return (object?)new Dictionary<string, object?>
+        {
+            ["materialIndex"] = section.MaterialIndex,
+            ["materialName"] = MaterialNameFromSlotOrPath(material?.MaterialSlotName.Text, materialPath),
+            ["materialPath"] = materialPath,
+            ["firstIndex"] = section.BaseIndex,
+            ["triangleCount"] = section.NumTriangles,
+            ["castShadow"] = section.bCastShadow,
+            ["recomputeTangents"] = section.bRecomputeTangent,
+            ["recomputeTangentMaskChannel"] = section.RecomputeTangentsVertexMaskChannel.ToString(),
+        };
+    }).ToList();
+
+    var colors = sourceLod.ColorVertexBuffer.Data;
+    if (colors.Length != 0 && colors.Length != vertices.Length)
+        throw new InvalidOperationException("SkeletalMesh color stream does not match its vertex stream.");
+    var linkedSkeletonPath = GetLinkedSkeletonPath(sourceMesh);
+    return new Dictionary<string, object?>
+    {
+        ["sourceType"] = $"{gameName} USkeletalMesh",
+        ["name"] = sourceMesh.Name.ToString(),
+        ["lodIndex"] = lodIndex,
+        ["vertexCount"] = vertices.Length,
+        ["triangleCount"] = indices.Length / 3,
+        ["positions"] = vertices.Select(vertex =>
+            new[] { vertex.Pos.X, vertex.Pos.Y, vertex.Pos.Z }).ToArray(),
+        ["normals"] = vertices.Select(vertex =>
+            new[] { vertex.Normal[2].X, vertex.Normal[2].Y, vertex.Normal[2].Z }).ToArray(),
+        ["tangents"] = vertices.Select(vertex =>
+            new[] { vertex.Normal[0].X, vertex.Normal[0].Y, vertex.Normal[0].Z, vertex.Normal[2].W }).ToArray(),
+        ["normalFormat"] = "legacy FPackedNormal frame",
+        ["uvChannels"] = uvChannels,
+        ["colors"] = colors.Length == 0 ? null : colors.Select(color =>
+            new[] { (int)color.R, (int)color.G, (int)color.B, (int)color.A }).ToArray(),
+        ["indices"] = indices,
+        ["sections"] = sections,
+        ["boneNames"] = referenceBones.Select(bone => bone.Name.ToString()).ToArray(),
+        ["weights"] = weights,
+        // Some Crisis Core meshes resolve a Skeleton object path that is not
+        // exposed as an independently loadable mounted package.  Preserve the
+        // mesh's own bind-pose reference skeleton so Blender can still build
+        // and bind an armature without that secondary package request.
+        ["inlineSkeleton"] = ExportReferenceSkeleton(sourceMesh.ReferenceSkeleton),
+        ["linkedSkeletonPath"] = linkedSkeletonPath,
+        ["skeletonPath"] = ObjectPathToVirtualAssetPath(linkedSkeletonPath, contentRoot),
+        ["kdiPaths"] = ExportKineDriverAssetPaths(package, contentRoot),
+    };
+}
+
 static Dictionary<string, object?> ExportRebirthSkeletalMesh(
     DefaultFileProvider provider,
     string assetPath,
@@ -1426,6 +2013,7 @@ static Dictionary<string, object?> ExportRebirthSkeletalMesh(
         ["weights"] = weights,
         ["linkedSkeletonPath"] = GetLinkedSkeletonPath(sourceMesh),
         ["skeletonPath"] = ObjectPathToVirtualAssetPath(GetLinkedSkeletonPath(sourceMesh)),
+        ["kdiPaths"] = ExportKineDriverAssetPaths(package),
     };
 }
 
@@ -1532,6 +2120,7 @@ static Dictionary<string, object?> ExportRebirthInlineSkeletalMesh(
         ["weights"] = weights,
         ["linkedSkeletonPath"] = GetLinkedSkeletonPath(sourceMesh),
         ["skeletonPath"] = ObjectPathToVirtualAssetPath(GetLinkedSkeletonPath(sourceMesh)),
+        ["kdiPaths"] = ExportKineDriverAssetPaths(package),
     };
 }
 
@@ -1643,8 +2232,12 @@ static Dictionary<string, object?> ExportUmapActors(CUE4Parse.UE4.Assets.IPackag
         "StaticMeshComponent",
         "EndStaticMeshPhysicsPartsComponent",
         "EndSkeletalMeshComponent",
+        "SkeletalMeshComponent",
         "PointLightComponent",
         "SpotLightComponent",
+        "BoxReflectionCaptureComponent",
+        "MaterialParameterLightPlacedComponent",
+        "MaterialInstanceDynamic",
         "LevelStreamingAlwaysLoaded",
         "LevelStreamingDynamic",
         "EndStreamingVolume",
@@ -1655,12 +2248,21 @@ static Dictionary<string, object?> ExportUmapActors(CUE4Parse.UE4.Assets.IPackag
         var properties = new Dictionary<string, object?>();
         foreach (var property in export.Properties)
         {
-            if (ConvertValue(property) is not Dictionary<string, object?> converted ||
-                !converted.TryGetValue("name", out var name) || name is null)
-                continue;
-            properties[name.ToString()!] = converted.TryGetValue("value", out var value)
-                ? NormalizeKdiValue(value)
-                : null;
+            try
+            {
+                if (ConvertValue(property) is not Dictionary<string, object?> converted ||
+                    !converted.TryGetValue("name", out var name) || name is null)
+                    continue;
+                properties[name.ToString()!] = converted.TryGetValue("value", out var value)
+                    ? NormalizeKdiValue(value)
+                    : null;
+            }
+            catch (Exception exc)
+            {
+                // A malformed/unmapped property must not discard the MovieScene
+                // export that contains the rest of the sequence's usable data.
+                Console.Error.WriteLine($"Cutscene property skipped ({export.Name}): {exc.Message}");
+            }
         }
 
         // Blueprint-derived component instances commonly omit StaticMesh from
@@ -1678,7 +2280,8 @@ static Dictionary<string, object?> ExportUmapActors(CUE4Parse.UE4.Assets.IPackag
         // EndSkeletalMeshComponent instances have the same template-inheritance
         // behavior. Export the resolved asset reference so Blender can build the
         // mesh-and-armature source collection instead of creating an empty.
-        if (export.ExportType == "EndSkeletalMeshComponent" &&
+        if ((export.ExportType == "EndSkeletalMeshComponent" ||
+             export.ExportType == "SkeletalMeshComponent") &&
             !properties.ContainsKey("SkeletalMesh") &&
             !properties.ContainsKey("SkinnedAsset"))
         {
@@ -1687,23 +2290,433 @@ static Dictionary<string, object?> ExportUmapActors(CUE4Parse.UE4.Assets.IPackag
                 properties["SkeletalMesh"] = ConvertValue(skeletalMesh);
         }
 
-        // The existing JSON map importer uses Outer only to give component-derived
-        // objects readable actor names.  A best-effort name is enough; transforms
-        // and asset references come from the component properties themselves.
-        var outerName = export.Outer?.Name.ToString() ?? string.Empty;
-        actors.Add(new Dictionary<string, object?>
+        // Preserve full ownership paths so dynamic material overrides can be
+        // associated with their mesh component and its attached lights.
+        var actor = new Dictionary<string, object?>
         {
             ["Type"] = export.ExportType,
             ["Name"] = export.Name.ToString(),
-            ["Outer"] = outerName,
+            ["Outer"] = export.Outer is null ? null : new Dictionary<string, object?>
+            {
+                ["ObjectName"] = $"Object'{export.Outer.GetPathName()}'",
+                ["ObjectPath"] = export.Outer.GetPathName(),
+            },
             ["Properties"] = properties,
-        });
+        };
+        if (export is CUE4Parse.UE4.Assets.Exports.Component.Lights.ULightComponentBase light)
+        {
+            properties.TryAdd("Intensity", light.Intensity);
+            actor["IntensityNits"] = light.GetNitIntensity();
+        }
+        actors.Add(actor);
     }
     return new Dictionary<string, object?>
     {
         ["sourceType"] = "UMAP package actor export",
         ["actorCount"] = actors.Count,
         ["actors"] = actors,
+    };
+}
+
+static Dictionary<string, object?> ExportStreamingProbe(CUE4Parse.UE4.Assets.IPackage package)
+{
+    static float[] Vector3(FVector value) => [value.X, value.Y, value.Z];
+    static (FVector Min, FVector Max)? TransformBounds(UBrushComponent? component, FBoxSphereBounds? bounds)
+    {
+        if (component is null || bounds is null)
+            return null;
+        var localMin = bounds.Origin - bounds.BoxExtent;
+        var localMax = bounds.Origin + bounds.BoxExtent;
+        var transform = component.GetComponentTransform();
+        var transformed = new[]
+        {
+            transform.TransformPosition(new FVector(localMin.X, localMin.Y, localMin.Z)),
+            transform.TransformPosition(new FVector(localMin.X, localMin.Y, localMax.Z)),
+            transform.TransformPosition(new FVector(localMin.X, localMax.Y, localMin.Z)),
+            transform.TransformPosition(new FVector(localMin.X, localMax.Y, localMax.Z)),
+            transform.TransformPosition(new FVector(localMax.X, localMin.Y, localMin.Z)),
+            transform.TransformPosition(new FVector(localMax.X, localMin.Y, localMax.Z)),
+            transform.TransformPosition(new FVector(localMax.X, localMax.Y, localMin.Z)),
+            transform.TransformPosition(new FVector(localMax.X, localMax.Y, localMax.Z)),
+        };
+        return (
+            new FVector(transformed.Min(point => point.X), transformed.Min(point => point.Y), transformed.Min(point => point.Z)),
+            new FVector(transformed.Max(point => point.X), transformed.Max(point => point.Y), transformed.Max(point => point.Z))
+        );
+    }
+
+    var exports = package.GetExports().ToArray();
+    var records = new List<object?>();
+    foreach (var volume in exports.Where(export => export.ExportType == "EndStreamingVolume"))
+    {
+        var properties = new Dictionary<string, object?>();
+        foreach (var property in volume.Properties)
+        {
+            if (ConvertValue(property) is not Dictionary<string, object?> converted ||
+                !converted.TryGetValue("name", out var name) || name is null)
+                continue;
+            properties[name.ToString()!] = converted.TryGetValue("value", out var value) ? value : null;
+        }
+
+        var brushIndex = volume.GetOrDefault<FPackageIndex>("BrushComponent", new FPackageIndex());
+        var brushComponent = brushIndex.Load<UBrushComponent>();
+        var model = brushComponent?.GetBrush();
+        var bounds = model?.Bounds;
+        var worldBounds = TransformBounds(brushComponent, bounds);
+        records.Add(new Dictionary<string, object?>
+        {
+            ["name"] = volume.Name.ToString(),
+            ["properties"] = properties,
+            ["brushComponent"] = brushComponent?.GetPathName(),
+            ["brushModel"] = model?.GetPathName(),
+            ["brushRelativeLocation"] = brushComponent is null ? null : Vector3(brushComponent.GetRelativeLocation()),
+            ["boundsOrigin"] = bounds is null ? null : Vector3(bounds.Origin),
+            ["boundsExtent"] = bounds is null ? null : Vector3(bounds.BoxExtent),
+            ["boundsMin"] = bounds is null ? null : Vector3(bounds.Origin - bounds.BoxExtent),
+            ["boundsMax"] = bounds is null ? null : Vector3(bounds.Origin + bounds.BoxExtent),
+            ["boundsWorldMin"] = worldBounds is null ? null : Vector3(worldBounds.Value.Min),
+            ["boundsWorldMax"] = worldBounds is null ? null : Vector3(worldBounds.Value.Max),
+            ["pointCount"] = model?.Points?.Length ?? 0,
+        });
+    }
+
+    var grids = exports
+        .Where(export => export.ExportType == "EndStreamingGrid")
+        .Select(export => new Dictionary<string, object?>
+        {
+            ["name"] = export.Name.ToString(),
+            ["properties"] = export.Properties
+                .Select(ConvertValue)
+                .OfType<Dictionary<string, object?>>()
+                .ToArray(),
+        })
+        .ToArray();
+    return new Dictionary<string, object?>
+    {
+        ["package"] = package.Name,
+        ["streamingVolumes"] = records,
+        ["streamingGrids"] = grids,
+    };
+}
+
+static object? RewriteCutsceneObjectPaths(
+    object? value,
+    IReadOnlyDictionary<string, int> exportIndices)
+{
+    if (value is Dictionary<string, object?> dictionary)
+    {
+        var rewritten = new Dictionary<string, object?>();
+        foreach (var (key, item) in dictionary)
+        {
+            if (key == "ObjectPath" && item is string objectPath &&
+                exportIndices.TryGetValue(objectPath, out var exportIndex))
+            {
+                // The established cutscene importer addresses its flat export
+                // list using the final numeric ObjectPath segment from FModel.
+                rewritten[key] = $"Package.{exportIndex}";
+            }
+            else
+            {
+                rewritten[key] = RewriteCutsceneObjectPaths(item, exportIndices);
+            }
+        }
+        return rewritten;
+    }
+    if (value is List<object?> list)
+        return list.Select(item => RewriteCutsceneObjectPaths(item, exportIndices)).ToList();
+    return value;
+}
+
+static (string ExportType, string Name) GetCutsceneExportMetadata(
+    CUE4Parse.UE4.Assets.IPackage package,
+    int index)
+{
+    if (package is CUE4Parse.UE4.Assets.IoPackage ioPackage)
+    {
+        var entry = ioPackage.ExportMap[index];
+        var exportType = ioPackage.ResolveObjectIndex(entry.ClassIndex)?.Name.ToString()
+            ?? string.Empty;
+        var name = ioPackage.CreateFNameFromMappedName(entry.ObjectName).ToString();
+        return (exportType, name);
+    }
+    if (package is CUE4Parse.UE4.Assets.Package legacyPackage)
+    {
+        var entry = legacyPackage.ExportMap[index];
+        return (entry.ClassName ?? string.Empty, entry.ObjectName.ToString());
+    }
+
+    var export = package.GetExport(index);
+    return (export.ExportType, export.Name.ToString());
+}
+
+static bool TryReadSerializedString(byte[] data, ref int offset, out string value)
+{
+    value = string.Empty;
+    if (offset < 0 || offset + 4 > data.Length)
+        return false;
+    var length = BitConverter.ToInt32(data, offset);
+    offset += 4;
+    if (length <= 1 || offset + length > data.Length || data[offset + length - 1] != 0)
+        return false;
+    value = System.Text.Encoding.ASCII.GetString(data, offset, length - 1);
+    offset += length;
+    return value.All(character => character is >= ' ' and <= '~');
+}
+
+static bool TryReadAttachmentPayload(byte[] data, int start, out (string Actor, string Parent, string Socket, bool Detach) attachment)
+{
+    attachment = default;
+    var offset = start;
+    bool ReadName(string prefix, out string name)
+    {
+        name = string.Empty;
+        return TryReadSerializedString(data, ref offset, out var field) && field.StartsWith(prefix, StringComparison.Ordinal) &&
+            TryReadSerializedString(data, ref offset, out var type) && type == "NameProperty" &&
+            offset + 9 <= data.Length && (offset += 9) >= 0 &&
+            TryReadSerializedString(data, ref offset, out name);
+    }
+    if (!ReadName("ActorName_", out var actor) || !ReadName("ParentName_", out var parent) ||
+        !ReadName("SocketName_", out var socket) ||
+        !TryReadSerializedString(data, ref offset, out var detachField) || !detachField.StartsWith("Detach_", StringComparison.Ordinal) ||
+        !TryReadSerializedString(data, ref offset, out var detachType) || detachType != "BoolProperty" || offset + 9 > data.Length)
+        return false;
+    // BoolProperty stores its value after size and array index, before the GUID flag.
+    attachment = (actor, parent, socket, data[offset + 8] != 0);
+    return actor.StartsWith("EV_", StringComparison.Ordinal) && parent.StartsWith("EV_", StringComparison.Ordinal);
+}
+
+static List<Dictionary<string, object?>> DecodeConstraintAttachments(byte[]? rawData, List<object?> exports)
+{
+    var attachments = new List<Dictionary<string, object?>>();
+    if (rawData is null)
+        return attachments;
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    for (var index = 4; index < rawData.Length; index++)
+    {
+        if (!rawData.AsSpan(index).StartsWith("ActorName_"u8) ||
+            !TryReadAttachmentPayload(rawData, index - 4, out var item))
+            continue;
+        var key = $"{item.Actor}\u001f{item.Parent}\u001f{item.Socket}\u001f{item.Detach}";
+        if (!seen.Add(key))
+            continue;
+        attachments.Add(new Dictionary<string, object?>
+        {
+            ["actor"] = item.Actor,
+            ["parent"] = item.Parent,
+            ["socket"] = item.Socket,
+            ["detach"] = item.Detach,
+        });
+    }
+    var times = exports.OfType<Dictionary<string, object?>>()
+        .Where(export => export.GetValueOrDefault("Type") as string == "MovieSceneEndEventSection")
+        .SelectMany(export => ((export.GetValueOrDefault("Properties") as Dictionary<string, object?>)?.GetValueOrDefault("EventData") as Dictionary<string, object?>)?.GetValueOrDefault("Times") as List<object?> ?? [])
+        .OfType<Dictionary<string, object?>>()
+        .Select(time => Convert.ToInt32(time.GetValueOrDefault("Value")))
+        .OrderBy(time => time).ToList();
+    if (times.Count != attachments.Count)
+        return [];
+    for (var index = 0; index < attachments.Count; index++)
+        attachments[index]["tick"] = times[index];
+    return attachments;
+}
+
+static Dictionary<string, object?> ExportCutscenePackage(
+    CUE4Parse.UE4.Assets.IPackage package, byte[]? rawData = null)
+{
+    // EndCinemaSequence packages rely on MovieScene subexports referenced by
+    // numeric ObjectPath suffixes (for example "/Game/.../Sequence.12").
+    // Preserve package export order so Blender can reuse the established
+    // FModel-JSON sequencer importer.
+    // Sequence packages also contain compiled evaluation fields and runtime-only
+    // exports.  They are often much larger than the authored tracks and Blender
+    // never reads them.  Keep a placeholder for every export so numeric
+    // ObjectPath indices remain stable, but only convert the properties consumed
+    // by json/cutscene_import.py.
+    var propertyNamesByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
+    {
+        ["EndCinemaSequence"] = new(StringComparer.Ordinal)
+        {
+            "BindingReferences",
+        },
+        ["MovieScene"] = new(StringComparer.Ordinal)
+        {
+            "Spawnables", "Possessables", "ObjectBindings", "MasterTracks",
+            "PlaybackRange", "TickResolution", "DisplayRate",
+        },
+        ["MovieScene3DTransformTrack"] = new(StringComparer.Ordinal)
+        {
+            "Sections",
+        },
+        ["MovieScene3DTransformSection"] = new(StringComparer.Ordinal)
+        {
+            "Translation", "Translation[1]", "Translation[2]",
+            "Rotation", "Rotation[1]", "Rotation[2]",
+            "Scale", "Scale[1]", "Scale[2]", "SectionRange",
+        },
+        ["MovieSceneFloatTrack"] = new(StringComparer.Ordinal)
+        {
+            "PropertyBinding", "Sections",
+        },
+        ["MovieSceneFloatSection"] = new(StringComparer.Ordinal)
+        {
+            "FloatCurve", "SectionRange",
+        },
+        ["MovieSceneColorTrack"] = new(StringComparer.Ordinal)
+        {
+            "PropertyBinding", "Sections",
+        },
+        ["MovieSceneColorSection"] = new(StringComparer.Ordinal)
+        {
+            "RedCurve", "GreenCurve", "BlueCurve", "SectionRange",
+        },
+        ["MovieSceneBoolTrack"] = new(StringComparer.Ordinal)
+        {
+            "PropertyBinding", "Sections",
+        },
+        ["MovieSceneBoolSection"] = new(StringComparer.Ordinal)
+        {
+            "BoolCurve", "SectionRange",
+        },
+        ["MovieSceneCameraCutTrack"] = new(StringComparer.Ordinal)
+        {
+            "Sections",
+        },
+        ["MovieSceneCameraCutSection"] = new(StringComparer.Ordinal)
+        {
+            "CameraBindingID", "SectionRange",
+        },
+        ["MovieSceneSkeletalAnimationTrack"] = new(StringComparer.Ordinal)
+        {
+            "AnimationSections",
+        },
+        ["MovieSceneSkeletalAnimationSection"] = new(StringComparer.Ordinal)
+        {
+            "Params", "SectionRange",
+        },
+        ["EndCinemaVisibilityTrack"] = new(StringComparer.Ordinal)
+        {
+            "Sections",
+        },
+        ["EndCinemaAttachTrack"] = new(StringComparer.Ordinal)
+        {
+            "ConstraintSections",
+        },
+        ["EndCinemaAttachSection"] = new(StringComparer.Ordinal)
+        {
+            "AttachActorName", "SectionRange",
+        },
+        // The _Voice / _Text / _CutEvent sequences are master-track event lists.
+        // Only the trigger times survive cooking -- each key's Parameters struct
+        // reads back null -- but the times are what the voice-line importer needs.
+        ["MovieSceneEndEventTrack"] = new(StringComparer.Ordinal)
+        {
+            "Sections",
+        },
+        ["MovieSceneEndEventSection"] = new(StringComparer.Ordinal)
+        {
+            "EventData", "SectionRange",
+        },
+    };
+    var exportMetadata = new (string ExportType, string Name)[package.ExportMapLength];
+    for (var index = 0; index < exportMetadata.Length; index++)
+    {
+        exportMetadata[index] = GetCutsceneExportMetadata(package, index);
+    }
+    var packageExports = new CUE4Parse.UE4.Assets.Exports.UObject?[package.ExportMapLength];
+    for (var index = 0; index < exportMetadata.Length; index++)
+    {
+        if (propertyNamesByType.ContainsKey(exportMetadata[index].ExportType))
+        {
+            packageExports[index] = package.GetExport(index);
+        }
+    }
+    var exportIndices = packageExports
+        .Select((export, index) => new { path = export?.GetPathName(), index })
+        .Where(entry => !string.IsNullOrWhiteSpace(entry.path))
+        .ToDictionary(entry => entry.path!, entry => entry.index, StringComparer.OrdinalIgnoreCase);
+    var exports = new List<object?>();
+    var previousPackageIndexConverter = PropertyConversionContext.PackageIndexConverter;
+    PropertyConversionContext.PackageIndexConverter = packageIndex =>
+    {
+        if (packageIndex.IsNull)
+            return null;
+        if (packageIndex.IsExport)
+        {
+            var exportIndex = packageIndex.Index - 1;
+            if (exportIndex >= 0 && exportIndex < exportMetadata.Length)
+            {
+                var referenced = exportMetadata[exportIndex];
+                return new Dictionary<string, object?>
+                {
+                    ["ObjectName"] = $"{referenced.ExportType}'{referenced.Name}'",
+                    ["ObjectPath"] = $"{package.Name}.{exportIndex}",
+                };
+            }
+        }
+        var unresolvedName = packageIndex.Name.ToString();
+        return new Dictionary<string, object?>
+        {
+            ["ObjectName"] = $"Object'{unresolvedName}'",
+            ["ObjectPath"] = unresolvedName,
+        };
+    };
+    try
+    {
+        for (var index = 0; index < packageExports.Length; index++)
+        {
+            var export = packageExports[index];
+            var metadata = exportMetadata[index];
+            var properties = new Dictionary<string, object?>();
+            if (export is not null && metadata.ExportType == "MovieSceneEndEventSection")
+            {
+                Console.Error.WriteLine($"DEBUG {metadata.ExportType} clr={export.GetType().FullName} tags={export.Properties.Count}");
+                foreach (var dp in export.Properties)
+                    Console.Error.WriteLine($"DEBUG   tag {dp.Name.Text} : {dp.PropertyType.Text}");
+                foreach (var df in export.GetType().GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+                    Console.Error.WriteLine($"DEBUG   native {df.FieldType.Name} {df.Name}");
+            }
+            if (export is not null &&
+                propertyNamesByType.TryGetValue(metadata.ExportType, out var allowedProperties))
+            {
+                foreach (var property in export.Properties)
+                {
+                    if (!allowedProperties.Contains(property.Name.Text))
+                        continue;
+                    try
+                    {
+                        if (ConvertValue(property) is not Dictionary<string, object?> converted ||
+                            !converted.TryGetValue("name", out var name) || name is null)
+                            continue;
+                        var propertyValue = converted.TryGetValue("value", out var value)
+                            ? NormalizeKdiValue(value)
+                            : null;
+                        properties[name.ToString()!] = RewriteCutsceneObjectPaths(propertyValue, exportIndices);
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.Error.WriteLine($"Cutscene property skipped ({export.Name}): {exc.Message}");
+                    }
+                }
+            }
+            exports.Add(new Dictionary<string, object?>
+            {
+                ["Type"] = metadata.ExportType,
+                ["Name"] = metadata.Name,
+                ["Package"] = package.Name,
+                ["Properties"] = properties,
+            });
+        }
+    }
+    finally
+    {
+        PropertyConversionContext.PackageIndexConverter = previousPackageIndexConverter;
+    }
+    return new Dictionary<string, object?>
+    {
+        ["sourceType"] = "EndCinemaSequence package export",
+        ["exportCount"] = exports.Count,
+        ["exports"] = exports,
+        ["attachmentEvents"] = DecodeConstraintAttachments(rawData, exports),
     };
 }
 
@@ -1825,7 +2838,9 @@ static string? GetLinkedSkeletonPath(USkeletalMesh mesh)
     }
 }
 
-static string? ObjectPathToVirtualAssetPath(string? objectPath)
+static string? ObjectPathToVirtualAssetPath(
+    string? objectPath,
+    string contentRoot = "End/Content/")
 {
     if (string.IsNullOrWhiteSpace(objectPath) ||
         !objectPath.StartsWith("/Game/", StringComparison.OrdinalIgnoreCase))
@@ -1834,7 +2849,69 @@ static string? ObjectPathToVirtualAssetPath(string? objectPath)
     var objectSeparator = packagePath.LastIndexOf('.');
     if (objectSeparator >= 0)
         packagePath = packagePath[..objectSeparator];
-    return "End/Content/" + packagePath + ".uasset";
+    return contentRoot + packagePath + ".uasset";
+}
+
+static List<string> ExportKineDriverAssetPaths(
+    CUE4Parse.UE4.Assets.IPackage package,
+    string contentRoot = "End/Content/")
+{
+    // The Skeleton is commonly shared by every costume, while the mesh's
+    // SQEX_KBD_AssetUserData names the KineDriver authored for this exact
+    // variant. Preserve that source-of-truth reference for Blender instead of
+    // guessing from the Skeleton filename.
+    var objectPaths = new List<string>();
+
+    static void CollectObjectPaths(object? value, List<string> paths)
+    {
+        if (value is Dictionary<string, object?> dictionary)
+        {
+            if (dictionary.TryGetValue("ObjectPath", out var path) && path is string text)
+                paths.Add(text);
+            foreach (var child in dictionary.Values)
+                CollectObjectPaths(child, paths);
+        }
+        else if (value is IEnumerable sequence && value is not string)
+        {
+            foreach (var child in sequence)
+                CollectObjectPaths(child, paths);
+        }
+    }
+
+    foreach (var export in package.GetExports())
+    {
+        foreach (var property in export.Properties)
+        {
+            if (!string.Equals(
+                    property.Name.Text, "KineDriverDataList",
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                CollectObjectPaths(ConvertValue(property), objectPaths);
+            }
+            catch (Exception exc)
+            {
+                Console.Error.WriteLine(
+                    $"KineDriverDataList skipped ({export.Name}): {exc.Message}");
+            }
+        }
+    }
+
+    var paths = new List<string>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var objectPath in objectPaths)
+    {
+        var virtualPath = ObjectPathToVirtualAssetPath(objectPath, contentRoot);
+        if (virtualPath is not null &&
+            Regex.IsMatch(
+                virtualPath,
+                @"_KDI(?:_[A-Za-z0-9_]+)?\.uasset$",
+                RegexOptions.IgnoreCase) &&
+            seen.Add(virtualPath))
+            paths.Add(virtualPath);
+    }
+    return paths;
 }
 
 static List<int> ExportBoneIndices(IEnumerable<short>? indices)
@@ -2126,13 +3203,80 @@ static string VirtualAssetToObjectPath(string virtualPath)
     return $"/Game/{packagePath}.{objectName}";
 }
 
+static Dictionary<string, object?>? FindMeshAssetsFromRegistry(
+    DefaultFileProvider provider,
+    string? pathFilter)
+{
+    var registryFile = provider.Files.FirstOrDefault(entry =>
+        entry.Key.EndsWith("AssetRegistry.bin", StringComparison.OrdinalIgnoreCase)).Value;
+    if (registryFile is null)
+        return null;
+
+    var packagePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var path in provider.Files.Keys.Where(path =>
+                 path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)))
+    {
+        var normalized = path.Replace('\\', '/');
+        string? packageName = null;
+        if (normalized.StartsWith("End/Content/", StringComparison.OrdinalIgnoreCase))
+            packageName = "/Game/" + normalized["End/Content/".Length..^".uasset".Length];
+        else if (normalized.StartsWith("CCFF7R/Content/", StringComparison.OrdinalIgnoreCase))
+            packageName = "/Game/" + normalized["CCFF7R/Content/".Length..^".uasset".Length];
+        else if (normalized.StartsWith("Engine/Content/", StringComparison.OrdinalIgnoreCase))
+            packageName = "/Engine/" + normalized["Engine/Content/".Length..^".uasset".Length];
+        if (packageName is not null)
+            packagePaths.TryAdd(packageName, path);
+    }
+
+    using var archive = new FByteArchive(
+        registryFile.Path, registryFile.Read(null), provider.Versions);
+    var registry = new FAssetRegistryState(archive);
+    var staticMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var skeletalMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var asset in registry.PreallocatedAssetDataBuffers)
+    {
+        if (!packagePaths.TryGetValue(asset.PackageName.ToString(), out var path) ||
+            (!string.IsNullOrWhiteSpace(pathFilter) &&
+             !path.Contains(pathFilter, StringComparison.OrdinalIgnoreCase)))
+            continue;
+        var assetClass = asset.AssetClass.ToString();
+        if (assetClass.EndsWith("StaticMesh", StringComparison.OrdinalIgnoreCase))
+            staticMeshes.Add(path);
+        else if (assetClass.EndsWith("SkeletalMesh", StringComparison.OrdinalIgnoreCase))
+            skeletalMeshes.Add(path);
+    }
+
+    return new Dictionary<string, object?>
+    {
+        ["source"] = "AssetRegistry.bin",
+        ["registryAssetCount"] = registry.PreallocatedAssetDataBuffers.Length,
+        ["mappedPackageCount"] = packagePaths.Count,
+        ["registryPackageSample"] = registry.PreallocatedAssetDataBuffers
+            .Select(asset => asset.PackageName.ToString())
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+        ["providerPackageSample"] = provider.Files.Keys.FirstOrDefault(path =>
+            path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase)),
+        ["staticMeshes"] = staticMeshes.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList(),
+        ["skeletalMeshes"] = skeletalMeshes.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList(),
+        ["failures"] = 0,
+    };
+}
+
 static Dictionary<string, object?> FindMeshAssetsByExportType(
     DefaultFileProvider provider,
-    string? pathFilter = null)
+    string? pathFilter = null,
+    bool preferAssetRegistry = false)
 {
-    // Loading an IoPackage reads its package tables but does not deserialize the
-    // exports themselves. That lets the picker identify actual object classes,
-    // including the updated static meshes whose full legacy reader desyncs.
+    if (preferAssetRegistry)
+    {
+        var registryIndex = FindMeshAssetsFromRegistry(provider, pathFilter);
+        if (registryIndex is not null)
+            return registryIndex;
+    }
+
+    // IoStore exposes export classes directly in its package tables. Traditional
+    // pak packages (Remake) require loading exports, but this is limited to the
+    // caller's /Model/ filter and cached by Blender after the first scan.
     var staticMeshes = new List<string>();
     var skeletalMeshes = new List<string>();
     var failures = 0;
@@ -2144,11 +3288,15 @@ static Dictionary<string, object?> FindMeshAssetsByExportType(
     {
         try
         {
-            if (provider.LoadPackage(path) is not CUE4Parse.UE4.Assets.IoPackage package)
-                continue;
-            var exportTypes = package.ExportMap
-                .Select(export => package.ResolveObjectIndex(export.ClassIndex)?.Name.ToString())
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var loadedPackage = provider.LoadPackage(path);
+            var exportTypes = loadedPackage is CUE4Parse.UE4.Assets.IoPackage ioPackage
+                ? ioPackage.ExportMap
+                    .Select(export => ioPackage.ResolveObjectIndex(export.ClassIndex)?.Name.ToString())
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : loadedPackage.GetExports()
+                    .Select(export => export.ExportType)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (exportTypes.Contains("StaticMesh"))
                 staticMeshes.Add(path);
             if (exportTypes.Contains("SkeletalMesh"))
@@ -2246,6 +3394,104 @@ static float[] ExportVector(CUE4Parse.UE4.Objects.Core.Math.FVector value)
 static float[] ExportQuaternion(CUE4Parse.UE4.Objects.Core.Math.FQuat value)
     => [value.X, value.Y, value.Z, value.W];
 
+// Diagnostic for AnimSequences whose payload holds no ACL 1.x clip (prop and
+// environment animation, e.g. BG*/FA* actors).  Reports the payload shape and the
+// tagged properties so the alternative encoding can be identified without guessing.
+// A bPoseAnimation clip holds one transform per bone, held for the clip's whole
+// duration, so it is emitted as a single key per channel.  The add-on's samplers
+// hold the last key at or before the current frame, which reproduces that exactly.
+static Dictionary<string, object?> ExportPoseAnimation(
+    URebirthAnimSequence source,
+    USkeleton skeleton,
+    PoseClip pose)
+{
+    var trackMap = source.TrackToBoneIndex;
+    var boneInfo = skeleton.ReferenceSkeleton.FinalRefBoneInfo;
+    var bonePose = skeleton.ReferenceSkeleton.FinalRefBonePose;
+    float[] frames = [0.0f];
+
+    var tracks = new List<object?>();
+    for (var track = 0; track < pose.NumTracks && track < trackMap.Length; track++)
+    {
+        var boneIndex = trackMap[track];
+        if (boneIndex < 0 || boneIndex >= boneInfo.Length)
+            continue;
+        tracks.Add(new Dictionary<string, object?>
+        {
+            ["boneName"] = boneInfo[boneIndex].Name.ToString(),
+            ["bindTranslation"] = boneIndex < bonePose.Length ? ExportVector(bonePose[boneIndex].Translation) : new float[] { 0, 0, 0 },
+            ["bindRotation"] = boneIndex < bonePose.Length ? ExportQuaternion(bonePose[boneIndex].Rotation) : new float[] { 0, 0, 0, 1 },
+            ["bindScale"] = boneIndex < bonePose.Length ? ExportVector(bonePose[boneIndex].Scale3D) : new float[] { 1, 1, 1 },
+            ["translations"] = new[] { pose.Translations[track] },
+            ["translationFrames"] = frames,
+            ["rotations"] = new[] { pose.Rotations[track] },
+            ["rotationFrames"] = frames,
+            ["scales"] = new[] { pose.Scales[track] },
+            ["scaleFrames"] = frames,
+        });
+    }
+
+    var sampleRate = source.SequenceLength > 0.0f && source.NumFrames > 0
+        ? source.NumFrames / source.SequenceLength
+        : 30.0f;
+    return new Dictionary<string, object?>
+    {
+        ["name"] = source.Name,
+        ["skeletonPath"] = ObjectPathToVirtualAssetPath(GetAnimationSkeletonPath(source)),
+        ["numFrames"] = source.NumFrames,
+        ["duration"] = source.SequenceLength,
+        ["framesPerSecond"] = sampleRate,
+        ["poseAnimation"] = true,
+        ["tracks"] = tracks,
+    };
+}
+
+static Dictionary<string, object?> ExportAnimationPayloadInfo(CUE4Parse.UE4.Assets.IPackage package)
+{
+    var source = package.GetExports().OfType<URebirthAnimSequence>().FirstOrDefault()
+        ?? throw new InvalidOperationException("Package does not contain a UAnimSequence export.");
+    var payload = source.CompressedPayload;
+
+    static List<int> FindTag(byte[] data, uint tag)
+    {
+        var hits = new List<int>();
+        for (var i = 0; i + 4 <= data.Length; i++)
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(i)) == tag)
+                hits.Add(i);
+        return hits;
+    }
+
+    var props = new List<object?>();
+    foreach (var property in source.Properties)
+    {
+        string? preview = null;
+        try { preview = property.Tag?.GenericValue?.ToString(); } catch { }
+        if (preview is { Length: > 120 })
+            preview = preview[..120];
+        props.Add(new Dictionary<string, object?>
+        {
+            ["name"] = property.Name.Text,
+            ["type"] = property.PropertyType.Text,
+            ["value"] = preview,
+        });
+    }
+
+    return new Dictionary<string, object?>
+    {
+        ["name"] = source.Name,
+        ["numFrames"] = source.NumFrames,
+        ["trackCount"] = source.TrackToBoneIndex.Length,
+        ["payloadLength"] = payload.Length,
+        ["payloadHeadHex"] = Convert.ToHexString(payload.AsSpan(0, Math.Min(1024, payload.Length))),
+        ["payloadTailHex"] = payload.Length > 160
+            ? Convert.ToHexString(payload.AsSpan(Math.Max(0, payload.Length - 64)))
+            : "",
+        ["aclV1TagOffsets"] = FindTag(payload, 0xAC10AC10u),
+        ["aclV2TagOffsets"] = FindTag(payload, 0xAC11AC11u),
+        ["properties"] = props,
+    };
+}
+
 static Dictionary<string, object?> ExportAnimationPackage(CUE4Parse.UE4.Assets.IPackage package)
 {
     var source = package.GetExports().OfType<URebirthAnimSequence>().FirstOrDefault()
@@ -2253,8 +3499,39 @@ static Dictionary<string, object?> ExportAnimationPackage(CUE4Parse.UE4.Assets.I
     var skeleton = source.Skeleton?.Load<USkeleton>()
         ?? throw new InvalidOperationException("Animation does not resolve a USkeleton.");
 
-    var clip = AclClip.Find(source.CompressedPayload, out var clipError)
-        ?? throw new InvalidOperationException(clipError);
+    // Rebirth stores prop/environment clips flagged bPoseAnimation with a different
+    // bone codec (id EF2036B0..., vs ACL's 30AF2F90...) whose payload holds no ACL
+    // compressed_clip.  Those are not decodable yet, but the tagged properties --
+    // crucially Skeleton -- read fine, so report the clip as undecodable metadata
+    // instead of throwing.  Callers can then still build the actor at its bind pose
+    // rather than dropping it from the scene entirely.
+    var clip = AclClip.Find(source.CompressedPayload, out var clipError);
+    if (clip is null)
+    {
+        var poseAnimation = source.GetOrDefault<bool>("bPoseAnimation");
+        if (poseAnimation)
+        {
+            var pose = PoseClip.Decode(source.CompressedPayload, source.TrackToBoneIndex.Length,
+                out var poseError);
+            if (pose is not null)
+                return ExportPoseAnimation(source, skeleton, pose);
+            clipError = poseError ?? clipError;
+        }
+        return new Dictionary<string, object?>
+        {
+            ["name"] = source.Name,
+            ["skeletonPath"] = ObjectPathToVirtualAssetPath(GetAnimationSkeletonPath(source)),
+            ["numFrames"] = source.NumFrames,
+            ["duration"] = source.SequenceLength,
+            ["framesPerSecond"] = source.SequenceLength > 0.0f
+                ? source.NumFrames / source.SequenceLength
+                : 30.0f,
+            ["tracks"] = new List<object?>(),
+            ["undecodable"] = clipError,
+            ["poseAnimation"] = poseAnimation,
+            ["payloadLength"] = source.CompressedPayload.Length,
+        };
+    }
     var decompressor = new AclDecompressor(clip);
 
     var trackMap = source.TrackToBoneIndex;
@@ -2452,24 +3729,30 @@ static Dictionary<string, object?> ExportSkeletonBoneUsage(
 
 try
 {
-    var oodlePath = args.Length > 2 ? Path.GetFullPath(args[2]) : null;
+    var oodlePath = args.Length > 2 && !string.IsNullOrWhiteSpace(args[2])
+        ? Path.GetFullPath(args[2])
+        : null;
     if (!string.IsNullOrWhiteSpace(oodlePath))
     {
         if (!File.Exists(oodlePath))
             throw new FileNotFoundException("Oodle DLL was not found.", oodlePath);
         OodleHelper.Initialize(oodlePath);
     }
+    var pakDirectory = ResolvePackageDirectory(gameDirectory);
+    var requestedProfile = args.Length > 10 ? args[10] : null;
+    var gameProfile = ResolveGameProfile(gameDirectory, pakDirectory, requestedProfile);
+
     // Rebirth lays out AnimSequence bytes differently from stock UE4.26; see
-    // docs/REBIRTH_ANIMSEQUENCE_FORMAT.md.
+    // docs/REBIRTH_ANIMSEQUENCE_FORMAT.md.  This registration is harmless for
+    // the other mount-only profiles; their import paths are not enabled yet.
     ObjectTypeRegistry.RegisterClass("AnimSequence", typeof(URebirthAnimSequence));
-    var pakDirectory = Path.Combine(gameDirectory, "End", "Content", "Paks");
-    if (!Directory.Exists(pakDirectory))
-        pakDirectory = gameDirectory;
     var provider = new DefaultFileProvider(
         pakDirectory,
         SearchOption.AllDirectories,
-        new VersionContainer(EGame.GAME_FinalFantasy7Rebirth));
-    var usmapPath = args.Length > 5 ? Path.GetFullPath(args[5]) : null;
+        new VersionContainer(gameProfile.Version));
+    var usmapPath = args.Length > 5 && !string.IsNullOrWhiteSpace(args[5])
+        ? Path.GetFullPath(args[5])
+        : null;
     if (!string.IsNullOrWhiteSpace(usmapPath))
     {
         if (!File.Exists(usmapPath))
@@ -2478,6 +3761,16 @@ try
     }
     provider.Initialize();
     var mountedCount = provider.Mount();
+    if (!string.IsNullOrWhiteSpace(gameProfile.AesKey))
+    {
+        var encryptionKey = new FAesKey(gameProfile.AesKey);
+        var requiredKeys = provider.RequiredKeys.ToArray();
+        if (requiredKeys.Length > 0)
+        {
+            mountedCount += provider.SubmitKeys(requiredKeys.Select(guid =>
+                new KeyValuePair<FGuid, FAesKey>(guid, encryptionKey)));
+        }
+    }
     provider.PostMount();
 
     var operationMode = args.Length > 9 ? args[9] : null;
@@ -2519,7 +3812,28 @@ try
                     {
                         ok = true,
                         action,
-                        meshIndex = FindMeshAssetsByExportType(provider, requestPathFilter),
+                        meshIndex = FindMeshAssetsByExportType(
+                            provider,
+                            requestPathFilter,
+                            !string.Equals(
+                                gameProfile.Name,
+                                "Final Fantasy VII Rebirth",
+                                StringComparison.Ordinal)),
+                    }));
+                    Console.Out.Flush();
+                    continue;
+                }
+                if (string.Equals(action, "umap_index", StringComparison.OrdinalIgnoreCase))
+                {
+                    var umaps = provider.Files.Keys
+                        .Where(path => path.EndsWith(".umap", StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        action,
+                        umaps,
                     }));
                     Console.Out.Flush();
                     continue;
@@ -2594,6 +3908,17 @@ try
                         umapActors = ExportUmapActors(requestPackage)
                     }));
                 }
+                else if (string.Equals(action, "streaming_probe", StringComparison.OrdinalIgnoreCase))
+                {
+                    var requestPackage = provider.LoadPackage(requestAsset);
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        action,
+                        assetPath = requestAsset,
+                        streamingProbe = ExportStreamingProbe(requestPackage)
+                    }));
+                }
                 else if (string.Equals(action, "umap_data", StringComparison.OrdinalIgnoreCase))
                 {
                     // Metadata and actor properties share one package deserialize;
@@ -2606,6 +3931,31 @@ try
                         assetPath = requestAsset,
                         importNames = ExportImportNames(requestPackage),
                         umapActors = ExportUmapActors(requestPackage)
+                    }));
+                }
+                else if (string.Equals(action, "cutscene", StringComparison.OrdinalIgnoreCase))
+                {
+                    var requestPackage = provider.LoadPackage(requestAsset);
+                    var rawData = provider.Files.TryGetValue(requestAsset, out var cutsceneFile)
+                        ? cutsceneFile.Read(null)
+                        : null;
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        action,
+                        assetPath = requestAsset,
+                        cutscene = ExportCutscenePackage(requestPackage, rawData)
+                    }));
+                }
+                else if (string.Equals(action, "anim_payload", StringComparison.OrdinalIgnoreCase))
+                {
+                    var requestPackage = provider.LoadPackage(requestAsset);
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        action,
+                        assetPath = requestAsset,
+                        animPayload = ExportAnimationPayloadInfo(requestPackage)
                     }));
                 }
                 else if (string.Equals(action, "skeleton", StringComparison.OrdinalIgnoreCase))
@@ -2632,14 +3982,26 @@ try
                 }
                 else if (string.Equals(action, "static_mesh", StringComparison.OrdinalIgnoreCase))
                 {
-                    var requestPackage = provider.LoadPackage(requestAsset) as CUE4Parse.UE4.Assets.IoPackage
-                        ?? throw new InvalidOperationException("Rebirth StaticMesh import requires an IoStore package.");
+                    var requestPackage = provider.LoadPackage(requestAsset);
+                    Dictionary<string, object?> staticMesh;
+                    if (!string.Equals(gameProfile.Name, "Final Fantasy VII Rebirth", StringComparison.Ordinal))
+                    {
+                        var sourceMesh = requestPackage.GetExports().OfType<UStaticMesh>().FirstOrDefault()
+                            ?? throw new InvalidOperationException("The package contains no UStaticMesh export.");
+                        staticMesh = ExportStaticMeshAsset(sourceMesh);
+                    }
+                    else
+                    {
+                        var ioPackage = requestPackage as CUE4Parse.UE4.Assets.IoPackage
+                            ?? throw new InvalidOperationException("Rebirth StaticMesh import requires an IoStore package.");
+                        staticMesh = ExportRebirthStaticMesh(provider, requestAsset, ioPackage);
+                    }
                     Console.WriteLine(JsonSerializer.Serialize(new
                     {
                         ok = true,
                         action,
                         assetPath = requestAsset,
-                        staticMesh = ExportRebirthStaticMesh(provider, requestAsset, requestPackage)
+                        staticMesh
                     }));
                 }
                 else if (string.Equals(action, "material", StringComparison.OrdinalIgnoreCase))
@@ -2653,7 +4015,7 @@ try
                         material = ExportMaterialInstancePackage(requestPackage),
                     }));
                 }
-                else if (string.Equals(action, "skeletal_mesh", StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals(action, "niagara", StringComparison.OrdinalIgnoreCase))
                 {
                     var requestPackage = provider.LoadPackage(requestAsset);
                     Console.WriteLine(JsonSerializer.Serialize(new
@@ -2661,7 +4023,35 @@ try
                         ok = true,
                         action,
                         assetPath = requestAsset,
-                        skeletalMesh = ExportRebirthSkeletalMesh(provider, requestAsset, requestPackage)
+                        niagara = ExportNiagaraPackage(requestPackage),
+                    }));
+                }
+                else if (string.Equals(action, "skeletal_mesh", StringComparison.OrdinalIgnoreCase))
+                {
+                    var requestPackage = provider.LoadPackage(requestAsset);
+                    Dictionary<string, object?> skeletalMesh;
+                    if (string.Equals(gameProfile.Name, "Final Fantasy VII Rebirth", StringComparison.Ordinal))
+                    {
+                        skeletalMesh = ExportRebirthSkeletalMesh(provider, requestAsset, requestPackage);
+                    }
+                    else
+                    {
+                        var sourceMesh = requestPackage.GetExports().OfType<USkeletalMesh>().FirstOrDefault()
+                            ?? throw new InvalidOperationException("The package contains no USkeletalMesh export.");
+                        skeletalMesh = ExportSkeletalMeshAsset(
+                            sourceMesh,
+                            requestPackage,
+                            gameProfile.Name,
+                            string.Equals(gameProfile.Name, "Crisis Core -Final Fantasy VII- Reunion", StringComparison.Ordinal)
+                                ? "CCFF7R/Content/"
+                                : "End/Content/");
+                    }
+                    Console.WriteLine(JsonSerializer.Serialize(new
+                    {
+                        ok = true,
+                        action,
+                        assetPath = requestAsset,
+                        skeletalMesh
                     }));
                 }
                 else if (string.Equals(action, "mesh_usage", StringComparison.OrdinalIgnoreCase))
@@ -2763,7 +4153,7 @@ try
                         relatedTypes = provider.MappingsForGame.Types.Keys
                             .Where(key => key.Contains("Skeletal", StringComparison.OrdinalIgnoreCase))
                             .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
-                            .ToArray()
+                        .ToArray()
                     }));
                 }
                 else
@@ -2771,7 +4161,7 @@ try
                     var requestOutput = requestRoot.GetProperty("ddsOutput").GetString()
                         ?? throw new ArgumentException("Texture request has no ddsOutput.");
                     var requestPackage = provider.LoadPackage(requestAsset);
-                    var textureInfo = ExportTextureDds(requestPackage, requestOutput);
+                    var textureInfo = ExportTextureDds(provider, requestAsset, requestPackage, requestOutput);
                     Console.WriteLine(JsonSerializer.Serialize(new { ok = true, action = "texture", assetPath = requestAsset, dds = textureInfo }));
                 }
             }
@@ -2821,7 +4211,7 @@ try
         {
             var ddsOutputArg = args.Length > 6 ? args[6] : null;
             var ddsOutput = string.IsNullOrWhiteSpace(ddsOutputArg) ? null : Path.GetFullPath(ddsOutputArg);
-            dds = ExportTextureDds(package, ddsOutput);
+            dds = ExportTextureDds(provider, assetPath, package, ddsOutput);
         }
         asset = new
         {
@@ -2850,7 +4240,8 @@ try
         oodleDll = oodlePath,
         usmap = usmapPath,
         pathFilter,
-        unrealVersion = "Final Fantasy VII Rebirth (CUE4Parse game profile)",
+        gameProfile = gameProfile.Name,
+        unrealVersion = gameProfile.Version.ToString(),
         mountResult = mountedCount,
         mountedVfsCount = provider.MountedVfs.Count,
         unloadedVfsCount = provider.UnloadedVfs.Count,
@@ -3158,4 +4549,10 @@ sealed class RebirthSkeletalColorStream(
     public int BulkByteLength { get; } = bulkByteLength;
     public long SizeOnDisk { get; } = sizeOnDisk;
     public long OffsetInFile { get; } = offsetInFile;
+}
+
+static class PropertyConversionContext
+{
+    [ThreadStatic]
+    public static Func<FPackageIndex, object?>? PackageIndexConverter;
 }

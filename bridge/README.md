@@ -35,6 +35,6 @@ Copy the contents of `bin/Release/net10.0/` (the `.exe`, `.dll`, `.pdb`, and
 
 The add-on invokes the bridge as a subprocess in `asset-server` mode (one
 JSON request per line on stdin, one JSON response per line on stdout). See
-`PackageTextureLoader` in `../addon/game_packages.py` for the calling
+`PackageTextureLoader` in `../addon/games/rebirth/importers/packages.py` for the calling
 convention, and the `Usage:` string at the top of `Program.cs` for the
 one-shot CLI form.

@@ -1,0 +1,146 @@
+""pakchunk18-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk32-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk23optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk29-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk14-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk19optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk30-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk17-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk12optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk8optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk18optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk13optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk16optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk25optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk0optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk21-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk25-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk1-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk13-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk3-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk19-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk8-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk7optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk10-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk12-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk17optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk4optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk7-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk2-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk28-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk20optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk11optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk21optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk9-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk14optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk15-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk3optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk15optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk11-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk16-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk10optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk23-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk9optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk31-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk26-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk4-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk22-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk20-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+""pakchunk22optional-WindowsNoEditor.pak"" has strange mount point ""/"", mounting to root
+Could not read "NiagaraEmitter" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraEmitter
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:31441 Length:69106 (45.5% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraEmitter" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraEmitter
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:46632 Length:69106 (67.5% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraEmitter" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraEmitter
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:45505 Length:69106 (65.8% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraMeshRendererProperties" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraMeshRendererProperties
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:22452 Length:69106 (32.5% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraMeshRendererProperties" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraMeshRendererProperties
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:24932 Length:69106 (36.1% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraMeshRendererProperties" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraMeshRendererProperties
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:27843 Length:69106 (40.3% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:30949 Length:69106 (44.8% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:31484 Length:69106 (45.6% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:31611 Length:69106 (45.7% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:41412 Length:69106 (59.9% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:66247 Length:69106 (95.9% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:44043 Length:69106 (63.7% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraScript" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraScript
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:45564 Length:69106 (65.9% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraScript.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+Could not read "NiagaraSpriteRendererProperties" correctly
+CUE4Parse.UE4.Exceptions.ParserException: Missing prop mappings for type NiagaraSpriteRendererProperties
+FAssetArchive Info: End/Content/Effect/Character/Player/PC0004_RedXIII_Body/Particle/FX_PC0004_TailFire_01.uasset | Pos:46730 Length:69106 (67.6% done)
+   at CUE4Parse.UE4.Assets.Exports.UObject.DeserializePropertiesUnversioned(List`1 properties, FAssetArchive Ar, UStruct struc)
+   at CUE4Parse.UE4.Assets.Exports.UObject.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.Exports.Niagara.UNiagaraSpriteRendererProperties.Deserialize(FAssetArchive Ar, Int64 validPos)
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)
+NIAGARA_SYSTEM_HEADER start=48280 end=48290 fragments=75:36:False:False,67:43:False:False,0:0:False:False,0:0:False:False,24:24:False:True
+Could not read "NiagaraSystem" correctly
+System.IO.InvalidDataException: No NiagaraSystem mapping was loaded.
+   at ProbeNiagaraSystem.Deserialize(FAssetArchive ar, Int64 validPos) in C:\Users\Ghouls\Proton Drive\GhoulCulture\My files\TheBeastintheTable\Blender\FF7R\ff7r-rebirth-tools\bridge\Inspect\NiagaraProbe\ProbeNiagaraSystem.cs:line 29
+   at CUE4Parse.UE4.Assets.AbstractUePackage.DeserializeObject(UObject obj, FAssetArchive Ar, Int64 serialSize)

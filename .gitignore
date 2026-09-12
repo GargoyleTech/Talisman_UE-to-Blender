@@ -18,3 +18,5 @@ Thumbs.db
 .DS_Store
 
 docs/
+*.usmap
+bridge/PC0000_00_BodyA_C.dds

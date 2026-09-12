@@ -1,0 +1,660 @@
+[
+  {
+    "Type": "NiagaraEmitter",
+    "Name": "Aura_1",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraEmitter'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "UpdateScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Aura_1.UpdateScript_2'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.5"
+        }
+      },
+      "SpawnScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Aura_1.SpawnScript_1'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.4"
+        }
+      },
+      "Platforms": {
+        "QualityLevelMask": 31
+      },
+      "bInterpolatedSpawning": true,
+      "bFixedBounds": true,
+      "m_VfxSpawnRate": true,
+      "m_VfxSpawnBurst": true,
+      "UniqueEmitterName": "Aura",
+      "RendererProperties": [
+        {
+          "ObjectName": "NiagaraSpriteRendererProperties'FX_PC0004_Burst03_Tail_01:Aura_1.NiagaraSpriteRendererProperties_0'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.13"
+        }
+      ],
+      "GPUComputeScript": null
+    }
+  },
+  {
+    "Type": "NiagaraEmitter",
+    "Name": "Fire_TrailB_2",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraEmitter'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "UpdateScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2.UpdateScript_1'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.7"
+        }
+      },
+      "SpawnScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2.SpawnScript_0'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.6"
+        }
+      },
+      "FixedBounds": {
+        "Min": {
+          "X": -300.0,
+          "Y": -300.0,
+          "Z": -300.0
+        },
+        "Max": {
+          "X": 300.0,
+          "Y": 300.0,
+          "Z": 300.0
+        },
+        "IsValid": 1
+      },
+      "Platforms": {
+        "QualityLevelMask": 31
+      },
+      "bInterpolatedSpawning": true,
+      "bFixedBounds": true,
+      "m_VfxSpawnRate": true,
+      "UniqueEmitterName": "Fire_TrailB",
+      "RendererProperties": [
+        {
+          "ObjectName": "NiagaraSpriteRendererProperties'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2.NiagaraSpriteRendererProperties_2'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.14"
+        }
+      ],
+      "GPUComputeScript": null
+    }
+  },
+  {
+    "Type": "NiagaraEmitter",
+    "Name": "Light_5",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraEmitter'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "UpdateScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Light_5.UpdateScript'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.9"
+        }
+      },
+      "SpawnScriptProps": {
+        "Script": {
+          "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Light_5.SpawnScript'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.8"
+        }
+      },
+      "Platforms": {
+        "QualityLevelMask": 31
+      },
+      "bInterpolatedSpawning": true,
+      "m_VfxDisableLowPerformance": true,
+      "UniqueEmitterName": "Light",
+      "GPUComputeScript": null
+    }
+  },
+  {
+    "Type": "NiagaraEmitter",
+    "Name": "Spark_01_0",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraEmitter'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "UpdateScriptProps": {
+        "Script": null
+      },
+      "SpawnScriptProps": {
+        "Script": null
+      },
+      "FixedBounds": {
+        "Min": {
+          "X": -300.0,
+          "Y": -300.0,
+          "Z": -300.0
+        },
+        "Max": {
+          "X": 300.0,
+          "Y": 300.0,
+          "Z": 300.0
+        },
+        "IsValid": 1
+      },
+      "Platforms": {
+        "QualityLevelMask": 31
+      },
+      "SimTarget": "ENiagaraSimTarget::GPUComputeSim",
+      "bInterpolatedSpawning": true,
+      "bFixedBounds": true,
+      "m_VfxSpawnRate": true,
+      "m_VfxSpawnBurst": true,
+      "UniqueEmitterName": "Spark_01",
+      "RendererProperties": [
+        {
+          "ObjectName": "NiagaraSpriteRendererProperties'FX_PC0004_Burst03_Tail_01:Spark_01_0.NiagaraSpriteRendererProperties_1'",
+          "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.15"
+        }
+      ],
+      "GPUComputeScript": {
+        "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:Spark_01_0.GPUComputeScript_6'",
+        "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.10"
+      },
+      "Parent": {
+        "ObjectName": "NiagaraEmitter'FX_R_NE_Sp_Spark_Sph_Vel03_VF_Em'",
+        "ObjectPath": "/Game/Effect/Resident/Emitter/Sprite/Spark/FX_R_NE_Sp_Spark_Sph_Vel03_VF_Em.0"
+      }
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "SpawnScript_1",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Aura_1'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.0"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleSpawnScriptInterpolated",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "UpdateScript_2",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Aura_1'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.0"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleUpdateScript",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "SpawnScript_0",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.1"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleSpawnScriptInterpolated",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "UpdateScript_1",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.1"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleUpdateScript",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "SpawnScript",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Light_5'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.2"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleSpawnScriptInterpolated",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "UpdateScript",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Light_5'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.2"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::ParticleUpdateScript",
+      "RapidIterationParameters": {},
+      "ScriptExecutionParamStore": {},
+      "CachedScriptVMId": {
+        "CompilerVersionID": "D7CAB3D5-90304622-B041EF0D-2E1E2150",
+        "ScriptUsageType": "ENiagaraScriptUsage::ParticleUpdateScript",
+        "bUsesRapidIterationParams": false,
+        "bDisableDebugSwitches": true,
+        "BaseScriptCompileHash": {
+          "DataHash": [
+            210,
+            76,
+            186,
+            136,
+            211,
+            180,
+            93,
+            19,
+            201,
+            249,
+            63,
+            13,
+            104,
+            35,
+            108,
+            63,
+            225,
+            5,
+            0,
+            113
+          ]
+        }
+      },
+      "CachedScriptVM": {
+        "ByteCode": [
+          91,
+          112,
+          2,
+          77,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          77,
+          0,
+          0,
+          1,
+          0,
+          1,
+          0,
+          78,
+          0,
+          0,
+          0,
+          0,
+          2,
+          0,
+          91,
+          116,
+          2,
+          91,
+          120,
+          2,
+          91,
+          124,
+          2,
+          1,
+          2,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          30,
+          2,
+          1,
+          0,
+          128,
+          2,
+          0,
+          0,
+          2,
+          2,
+          0,
+          0,
+          132,
+          2,
+          4,
+          0,
+          37,
+          0,
+          3,
+          0,
+          4,
+          0,
+          0,
+          0,
+          43,
+          6,
+          0,
+          0,
+          136,
+          2,
+          140,
+          2,
+          4,
+          0,
+          92,
+          92,
+          92,
+          86,
+          0,
+          0,
+          0,
+          4,
+          0,
+          0,
+          0,
+          83,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          83,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          1,
+          0,
+          84,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2,
+          0,
+          0,
+          0,
+          92,
+          0
+        ],
+        "NumTempRegisters": 5,
+        "ScriptLiterals": [
+          2,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          172,
+          197,
+          39,
+          55,
+          23,
+          183,
+          209,
+          56,
+          255,
+          255,
+          255,
+          255,
+          0,
+          0,
+          0,
+          0
+        ],
+        "LastCompileStatus": "ENiagaraScriptCompileStatus::NCS_UpToDate"
+      }
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "GPUComputeScript_6",
+    "Flags": "RF_Public | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Spark_01_0'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.3"
+    },
+    "Properties": {
+      "m_VfxParentEmitterScript": {
+        "ObjectName": "NiagaraScript'FX_R_NE_Sp_Spark_Sph_Vel03_VF_Em:GPUComputeScript_5'",
+        "ObjectPath": "/Game/Effect/Resident/Emitter/Sprite/Spark/FX_R_NE_Sp_Spark_Sph_Vel03_VF_Em.1"
+      },
+      "Usage": "ENiagaraScriptUsage::ParticleGPUComputeScript"
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "SystemSpawnScript",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::SystemSpawnScript",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraScript",
+    "Name": "SystemUpdateScript",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraScript'",
+    "Outer": {
+      "ObjectName": "NiagaraSystem'FX_PC0004_Burst03_Tail_01'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.16"
+    },
+    "Properties": {
+      "Usage": "ENiagaraScriptUsage::SystemUpdateScript",
+      "RapidIterationParameters": {}
+    }
+  },
+  {
+    "Type": "NiagaraSpriteRendererProperties",
+    "Name": "NiagaraSpriteRendererProperties_0",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraSpriteRendererProperties'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Aura_1'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.0"
+    },
+    "Properties": {
+      "Material": {
+        "ObjectName": "MaterialInstanceConstant'RMI_Particle_Emit_Visibility_Soft'",
+        "ObjectPath": "/Game/Renderer/MaterialInstance/Particle/RMI_Particle_Emit_Visibility_Soft.0"
+      },
+      "SubImageSize": {
+        "X": 8.0,
+        "Y": 8.0
+      },
+      "PositionBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "VelocityBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SpriteRotationBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SpriteSizeBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SubImageIndexBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "UVScaleBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "MaterialRandomBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "CustomSortingBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "NormalizedAgeBinding": {
+        "bBindingExistsOnSource": true
+      }
+    }
+  },
+  {
+    "Type": "NiagaraSpriteRendererProperties",
+    "Name": "NiagaraSpriteRendererProperties_2",
+    "Flags": "RF_Public | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraSpriteRendererProperties'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Fire_TrailB_2'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.1"
+    },
+    "Properties": {
+      "Material": {
+        "ObjectName": "MaterialInstanceConstant'RMI_Particle_Emit_Soft'",
+        "ObjectPath": "/Game/Renderer/MaterialInstance/Particle/RMI_Particle_Emit_Soft.0"
+      },
+      "SubImageSize": {
+        "X": 8.0,
+        "Y": 8.0
+      },
+      "PositionBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "ColorBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "VelocityBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SpriteRotationBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SpriteSizeBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SubImageIndexBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "UVScaleBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "MaterialRandomBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "CustomSortingBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "NormalizedAgeBinding": {
+        "bBindingExistsOnSource": true
+      }
+    }
+  },
+  {
+    "Type": "NiagaraSpriteRendererProperties",
+    "Name": "NiagaraSpriteRendererProperties_1",
+    "Flags": "RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraSpriteRendererProperties'",
+    "Outer": {
+      "ObjectName": "NiagaraEmitter'FX_PC0004_Burst03_Tail_01:Spark_01_0'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.3"
+    },
+    "Properties": {
+      "Material": {
+        "ObjectName": "MaterialInstanceConstant'RMI_Particle_Emit'",
+        "ObjectPath": "/Game/Renderer/MaterialInstance/Particle/RMI_Particle_Emit.0"
+      },
+      "Alignment": "ENiagaraSpriteAlignment::VelocityAligned",
+      "PositionBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "VelocityBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "SpriteSizeBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "CameraOffsetBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "UVScaleBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "MaterialRandomBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "CustomSortingBinding": {
+        "bBindingExistsOnSource": true
+      },
+      "NormalizedAgeBinding": {
+        "bBindingExistsOnSource": true
+      }
+    }
+  },
+  {
+    "Type": "NiagaraSystem",
+    "Name": "FX_PC0004_Burst03_Tail_01",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'NiagaraSystem'",
+    "Package": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01"
+  },
+  {
+    "Type": "VFXNiagaraDataInterfaceFunctionLibrary",
+    "Name": "VFXNiagaraDataInterfaceFunctionLibrary_0",
+    "Flags": "RF_Public | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'VFXNiagaraDataInterfaceFunctionLibrary'",
+    "Outer": {
+      "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:SystemUpdateScript'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.12"
+    }
+  },
+  {
+    "Type": "VFXNiagaraDataInterfaceFunctionLibrary",
+    "Name": "VFXNiagaraDataInterfaceFunctionLibrary_1",
+    "Flags": "RF_Public | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'VFXNiagaraDataInterfaceFunctionLibrary'",
+    "Outer": {
+      "ObjectName": "NiagaraScript'FX_PC0004_Burst03_Tail_01:SystemUpdateScript'",
+      "ObjectPath": "/Game/Effect/Character/Player/PC0004_RedXIII/Particle/FX_PC0004_Burst03_Tail_01.12"
+    }
+  }
+]

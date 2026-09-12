@@ -1,0 +1,21 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0",
+  "FriendlyName": "Niagara Reflection Dump",
+  "Description": "Read-only diagnostic plugin that writes reflected Niagara property schemas when launched with -NiagaraReflectionDump.",
+  "Category": "Diagnostics",
+  "CanContainContent": false,
+  "Installed": false,
+  "Plugins": [
+    { "Name": "Niagara", "Enabled": true },
+    { "Name": "VFXNiagara", "Enabled": true }
+  ],
+  "Modules": [
+    {
+      "Name": "NiagaraReflectionDump",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

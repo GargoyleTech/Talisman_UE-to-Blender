@@ -1,0 +1,9 @@
+[
+  {
+    "Type": "EndDataObjectCutSceneList",
+    "Name": "CutSceneList",
+    "Flags": "RF_Public | RF_Standalone | RF_Transactional | RF_WasLoaded | RF_LoadCompleted",
+    "Class": "UScriptClass'EndDataObjectCutSceneList'",
+    "Package": "/Game/DataObject/Field/8400-GOLDE/CutSceneList"
+  }
+]
