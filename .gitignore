@@ -21,3 +21,7 @@ docs/
 *.usmap
 bridge/PC0000_00_BodyA_C.dds
 textures/PC0000_00_BodyA_C.dds
+*PC0000_00_BodyA_C.dds
+
+bridge/test*
+bridge/Inspect/*
