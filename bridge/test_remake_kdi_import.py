@@ -33,7 +33,7 @@ def main() -> None:
     bpy.context.preferences.filepaths.use_scripts_auto_execute = True
     preferences = bpy.context.preferences.addons["addon"].preferences
     preferences.remake_install_root = game_root
-    preferences.remake_oodle_dll = ""
+    preferences.oodle_dll = ""
     preferences.remake_usmap_path = usmap_path
 
     result = bpy.ops.import_scene.ff7r_remake_skeletal_mesh_game_packages(

@@ -92,10 +92,10 @@ def main() -> None:
     bpy.context.preferences.filepaths.use_scripts_auto_execute = True
     preferences = bpy.context.preferences.addons["addon"].preferences
     preferences.remake_install_root = remake_root
-    preferences.remake_oodle_dll = ""
+    preferences.oodle_dll = ""
     preferences.remake_usmap_path = remake_usmap
     preferences.rebirth_install_root = rebirth_root
-    preferences.rebirth_oodle_dll = rebirth_oodle
+    preferences.oodle_dll = rebirth_oodle
     preferences.rebirth_usmap_path = rebirth_usmap
 
     before = {obj.name for obj in bpy.context.scene.objects}

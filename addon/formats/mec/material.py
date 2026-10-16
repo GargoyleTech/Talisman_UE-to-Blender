@@ -19,8 +19,18 @@ Sections
 
 import os
 import csv
+import tempfile
 from contextlib import contextmanager
 import bpy
+
+from ...core.blender.material_nodes import (  # noqa: F401 - legacy helper exports
+    load_packed_image,
+    image_meets_texture_request,
+    make_bsdf as _make_bsdf,
+    set_normal_convention as _set_normal_convention,
+    make_y_invert_curves as _make_y_invert_curves,
+    make_normal_map as _make_normal_map,
+)
 
 
 # ============================================================
@@ -32,6 +42,24 @@ _CSV_NAME = "texture_hashes.csv"
 # Module-level table; populated by load_hash_table()
 _hash_table: dict[str, str] = {}
 _image_loader_override = None
+_texture_limits = (0, 0)
+
+
+@contextmanager
+def texture_limits(max_resolution=0, mip_offset=0):
+    global _texture_limits
+    previous = _texture_limits
+    _texture_limits = (max(0, int(max_resolution)), max(-16, min(0, int(mip_offset))))
+    try:
+        yield
+    finally:
+        _texture_limits = previous
+
+
+def texture_material_namespace(tex_root, tex_ext):
+    if _image_loader_override is not None:
+        return getattr(_image_loader_override, "texture_namespace", "")
+    return os.path.normcase(os.path.abspath(tex_root or ".")) + ":" + tex_ext.lower()
 
 
 @contextmanager
@@ -185,14 +213,27 @@ def load_image(game_path: str, tex_root: str, tex_ext: str,
             return None
 
     name = os.path.basename(full)
-    img  = bpy.data.images.get(name)
-    if img is None:
-        try:
-            img = bpy.data.images.load(full)
-        except Exception as err:
-            print(f"  Warning: could not load texture '{full}': {err}")
-            return None
-    return img
+    source = os.path.normcase(os.path.abspath(full))
+    existing = next((image for image in bpy.data.images
+                     if image.get("ue_texture_file") == source), None)
+    max_resolution, mip_offset = _texture_limits
+    if existing is not None and image_meets_texture_request(existing, max_resolution, mip_offset):
+        return existing
+    try:
+        from .texture_mips import select_dds_mip
+        with tempfile.TemporaryDirectory(prefix="talisman_dds_mip_") as directory:
+            info = select_dds_mip(full, os.path.join(directory, name), max_resolution, mip_offset) or {}
+            metadata = {"ue_texture_file": source, "sqex_virtual_path": game_path,
+                        "ue_texture_mip_index": info.get("mipIndex", 0),
+                        "ue_max_texture_resolution": max_resolution, "ue_texture_mip_offset": mip_offset}
+            if info:
+                metadata.update(ue_texture_source_width=info["sourceWidth"],
+                                ue_texture_source_height=info["sourceHeight"])
+            return load_packed_image(info.get("path", full), name, metadata=metadata,
+                                     max_resolution=max_resolution, existing=existing)
+    except Exception as err:
+        print(f"  Warning: could not load texture '{full}': {err}")
+        return existing
 
 
 def build_texture_index(tex_root: str, tex_ext: str) -> "dict[str, str]":
@@ -221,64 +262,6 @@ def build_texture_index(tex_root: str, tex_ext: str) -> "dict[str, str]":
 def _activate_nodes(mat) -> None:
     if bpy.app.version < (5, 0, 0):
         mat.use_nodes = True
-
-
-def _make_bsdf(nt, links, out_node, label: str, ior: float):
-    bsdf = nt.nodes.new('ShaderNodeBsdfPrincipled')
-    bsdf.label = label
-    links.new(bsdf.outputs['BSDF'], out_node.inputs['Surface'])
-    bsdf.inputs['IOR'].default_value = ior
-    return bsdf
-
-
-def _set_normal_convention(nm_node) -> None:
-    try:
-        nm_node.convention = "DIRECTX"
-    except AttributeError:
-        pass
-
-
-def _make_y_invert_curves(nt, loc):
-    """RGB Curves node that inverts only the Green channel.
-
-    Used on Blender < 5.2 which lacks the DirectX normal-map convention
-    toggle, so the Y channel must be flipped manually.  An RGB Curves
-    node keeps the node-count low and fits neatly between the texture
-    column and the Normal Map node.
-    """
-    crv = nt.nodes.new('ShaderNodeRGBCurve')
-    crv.label    = 'DX Normal Y-flip'
-    crv.location = loc
-    # Move the Green curve's two default points from (0→0, 1→1) to (0→1, 1→0).
-    g = crv.mapping.curves[1]
-    g.points[0].location = (0.0, 1.0)
-    g.points[1].location = (1.0, 0.0)
-    crv.mapping.update()
-    return crv
-
-
-def _make_normal_map(nt, links, color_out, loc, *,
-                     legacy_loc=None, legacy_curves_loc=None):
-    """Wire *color_out* into a Normal Map node that honours UE's DirectX green.
-
-    Blender 5.2+ does the flip on the node itself through
-    convention='DIRECTX'.  Older builds get the equivalent RGB Curves Y-flip
-    spliced in front, at *legacy_curves_loc* (default: one column left of the
-    Normal Map node), with the Normal Map node itself moved to *legacy_loc*
-    where the layout has no room for the extra column.  Returns the Normal Map
-    node; the caller links its Normal output.
-    """
-    if bpy.app.version < (5, 2, 0):
-        if legacy_loc is not None:
-            loc = legacy_loc
-        crv = _make_y_invert_curves(nt, legacy_curves_loc or (loc[0] - 300, loc[1]))
-        links.new(color_out, crv.inputs['Color'])
-        color_out = crv.outputs['Color']
-    nm = nt.nodes.new('ShaderNodeNormalMap')
-    nm.location = loc
-    _set_normal_convention(nm)
-    links.new(color_out, nm.inputs['Color'])
-    return nm
 
 
 def _make_tex_node(nt, game_path: str, tex_root: str, tex_ext: str,
@@ -684,7 +667,6 @@ _10_CX_TEX  =  -900
 _10_CX_MID  =  -320
 _10_CX_BSDF =   200
 _10_CX_OUT  =   550
-
 
 
 def _setup_nodes_10slot(mat, hashes: list, tex_root: str, tex_ext: str,

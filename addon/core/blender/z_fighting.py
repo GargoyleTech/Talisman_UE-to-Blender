@@ -1,24 +1,26 @@
-"""The retained opposite-face cleanup tool from the legacy FF7R Actions add-on."""
+"""The retained opposite-face cleanup tool from the legacy Square Enix Actions add-on."""
+
+from ...language import tooltips
 
 from collections import defaultdict
 
 import bmesh
 import bpy
 
-from .reporting import FF7R_LoggedOperator
+from .reporting import SQEX_LoggedOperator, report
 
 
-class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
-    """Find overlapping opposite-facing faces and add the established FF7R offset."""
+class MESH_OT_find_opposite_faces(SQEX_LoggedOperator):
+    """Find overlapping opposite-facing faces and add the established UE4 offset."""
 
     bl_idname = "mesh.find_opposite_faces"
     bl_label = "Find Opposite Faces"
-    bl_description = "Mark opposite duplicate faces and add the FF7R alpha displacement fix"
+    bl_description = tooltips.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
     subsurface_weight: bpy.props.FloatProperty(
         name="Subsurface Weight",
-        description="Subsurface weight for opposite faces",
+        description=tooltips.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_SUBSURFACE_WEIGHT,
         default=0.0,
         min=0.0,
         max=1.0,
@@ -50,7 +52,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
 
     @staticmethod
     def setup_material_nodes(obj, vertex_group_name):
-        """Expose the vertex-group mask to FF7R Principled materials, as before."""
+        """Expose the vertex-group mask to Square Enix Principled materials, as before."""
         if not obj.data.materials:
             return
 
@@ -68,7 +70,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
                     weights.append(0.0)
             attribute.data.foreach_set("value", weights)
         except Exception as exc:
-            print(f"[FF7R Tools] Could not create opposite-face attribute for {obj.name}: {exc}")
+            print(f"[Talisman Tools] Could not create opposite-face attribute for {obj.name}: {exc}")
 
         for material in obj.data.materials:
             # ``use_nodes`` is deprecated in Blender 5.x and merely reading it
@@ -78,7 +80,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
             nodes = material.node_tree.nodes
             links = material.node_tree.links
             principled = next(
-                (node for node in nodes if node.type == "BSDF_PRINCIPLED" and node.label == "FF7R Principled"),
+                (node for node in nodes if node.type == "BSDF_PRINCIPLED" and node.label == "SQEX Principled"),
                 None,
             )
             if principled is None or "Subsurface Weight" not in principled.inputs:
@@ -89,7 +91,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
                 None,
             )
             mix_node = next(
-                (node for node in nodes if node.type == "MIX" and node.label == "FF7R_Subsurface_Mix"),
+                (node for node in nodes if node.type == "MIX" and node.label == "SQEX_Subsurface_Mix"),
                 None,
             )
             if attribute_node is None:
@@ -99,7 +101,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
             if mix_node is None:
                 mix_node = nodes.new("ShaderNodeMix")
                 mix_node.data_type = "FLOAT"
-                mix_node.label = "FF7R_Subsurface_Mix"
+                mix_node.label = "SQEX_Subsurface_Mix"
                 mix_node.location = (principled.location.x - 300, principled.location.y - 200)
             mix_node.data_type = "FLOAT"
             mix_node.inputs[2].default_value = 0.0
@@ -136,7 +138,7 @@ class MESH_OT_find_opposite_faces(FF7R_LoggedOperator):
             for candidate in candidates:
                 processed += self.process_object(candidate)
         if processed:
-            self.report({"INFO"}, f"Applied opposite-face fix to {processed} mesh object(s)")
+            report(self, {"INFO"}, f"Applied opposite-face fix to {processed} mesh object(s)")
         else:
-            self.report({"WARNING"}, "No opposite-facing duplicate faces found in the selected objects")
+            report(self, {"WARNING"}, "No opposite-facing duplicate faces found in the selected objects")
         return {"FINISHED"}

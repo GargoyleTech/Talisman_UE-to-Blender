@@ -29,15 +29,15 @@ def main() -> None:
 
     addon_directory = Path(__file__).resolve().parent.parent / "addon"
     spec = importlib.util.spec_from_file_location(
-        "ff7r_rebirth_tools",
+        "talisman",
         addon_directory / "__init__.py",
         submodule_search_locations=[str(addon_directory)],
     )
     addon = importlib.util.module_from_spec(spec)
-    sys.modules["ff7r_rebirth_tools"] = addon
+    sys.modules["talisman"] = addon
     spec.loader.exec_module(addon)
-    from ff7r_rebirth_tools.games.remake.profile import PROFILE
-    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
+    from talisman.games.remake.profile import PROFILE
+    from talisman.games.rebirth.importers.packages import (
         PackageAssetSession,
         import_static_mesh_asset,
     )

@@ -41,15 +41,15 @@ def _material_data(rma_name: str):
 def main() -> None:
     addon_directory = Path(__file__).resolve().parent.parent / "addon"
     spec = importlib.util.spec_from_file_location(
-        "ff7r_rebirth_tools", addon_directory / "__init__.py",
+        "talisman", addon_directory / "__init__.py",
         submodule_search_locations=[str(addon_directory)],
     )
     addon = importlib.util.module_from_spec(spec)
-    sys.modules["ff7r_rebirth_tools"] = addon
+    sys.modules["talisman"] = addon
     spec.loader.exec_module(addon)
-    from ff7r_rebirth_tools.games.crisis_core.materials import build_material
-    from ff7r_rebirth_tools.games.crisis_core.profile import PROFILE
-    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
+    from talisman.games.crisis_core.materials import build_material
+    from talisman.games.crisis_core.profile import PROFILE
+    from talisman.games.rebirth.importers.packages import (
         _game_asset_path_to_virtual_uasset,
     )
 

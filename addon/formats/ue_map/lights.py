@@ -18,16 +18,18 @@ VOLUMETRIC_SCATTERING_PROP = "VolumetricScatteringIntensity"
 UE_ATTENUATION_RADIUS_PROP = "ue_attenuation_radius"
 UE_ATTENUATION_RADIUS_UNITS_PROP = "ue_attenuation_radius_units"
 UE_INVERSE_SQUARED_FALLOFF_PROP = "ue_use_inverse_squared_falloff"
+UE_DISABLE_CUSTOM_ATTENUATION_PROP = "ue_disable_custom_attenuation"
 UE_LIGHT_FALLOFF_EXPONENT_PROP = "ue_light_falloff_exponent"
 UE_SOURCE_RADIUS_PROP = "ue_source_radius"
-UE_LIGHT_EMISSION_NODE_LABEL = "FF7R UE Light Emission"
-UE_LIGHT_ATTENUATION_GROUP_NAME = "FF7R UE Light Attenuation"
-UE_LIGHT_ATTENUATION_GROUP_VERSION = 1
+UE_LIGHT_EMISSION_NODE_LABEL = "UE4 Light Emission"
+UE_LIGHT_ATTENUATION_GROUP_NAME = "UE4 Light Attenuation"
+UE_LIGHT_ATTENUATION_GROUP_VERSION = 2
 
 UE_LIGHT_OBJECT_PROPS = (
     UE_ATTENUATION_RADIUS_PROP,
     UE_ATTENUATION_RADIUS_UNITS_PROP,
     UE_INVERSE_SQUARED_FALLOFF_PROP,
+    UE_DISABLE_CUSTOM_ATTENUATION_PROP,
     UE_LIGHT_FALLOFF_EXPONENT_PROP,
     UE_SOURCE_RADIUS_PROP,
 )
@@ -141,7 +143,7 @@ def _new_ue_light_attribute(nodes, property_name: str, label: str):
 def get_ue_light_attenuation_group() -> bpy.types.NodeTree:
     """Return the single editable attenuation group used by imported lights."""
     group = bpy.data.node_groups.get(UE_LIGHT_ATTENUATION_GROUP_NAME)
-    if group is not None and group.get("ff7r_group_version") == UE_LIGHT_ATTENUATION_GROUP_VERSION:
+    if group is not None and group.get("sqex_group_version") == UE_LIGHT_ATTENUATION_GROUP_VERSION:
         return group
 
     if group is None:
@@ -149,8 +151,8 @@ def get_ue_light_attenuation_group() -> bpy.types.NodeTree:
     group.nodes.clear()
     group.interface.clear()
     group.interface.new_socket(name="Strength", in_out="OUTPUT", socket_type="NodeSocketFloat")
-    group["ff7r_group_version"] = UE_LIGHT_ATTENUATION_GROUP_VERSION
-    group["ff7r_purpose"] = "Shared UE local-light attenuation for FF7R imports"
+    group["sqex_group_version"] = UE_LIGHT_ATTENUATION_GROUP_VERSION
+    group["sqex_purpose"] = "Shared UE4 local-light attenuation for Square Enix imports"
 
     nodes = group.nodes
     links = group.links
@@ -166,6 +168,10 @@ def get_ue_light_attenuation_group() -> bpy.types.NodeTree:
     source_radius.location = (-720, -260)
     inverse_squared = _new_ue_light_attribute(nodes, UE_INVERSE_SQUARED_FALLOFF_PROP, "UE inverse-squared")
     inverse_squared.location = (-720, -420)
+    disable_custom = _new_ue_light_attribute(
+        nodes, UE_DISABLE_CUSTOM_ATTENUATION_PROP, "Disable Square Enix attenuation"
+    )
+    disable_custom.location = (-720, -740)
     exponent = _new_ue_light_attribute(nodes, UE_LIGHT_FALLOFF_EXPONENT_PROP, "UE falloff exponent")
     exponent.location = (-720, -580)
     if "Smooth" in falloff.inputs:
@@ -228,7 +234,28 @@ def get_ue_light_attenuation_group() -> bpy.types.NodeTree:
     result.location = (700, 40)
     links.new(inverse_weighted.outputs[0], result.inputs[0])
     links.new(exponent_weighted.outputs[0], result.inputs[1])
-    links.new(result.outputs[0], output.inputs["Strength"])
+
+    # Missing custom properties read as zero, so existing imported lights keep
+    # the custom attenuation path. Setting this object property to true
+    # selects neutral strength and leaves Blender's native light attenuation
+    # in charge.
+    one_minus_disable = _new_math(nodes, "SUBTRACT", "1 - disable custom attenuation")
+    one_minus_disable.location = (700, -120)
+    one_minus_disable.inputs[0].default_value = 1.0
+    links.new(disable_custom.outputs["Fac"], one_minus_disable.inputs[1])
+    enabled_strength = _new_math(nodes, "MULTIPLY", "Custom attenuation enabled")
+    enabled_strength.location = (880, 40)
+    links.new(result.outputs[0], enabled_strength.inputs[0])
+    links.new(one_minus_disable.outputs[0], enabled_strength.inputs[1])
+    disabled_strength = _new_math(nodes, "MULTIPLY", "Custom attenuation disabled")
+    disabled_strength.location = (880, -120)
+    disabled_strength.inputs[0].default_value = 1.0
+    links.new(disable_custom.outputs["Fac"], disabled_strength.inputs[1])
+    bypassed_result = _new_math(nodes, "ADD", "UE attenuation bypass")
+    bypassed_result.location = (1060, 40)
+    links.new(enabled_strength.outputs[0], bypassed_result.inputs[0])
+    links.new(disabled_strength.outputs[0], bypassed_result.inputs[1])
+    links.new(bypassed_result.outputs[0], output.inputs["Strength"])
     return group
 
 
@@ -250,7 +277,7 @@ def apply_ue_attenuation_nodes(light_data: bpy.types.Light, attenuation_radius: 
         attenuation = nodes.new("ShaderNodeGroup")
         attenuation.node_tree = get_ue_light_attenuation_group()
         emission.label = UE_LIGHT_EMISSION_NODE_LABEL
-        attenuation.label = "FF7R shared UE attenuation"
+        attenuation.label = "Square Enix shared UE4 attenuation"
         output.location = (440, 0)
         emission.location = (220, 0)
         attenuation.location = (-80, 0)
@@ -259,7 +286,7 @@ def apply_ue_attenuation_nodes(light_data: bpy.types.Light, attenuation_radius: 
         links.new(emission.outputs["Emission"], output.inputs["Surface"])
         return True
     except Exception as exc:
-        print(f"[FF7R JSON Import]   Failed to attach UE attenuation group to '{light_data.name}': {exc}")
+        print(f"[Talisman UE4 Import]   Failed to attach UE4 attenuation group to '{light_data.name}': {exc}")
         return False
 
 
@@ -357,6 +384,7 @@ def apply_ue_attenuation_properties(
     light_data[UE_ATTENUATION_RADIUS_PROP] = att_radius
     light_data[UE_ATTENUATION_RADIUS_UNITS_PROP] = "Blender units"
     light_data[UE_INVERSE_SQUARED_FALLOFF_PROP] = use_inverse_squared
+    light_data[UE_DISABLE_CUSTOM_ATTENUATION_PROP] = False
     light_data[UE_LIGHT_FALLOFF_EXPONENT_PROP] = falloff_exponent
     light_data[UE_SOURCE_RADIUS_PROP] = src_radius
 

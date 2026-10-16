@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from ..language import tooltips
+
 import re
 from typing import Any
 
 import bpy
 
-from ..core.blender.reporting import FF7R_LoggedOperator
+from ..core.blender.reporting import SQEX_LoggedOperator
 
 
 _ACTIVE_BROWSER: dict[str, Any] | None = None
 _NATURAL_TOKEN = re.compile(r"(\d+)")
+_SHORTCUT_KEYMAP_ITEMS: list[tuple[Any, Any]] = []
 
 
 def _natural_path_key(path: str):
@@ -35,33 +38,33 @@ def _filter_changed(_state, context):
         populate(context, _ACTIVE_BROWSER)
 
 
-class FF7R_PG_package_asset_entry(bpy.types.PropertyGroup):
+class SQEX_PG_package_asset_entry(bpy.types.PropertyGroup):
     display_name: bpy.props.StringProperty()
     virtual_path: bpy.props.StringProperty()
     is_directory: bpy.props.BoolProperty(default=False)
     selected: bpy.props.BoolProperty(default=False, update=_entry_selection_changed)
 
 
-class FF7R_PG_package_asset_browser(bpy.types.PropertyGroup):
-    entries: bpy.props.CollectionProperty(type=FF7R_PG_package_asset_entry)
+class SQEX_PG_package_asset_browser(bpy.types.PropertyGroup):
+    entries: bpy.props.CollectionProperty(type=SQEX_PG_package_asset_entry)
     active_index: bpy.props.IntProperty(default=0)
     current_directory: bpy.props.StringProperty(default="")
     filter_text: bpy.props.StringProperty(
         name="Search",
-        description="Filter assets by space-separated terms anywhere in their package path",
+        description=tooltips.SHARED_PACKAGE_ASSET_BROWSER_FILTER_TEXT,
         options={"TEXTEDIT_UPDATE"},
         update=_filter_changed,
     )
 
 
-class FF7R_UL_package_assets(bpy.types.UIList):
+class SQEX_UL_package_assets(bpy.types.UIList):
     def draw_item(
         self, _context, layout, _data, item, _icon,
         _active_data, _active_propname, _index,
     ):
         if item.is_directory:
             operator = layout.operator(
-                FF7R_OT_package_asset_folder.bl_idname,
+                SQEX_OT_package_asset_folder.bl_idname,
                 text=item.display_name,
                 icon="FILE_FOLDER",
                 emboss=False,
@@ -76,8 +79,8 @@ class FF7R_UL_package_assets(bpy.types.UIList):
             )
 
 
-class FF7R_OT_package_asset_folder(FF7R_LoggedOperator):
-    bl_idname = "wm.ff7r_package_asset_folder"
+class SQEX_OT_package_asset_folder(SQEX_LoggedOperator):
+    bl_idname = "wm.sqex_package_asset_folder"
     bl_label = "Open Package Folder"
     bl_options = {"INTERNAL"}
     virtual_path: bpy.props.StringProperty()
@@ -90,8 +93,8 @@ class FF7R_OT_package_asset_folder(FF7R_LoggedOperator):
         return {"FINISHED"}
 
 
-class FF7R_OT_package_asset_up(FF7R_LoggedOperator):
-    bl_idname = "wm.ff7r_package_asset_up"
+class SQEX_OT_package_asset_up(SQEX_LoggedOperator):
+    bl_idname = "wm.sqex_package_asset_up"
     bl_label = "Parent Folder"
     bl_options = {"INTERNAL"}
 
@@ -99,28 +102,33 @@ class FF7R_OT_package_asset_up(FF7R_LoggedOperator):
         if _ACTIVE_BROWSER is not None:
             sync_selection(context, _ACTIVE_BROWSER)
             directory = _ACTIVE_BROWSER["directory"].rstrip("/")
-            _ACTIVE_BROWSER["directory"] = (
-                directory.rsplit("/", 1)[0] if "/" in directory else ""
-            )
+            parent = directory.rsplit("/", 1)[0] if "/" in directory else ""
+            root_directory = _ACTIVE_BROWSER.get("root_directory", "")
+            if root_directory and not (
+                parent.casefold() == root_directory.casefold()
+                or parent.casefold().startswith(root_directory.casefold() + "/")
+            ):
+                parent = root_directory
+            _ACTIVE_BROWSER["directory"] = parent
             populate(context, _ACTIVE_BROWSER)
         return {"FINISHED"}
 
 
-class FF7R_OT_package_asset_selection(FF7R_LoggedOperator):
-    bl_idname = "wm.ff7r_package_asset_selection"
+class SQEX_OT_package_asset_selection(SQEX_LoggedOperator):
+    bl_idname = "wm.sqex_package_asset_selection"
     bl_label = "Change Package Asset Selection"
     bl_options = {"INTERNAL"}
     mode: bpy.props.EnumProperty(items=(
-        ("SELECT", "Select Visible", "Select every visible asset"),
-        ("CLEAR", "Clear All", "Clear the complete batch selection"),
-        ("INVERT", "Invert Visible", "Invert visible asset selections"),
+        ("SELECT", "Select Visible", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_SELECT),
+        ("CLEAR", "Clear All", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_CLEAR),
+        ("INVERT", "Invert Visible", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_INVERT),
     ))
 
     def execute(self, context):
         if _ACTIVE_BROWSER is None:
             return {"CANCELLED"}
         state = _ACTIVE_BROWSER
-        browser = context.window_manager.ff7r_package_asset_browser
+        browser = context.window_manager.sqex_package_asset_browser
         if self.mode == "CLEAR":
             state["selected"].clear()
         else:
@@ -138,47 +146,206 @@ class FF7R_OT_package_asset_selection(FF7R_LoggedOperator):
         return {"FINISHED"}
 
 
+def _package_browser_dialog_is_open(context) -> bool:
+    if _ACTIVE_BROWSER is None:
+        return False
+    owner_idname = _ACTIVE_BROWSER.get("dialog_operator")
+    return bool(owner_idname) and any(
+        getattr(operator, "bl_idname", None) == owner_idname
+        for operator in context.window_manager.operators
+    )
+
+
+class SQEX_OT_package_asset_select_all_visible(SQEX_LoggedOperator):
+    """Apply the File Browser Select All shortcut to the visible checklist."""
+
+    bl_idname = "wm.sqex_package_asset_select_all_visible"
+    bl_label = "Select All Visible Package Assets"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return _package_browser_dialog_is_open(context)
+
+    def execute(self, context):
+        state = _ACTIVE_BROWSER
+        if state is None:
+            return {"CANCELLED"}
+        sync_selection(context, state)
+        browser = context.window_manager.sqex_package_asset_browser
+        state["selected"].update(
+            entry.virtual_path
+            for entry in browser.entries
+            if not entry.is_directory and entry.virtual_path
+        )
+        populate(context, state)
+        return {"FINISHED"}
+
+
+class SQEX_OT_package_asset_toggle_highlighted(SQEX_LoggedOperator):
+    """Toggle the checkbox for the highlighted package asset."""
+
+    bl_idname = "wm.sqex_package_asset_toggle_highlighted"
+    bl_label = "Toggle Highlighted Package Asset"
+    bl_options = {"INTERNAL"}
+
+    @classmethod
+    def poll(cls, context):
+        return _package_browser_dialog_is_open(context)
+
+    def execute(self, context):
+        if _ACTIVE_BROWSER is None:
+            return {"CANCELLED"}
+        browser = context.window_manager.sqex_package_asset_browser
+        index = browser.active_index
+        if not 0 <= index < len(browser.entries):
+            return {"CANCELLED"}
+        entry = browser.entries[index]
+        if entry.is_directory:
+            return {"CANCELLED"}
+        entry.selected = not entry.selected
+        return {"FINISHED"}
+
+
 CLASSES = (
-    FF7R_PG_package_asset_entry,
-    FF7R_PG_package_asset_browser,
-    FF7R_UL_package_assets,
-    FF7R_OT_package_asset_folder,
-    FF7R_OT_package_asset_up,
-    FF7R_OT_package_asset_selection,
+    SQEX_PG_package_asset_entry,
+    SQEX_PG_package_asset_browser,
+    SQEX_UL_package_assets,
+    SQEX_OT_package_asset_folder,
+    SQEX_OT_package_asset_up,
+    SQEX_OT_package_asset_selection,
+    SQEX_OT_package_asset_select_all_visible,
+    SQEX_OT_package_asset_toggle_highlighted,
 )
 
 
 def register_runtime_properties():
-    bpy.types.WindowManager.ff7r_package_asset_browser = bpy.props.PointerProperty(
-        type=FF7R_PG_package_asset_browser
+    bpy.types.WindowManager.sqex_package_asset_browser = bpy.props.PointerProperty(
+        type=SQEX_PG_package_asset_browser
     )
 
 
 def unregister_runtime_properties():
     global _ACTIVE_BROWSER
     _ACTIVE_BROWSER = None
-    if hasattr(bpy.types.WindowManager, "ff7r_package_asset_browser"):
-        del bpy.types.WindowManager.ff7r_package_asset_browser
+    if hasattr(bpy.types.WindowManager, "sqex_package_asset_browser"):
+        del bpy.types.WindowManager.sqex_package_asset_browser
+
+
+def _file_select_all_events(context) -> list[tuple[Any, ...]]:
+    """Copy the active File Browser's select-all bindings into our dialog."""
+    def events_from(keyconfig) -> list[tuple[Any, ...]]:
+        events = []
+        if keyconfig is None:
+            return events
+        for keymap in keyconfig.keymaps:
+            if keymap.space_type != 'FILE_BROWSER':
+                continue
+            for item in keymap.keymap_items:
+                if item.idname != "file.select_all" or not item.active:
+                    continue
+                action = getattr(item.properties, "action", "TOGGLE")
+                if action not in {"SELECT", "TOGGLE"}:
+                    continue
+                event = (
+                    item.type,
+                    item.value,
+                    item.any,
+                    item.shift,
+                    item.ctrl,
+                    item.alt,
+                    item.oskey,
+                    item.key_modifier,
+                    item.repeat,
+                )
+                if event not in events:
+                    events.append(event)
+        return events
+
+    # User keymaps contain overrides separately from the active preset. Prefer
+    # them outright, so a rebinding replaces the preset key instead of adding a
+    # second Select All shortcut to these dialogs.
+    keyconfigs = context.window_manager.keyconfigs
+    events = events_from(keyconfigs.user) or events_from(keyconfigs.active)
+    # A File Browser keymap is not created in Blender's background mode. Keep
+    # the conventional shortcut available there and in unusual keyconfigs.
+    return events or [("A", "PRESS", False, False, False, False, False, "NONE", False)]
+
+
+def unregister_shortcuts() -> None:
+    while _SHORTCUT_KEYMAP_ITEMS:
+        keymap, item = _SHORTCUT_KEYMAP_ITEMS.pop()
+        try:
+            keymap.keymap_items.remove(item)
+        except (ReferenceError, RuntimeError, ValueError):
+            pass
+
+
+def register_shortcuts(context=None) -> None:
+    """Register package-browser shortcuts while a shared package dialog is open."""
+    unregister_shortcuts()
+    context = context or bpy.context
+    keyconfig = context.window_manager.keyconfigs.addon
+    if keyconfig is None:
+        return
+    keymap = keyconfig.keymaps.new(name="Window", space_type='EMPTY', region_type='WINDOW')
+    for event in _file_select_all_events(context):
+        (
+            event_type, value, any_modifier, shift, ctrl, alt, oskey,
+            key_modifier, repeat,
+        ) = event
+        item = keymap.keymap_items.new(
+            SQEX_OT_package_asset_select_all_visible.bl_idname,
+            event_type,
+            value,
+            any=any_modifier,
+            shift=shift,
+            ctrl=ctrl,
+            alt=alt,
+            oskey=oskey,
+            key_modifier=key_modifier,
+            head=True,
+        )
+        item.repeat = repeat
+        _SHORTCUT_KEYMAP_ITEMS.append((keymap, item))
+    item = keymap.keymap_items.new(
+        SQEX_OT_package_asset_toggle_highlighted.bl_idname,
+        "SPACE",
+        "PRESS",
+        head=True,
+    )
+    item.repeat = False
+    _SHORTCUT_KEYMAP_ITEMS.append((keymap, item))
 
 
 def make_state(
     asset_label: str,
     *,
     initial_directory: str = "",
+    root_directory: str = "",
     file_icon: str = "MESH_DATA",
 ) -> dict[str, Any]:
+    root_directory = root_directory.strip("/")
+    initial_directory = initial_directory.strip("/")
+    if root_directory and not (
+        initial_directory.casefold() == root_directory.casefold()
+        or initial_directory.casefold().startswith(root_directory.casefold() + "/")
+    ):
+        raise ValueError("initial_directory must be inside root_directory")
     return {
         "asset_label": asset_label,
         "paths": [],
-        "directory": initial_directory.strip("/"),
-        "initial_directory": initial_directory.strip("/"),
+        "directory": initial_directory,
+        "initial_directory": initial_directory,
+        "root_directory": root_directory,
         "selected": set(),
+        "dialog_operator": "",
         "file_icon": file_icon,
     }
 
 
 def sync_selection(context, state: dict[str, Any]) -> None:
-    browser = context.window_manager.ff7r_package_asset_browser
+    browser = context.window_manager.sqex_package_asset_browser
     for entry in browser.entries:
         if entry.is_directory:
             continue
@@ -189,7 +356,7 @@ def sync_selection(context, state: dict[str, Any]) -> None:
 
 
 def populate(context, state: dict[str, Any]) -> None:
-    browser = context.window_manager.ff7r_package_asset_browser
+    browser = context.window_manager.sqex_package_asset_browser
     browser.entries.clear()
     terms = tuple(
         term.casefold() for term in browser.filter_text.split() if term.strip()
@@ -231,7 +398,13 @@ def populate(context, state: dict[str, Any]) -> None:
     )
 
 
-def activate(context, state: dict[str, Any], paths: list[str]) -> None:
+def activate(
+        context,
+        state: dict[str, Any],
+        paths: list[str],
+        *,
+        dialog_operator: str = "",
+) -> None:
     global _ACTIVE_BROWSER
     state["paths"] = sorted(
         {str(path).replace("\\", "/").lstrip("/") for path in paths},
@@ -244,15 +417,17 @@ def activate(context, state: dict[str, Any], paths: list[str]) -> None:
     ):
         state["directory"] = state["initial_directory"]
     state["selected"].clear()
+    state["dialog_operator"] = dialog_operator
     _ACTIVE_BROWSER = state
-    browser = context.window_manager.ff7r_package_asset_browser
+    register_shortcuts(context)
+    browser = context.window_manager.sqex_package_asset_browser
     browser.filter_text = ""
     browser.current_directory = state["directory"]
     populate(context, state)
 
 
 def draw(layout, context, state: dict[str, Any], *, rows: int = 12) -> None:
-    browser = context.window_manager.ff7r_package_asset_browser
+    browser = context.window_manager.sqex_package_asset_browser
     header = layout.row(align=True)
     header.label(
         text=(
@@ -262,12 +437,12 @@ def draw(layout, context, state: dict[str, Any], *, rows: int = 12) -> None:
         icon="PACKAGE",
     )
     header.operator(
-        FF7R_OT_package_asset_up.bl_idname, text="", icon="FILE_PARENT"
+        SQEX_OT_package_asset_up.bl_idname, text="", icon="FILE_PARENT"
     )
     header.label(text=state["directory"] or "Package root")
     layout.prop(browser, "filter_text", text="", icon="VIEWZOOM")
     layout.template_list(
-        FF7R_UL_package_assets.__name__,
+        SQEX_UL_package_assets.__name__,
         state["asset_label"],
         browser,
         "entries",
@@ -277,13 +452,13 @@ def draw(layout, context, state: dict[str, Any], *, rows: int = 12) -> None:
     )
     selection = layout.row(align=True)
     selection.operator(
-        FF7R_OT_package_asset_selection.bl_idname, text="Select Visible"
+        SQEX_OT_package_asset_selection.bl_idname, text="Select Visible"
     ).mode = "SELECT"
     selection.operator(
-        FF7R_OT_package_asset_selection.bl_idname, text="Invert Visible"
+        SQEX_OT_package_asset_selection.bl_idname, text="Invert Visible"
     ).mode = "INVERT"
     selection.operator(
-        FF7R_OT_package_asset_selection.bl_idname, text="Clear All"
+        SQEX_OT_package_asset_selection.bl_idname, text="Clear All"
     ).mode = "CLEAR"
 
 
@@ -294,7 +469,7 @@ def selected_paths(context, state: dict[str, Any]) -> list[str]:
     selected = [path for path in state["paths"] if path in state["selected"]]
     if selected:
         return selected
-    browser = context.window_manager.ff7r_package_asset_browser
+    browser = context.window_manager.sqex_package_asset_browser
     if 0 <= browser.active_index < len(browser.entries):
         highlighted = browser.entries[browser.active_index]
         if not highlighted.is_directory:

@@ -1,4 +1,4 @@
-"""Shared access to the packaged CUE4Parse bridge executable."""
+"""Shared access to the packaged CUE4Parse gargoyle executable."""
 
 from __future__ import annotations
 
@@ -8,22 +8,22 @@ from pathlib import Path
 from .profiles import GamePaths, GameProfile
 
 
-def bridge_executable_path(addon_root: Path) -> Path:
-    """Return the packaged bridge, falling back to a local release build."""
+def gargoyle_executable_path(addon_root: Path) -> Path:
+    """Return the packaged gargoyle, falling back to a local release build."""
     candidates = (
-        addon_root / "bridge" / "FF7RGameAssetBridge.exe",
+        addon_root / "bridge" / "TalismanGameAssetBridge.exe",
         addon_root.parent / "bridge" / "bin" / "Release" / "net10.0"
-        / "FF7RGameAssetBridge.exe",
+        / "TalismanGameAssetBridge.exe",
     )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(
-        "FF7R Game Asset Bridge is missing. Reinstall the complete add-on package."
+        "Talisman Game Asset Bridge is missing. Reinstall the complete add-on package."
     )
 
 
-def bridge_command(
+def gargoyle_command(
     addon_root: Path,
     profile: GameProfile,
     paths: GamePaths,
@@ -36,9 +36,9 @@ def bridge_command(
     summary: bool = False,
     operation: str = "",
 ) -> list[str]:
-    """Build the bridge's positional command line for one explicit title."""
+    """Build the gargoyle's positional command line for one explicit title."""
     return [
-        str(bridge_executable_path(addon_root)),
+        str(gargoyle_executable_path(addon_root)),
         os.path.abspath(paths.install_root),
         output_json,
         os.path.abspath(paths.oodle_dll) if paths.oodle_dll else "",
@@ -49,5 +49,6 @@ def bridge_command(
         os.path.abspath(raw_output) if raw_output else "",
         "summary" if summary else "",
         operation,
-        profile.bridge_profile,
+        profile.gargoyle_profile,
+        paths.aes_key,
     ]

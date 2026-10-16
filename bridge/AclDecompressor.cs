@@ -13,7 +13,7 @@ namespace Ff7r.Acl;
 /// silently mis-decoded.
 ///
 /// The reference decoder interpolates between two key frames.  Rebirth clips are uniformly
-/// sampled and the bridge exports every frame, so this only ever samples one key frame
+/// sampled and the gargoyle exports every frame, so this only ever samples one key frame
 /// exactly: the interpolation collapses to the identity and the per-key-frame state in
 /// acl's SamplingContext collapses to a single set of offsets.
 /// </remarks>
@@ -33,10 +33,15 @@ public sealed class AclDecompressor
     {
         _clip = clip;
 
-        if (clip.Version != AclClip.UniformlySampledVersion || clip.AlgorithmType != AclClip.AlgorithmUniformlySampled)
+        // Remake embeds ACL 1.3 clips (format version 3). Their header is
+        // binary-compatible with the version-5 uniformly sampled layout this
+        // decoder uses; the older 32-bit version field leaves the algorithm
+        // byte reading as the same implicit zero value.
+        if (clip.Version is not (3 or AclClip.UniformlySampledVersion) ||
+            clip.AlgorithmType != AclClip.AlgorithmUniformlySampled)
             throw new NotSupportedException(
                 $"ACL clip uses algorithm {clip.AlgorithmType} version {clip.Version}; " +
-                $"only uniformly sampled version {AclClip.UniformlySampledVersion} is supported.");
+                $"only uniformly sampled ACL versions 3 and {AclClip.UniformlySampledVersion} are supported.");
         if (clip.RotationFormat != AclClip.RotationQuatDropWVariable)
             throw new NotSupportedException($"ACL rotation format {clip.RotationFormat} is not supported (expected QuatDropW_Variable).");
         if (clip.TranslationFormat != AclClip.Vector3Variable)
@@ -59,7 +64,7 @@ public sealed class AclDecompressor
 
         var data = _clip.Data;
         var segmentIndex = FindSegment(sampleIndex);
-        var (poseBitSize, formatPerTrackData, segmentRangeData, trackData) = _clip.Segment(segmentIndex);
+        var (_, poseBitSize, formatPerTrackData, segmentRangeData, trackData) = _clip.Segment(segmentIndex);
         var segmentSampleIndex = sampleIndex - (int) _clip.SegmentStartIndex(segmentIndex);
 
         var state = new PoseState

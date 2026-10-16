@@ -3,7 +3,7 @@
 
 Usage: python build_addon_zip.py
 
-The zip contains a single top-level ``ff7r_rebirth_tools/`` directory, which is
+The zip contains a single top-level ``talisman/`` directory, which is
 what Blender's "Install from Disk" expects -- a zip with loose files at its root
 would extract straight into scripts/addons/ instead of into its own folder.
 """
@@ -13,10 +13,11 @@ from __future__ import annotations
 import ast
 import zipfile
 from pathlib import Path
+import tomllib
 
 REPO = Path(__file__).resolve().parent
 SOURCE = REPO / "addon"
-PACKAGE = "ff7r_rebirth_tools"
+MANIFEST = SOURCE / "blender_manifest.toml"
 DIST = REPO / "dist"
 
 # Build artifacts and editor cruft that must never reach an installed add-on.
@@ -55,14 +56,18 @@ def main() -> None:
     if not (SOURCE / "__init__.py").is_file():
         raise SystemExit(f"No add-on found at {SOURCE}")
 
+    manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+    package = manifest["id"]
     version = addon_version()
+    if version != manifest["version"]:
+        raise SystemExit("bl_info and blender_manifest.toml versions must match")
     DIST.mkdir(exist_ok=True)
-    target = DIST / f"{PACKAGE}-{version}.zip"
+    target = DIST / f"{package}-{version}.zip"
 
     files = included_files()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in files:
-            archive.write(path, Path(PACKAGE) / path.relative_to(SOURCE))
+            archive.write(path, Path(package) / path.relative_to(SOURCE))
 
     size_mb = target.stat().st_size / 1024 / 1024
     print(f"{target.relative_to(REPO)}  ({len(files)} files, {size_mb:.1f} MB)")

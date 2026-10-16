@@ -12,7 +12,7 @@ BLEND = r"O:\Blender\Assets\FF7\cloud baseline.blend"
 FMODEL_JSON = r"O:\Games\Rebirth Tools\FModel\UpdateOutput\Exports\End\Content\Character\Player\PC0000_00_Cloud_Standard\Model\PC0000_00_Skeleton.json"
 
 bpy.ops.wm.open_mainfile(filepath=BLEND)
-bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
+bpy.ops.preferences.addon_enable(module="talisman")
 
 baseline = next((o for o in bpy.context.scene.objects if o.type == "ARMATURE"), None)
 print("BASELINE_ARMATURE", baseline.name if baseline else None,

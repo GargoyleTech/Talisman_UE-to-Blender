@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import bpy
 
+from ...core.blender.animation import scene_fps as scene_fps
+
 
 ARMATURE_ACTION_FPS: float = 30.0
 
-
-def scene_fps(scene) -> float:
-    """Return the scene's effective frame rate, respecting fps_base."""
-    fps = float(scene.render.fps)
-    fps_base = float(scene.render.fps_base) if scene.render.fps_base else 1.0
-    return fps / fps_base
 
 
 def clear_scene_cameras(scene) -> int:

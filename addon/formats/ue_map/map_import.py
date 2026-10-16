@@ -13,6 +13,15 @@ from . import lights, particles, worlds
 
 TextureIndexCache = dict[tuple[str, str], dict[str, str]]
 _SETPOS_MARKER = "_setpos_"
+_FOLIAGE_ROTATION_ATTRIBUTE = "sqex_foliage_rotation"
+_FOLIAGE_SCALE_ATTRIBUTE = "sqex_foliage_scale"
+_SKELETAL_COMPONENT_TYPES = {
+    "EndSkeletalMeshComponent",
+    "SkeletalMeshComponent",
+    # Kingdom Hearts event-pawn Blueprints use the same Unreal component
+    # payload through this custom subclass.
+    "TresSkeletalMeshComponent",
+}
 
 # Blender spot lights emit along local -Z, while UE components use +X forward.
 _LIGHT_FWD_FIX = (
@@ -69,7 +78,7 @@ def extract_static_mesh_name(object_name_str: str) -> str | None:
 
 
 def extract_static_mesh_game_path(static_mesh: dict) -> str | None:
-    """Return the full UE object path emitted by the package bridge, when present."""
+    """Return the full UE object path emitted by the package gargoyle, when present."""
     if not isinstance(static_mesh, dict):
         return None
     object_path = static_mesh.get("ObjectPath")
@@ -108,7 +117,7 @@ def ensure_map_import_root(
         root = bpy.data.objects.new(root_name, None)
         root.empty_display_type = "PLAIN_AXES"
         root.empty_display_size = display_size
-        root["ff7r_map_import_root"] = True
+        root["sqex_map_import_root"] = True
         parent_collection.objects.link(root)
         # Keep the organizing control out of the viewport by default without
         # changing any child object's own visibility.
@@ -831,6 +840,7 @@ def resolve_attach_parent_object(
     component_objects: dict[str, bpy.types.Object],
     child_name: str = "object",
     report_missing: bool = True,
+    allow_scene_lookup: bool = True,
 ) -> bpy.types.Object | None:
     """Resolve Properties.AttachParent to a previously imported Blender object."""
     attach_parent = props.get("AttachParent", {})
@@ -844,9 +854,9 @@ def resolve_attach_parent_object(
             return obj
 
     actor_name = _resolve_attach_parent_name(props)
-    if actor_name:
+    if actor_name and allow_scene_lookup:
         obj = bpy.data.objects.get(actor_name)
-        if obj is not None:
+        if obj is not None and obj.name != child_name:
             return obj
 
     if report_missing:
@@ -1008,7 +1018,7 @@ def get_umap_import_function():
     try:
         importer_module = importlib.import_module(f"{__package__.rsplit('.', 1)[0]}.mec.importer")
     except Exception as exc:
-        print(f"[Rebirth Map Import]   Bundled FF7R .umap importer is not available: {exc}")
+        print(f"[UE4 Map Import]   Bundled UMAP importer is not available: {exc}")
         return None
     return getattr(importer_module, "import_umap_paths", None)
 
@@ -1142,11 +1152,12 @@ def process_deferred_attach(
     attach_socket: str,
     location_scale: float,
     component_objects: dict[str, bpy.types.Object],
+    allow_scene_lookup: bool = True,
 ):
     target_instance = resolve_attach_parent_object(
-        props, component_objects, child_obj.name, report_missing=False
+        props, component_objects, child_obj.name, report_missing=False, allow_scene_lookup=allow_scene_lookup,
     )
-    if target_instance is None:
+    if target_instance is None and allow_scene_lookup:
         attach_actor_name = _resolve_attach_parent_name(props)
         target_instance = bpy.data.objects.get(attach_actor_name) if attach_actor_name else None
     if target_instance is None:
@@ -1180,17 +1191,188 @@ def create_static_mesh_instance_from_datablock(
     rot: Euler,
     static_collection: bpy.types.Collection,
     rel_scale: Vector,
+    game_features: bool = True,
 ) -> bpy.types.Object:
     """Instance an already-imported package mesh without duplicating its data."""
     obj = bpy.data.objects.new(name, mesh)
     obj.location = loc
     obj.rotation_euler = rot
     obj.scale = rel_scale
-    if mesh.get("ff7r_virtual_path"):
-        obj["ff7r_virtual_path"] = mesh["ff7r_virtual_path"]
+    if mesh.get("sqex_virtual_path"):
+        obj["sqex_virtual_path"] = mesh["sqex_virtual_path"]
     static_collection.objects.link(obj)
-    _initialize_external_emissive_context(obj)
+    if game_features:
+        _initialize_external_emissive_context(obj)
     return obj
+
+
+def _ensure_foliage_source_object(
+    mesh: bpy.types.Mesh,
+    source_collection: bpy.types.Collection,
+    source_cache: dict[int, bpy.types.Object],
+) -> bpy.types.Object:
+    """Create one hidden geometry source for Geometry Nodes foliage instances."""
+    mesh_key = mesh.as_pointer()
+    source = source_cache.get(mesh_key)
+    if source is not None and source.name in bpy.data.objects:
+        return source
+
+    source_name = f"__SQEX_FoliageSource_{mesh.name}"
+    source = bpy.data.objects.new(source_name, mesh)
+    source.hide_render = True
+    source["sqex_foliage_source"] = True
+    source_collection.objects.link(source)
+    source.hide_set(True)
+    source_cache[mesh_key] = source
+    return source
+
+
+def _ensure_foliage_node_group(
+    source: bpy.types.Object,
+    node_group_cache: dict[int, bpy.types.NodeTree],
+) -> bpy.types.NodeTree:
+    """Return the reusable point-to-instance node group for one source mesh."""
+    source_key = source.as_pointer()
+    cached = node_group_cache.get(source_key)
+    if cached is not None and cached.name in bpy.data.node_groups:
+        return cached
+
+    group = bpy.data.node_groups.new(
+        f"Talisman Foliage Instances | {source.data.name}", "GeometryNodeTree"
+    )
+    group.interface.new_socket(
+        name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+    )
+    group.interface.new_socket(
+        name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+    )
+    nodes = group.nodes
+    links = group.links
+    group_input = nodes.new("NodeGroupInput")
+    group_input.location = (-580.0, 0.0)
+    group_output = nodes.new("NodeGroupOutput")
+    group_output.location = (360.0, 0.0)
+    object_info = nodes.new("GeometryNodeObjectInfo")
+    object_info.location = (-380.0, -180.0)
+    object_info.transform_space = "ORIGINAL"
+    object_info.inputs["Object"].default_value = source
+    object_info.inputs["As Instance"].default_value = True
+    rotation = nodes.new("GeometryNodeInputNamedAttribute")
+    rotation.data_type = "FLOAT_VECTOR"
+    rotation.location = (-360.0, 100.0)
+    rotation.inputs["Name"].default_value = _FOLIAGE_ROTATION_ATTRIBUTE
+    scale = nodes.new("GeometryNodeInputNamedAttribute")
+    scale.data_type = "FLOAT_VECTOR"
+    scale.location = (-360.0, 240.0)
+    scale.inputs["Name"].default_value = _FOLIAGE_SCALE_ATTRIBUTE
+    instance = nodes.new("GeometryNodeInstanceOnPoints")
+    instance.location = (80.0, 0.0)
+
+    links.new(group_input.outputs["Geometry"], instance.inputs["Points"])
+    links.new(object_info.outputs["Geometry"], instance.inputs["Instance"])
+    links.new(rotation.outputs["Attribute"], instance.inputs["Rotation"])
+    links.new(scale.outputs["Attribute"], instance.inputs["Scale"])
+    links.new(instance.outputs["Instances"], group_output.inputs["Geometry"])
+
+    node_group_cache[source_key] = group
+    return group
+
+
+def create_foliage_instances_from_entry(
+    entry: dict,
+    mesh: bpy.types.Mesh,
+    foliage_collection: bpy.types.Collection,
+    foliage_source_collection: bpy.types.Collection,
+    source_cache: dict[int, bpy.types.Object],
+    node_group_cache: dict[int, bpy.types.NodeTree],
+    location_scale: float,
+) -> bpy.types.Object | None:
+    """Represent an Unreal foliage component as one editable, instanced object.
+
+    The gargoyle emits the cooked FMatrix placements as regular transforms.  A
+    point mesh carries their positions/rotation/scale and Geometry Nodes keeps
+    every visible tree, grass clump, or prop as an instance of the imported
+    StaticMesh data-block instead of materializing thousands of objects.
+    """
+    props = entry.get("Properties", {})
+    if not isinstance(props, dict):
+        return None
+    instance_transforms = props.get("PerInstanceSMData")
+    if not isinstance(instance_transforms, list) or not instance_transforms:
+        return None
+
+    component_loc = location_from_relative(
+        props.get("RelativeLocation", {}), scale_factor=location_scale
+    )
+    component_rot = rotation_from_relative(props.get("RelativeRotation", {}))
+    component_scale = scale_from_entry(props, entry)
+    component_matrix = Matrix.LocRotScale(component_loc, component_rot, component_scale)
+
+    locations: list[tuple[float, float, float]] = []
+    rotations: list[tuple[float, float, float]] = []
+    scales: list[tuple[float, float, float]] = []
+    for transform in instance_transforms:
+        if not isinstance(transform, dict):
+            continue
+        loc, rot, scale = transform_location_rotation_scale(
+            transform, scale_factor=location_scale
+        )
+        location, rotation, final_scale = (
+            component_matrix @ Matrix.LocRotScale(loc, rot, scale)
+        ).decompose()
+        locations.append(tuple(location))
+        rotations.append(tuple(rotation.to_euler("XYZ")))
+        scales.append(tuple(final_scale))
+    if not locations:
+        return None
+
+    component_name = entry.get("Name", "FoliageInstancedStaticMeshComponent")
+    component_name = (
+        component_name
+        if isinstance(component_name, str) and component_name
+        else "FoliageInstancedStaticMeshComponent"
+    )
+    # The component export name only identifies the implementation class.  Put
+    # the referenced mesh in Blender's visible name so large foliage maps stay
+    # navigable without selecting every generic component to inspect it.
+    mesh_path = extract_static_mesh_game_path(props.get("StaticMesh", {}))
+    mesh_label = mesh_path.rsplit("/", 1)[-1].split(".", 1)[0] if mesh_path else mesh.name
+    component_suffix = component_name.rsplit("_", 1)[-1]
+    foliage_name = (
+        f"Foliage | {mesh_label} | {component_suffix}"
+        if component_suffix.isdecimal()
+        else f"Foliage | {mesh_label}"
+    )
+    points = bpy.data.meshes.new(f"{foliage_name}_Points")
+    points.from_pydata(locations, [], [])
+    points.update()
+    rotation_attribute = points.attributes.new(
+        _FOLIAGE_ROTATION_ATTRIBUTE, "FLOAT_VECTOR", "POINT"
+    )
+    rotation_attribute.data.foreach_set(
+        "vector", [value for rotation in rotations for value in rotation]
+    )
+    scale_attribute = points.attributes.new(
+        _FOLIAGE_SCALE_ATTRIBUTE, "FLOAT_VECTOR", "POINT"
+    )
+    scale_attribute.data.foreach_set(
+        "vector", [value for scale in scales for value in scale]
+    )
+
+    foliage = bpy.data.objects.new(foliage_name, points)
+    foliage["source_type"] = entry.get("Type", "FoliageInstancedStaticMeshComponent")
+    foliage["sqex_component_name"] = component_name
+    foliage["sqex_foliage_instance_count"] = len(locations)
+    foliage["sqex_foliage_instance_source"] = props.get("FoliageInstanceSource", "bridge")
+    if mesh.get("sqex_virtual_path"):
+        foliage["sqex_virtual_path"] = mesh["sqex_virtual_path"]
+    foliage_collection.objects.link(foliage)
+    modifier = foliage.modifiers.new("UE Foliage Instances", "NODES")
+    modifier.node_group = _ensure_foliage_node_group(
+        _ensure_foliage_source_object(mesh, foliage_source_collection, source_cache),
+        node_group_cache,
+    )
+    return foliage
 
 
 def create_package_skeletal_mesh_instance(
@@ -1200,6 +1382,7 @@ def create_package_skeletal_mesh_instance(
     rot: Euler,
     skeletal_collection: bpy.types.Collection,
     rel_scale: Vector,
+    game_features: bool = True,
 ) -> bpy.types.Object:
     """Place a package SkeletalMesh using shared Mesh/Armature datablocks.
 
@@ -1225,6 +1408,7 @@ def create_package_skeletal_mesh_instance(
                 asset.skeletal_mesh,
                 armature_obj,
                 preserve_world_transform=False,
+                **({"game_features": False} if not game_features else {}),
             )
             root_obj = armature_obj
         else:
@@ -1235,20 +1419,28 @@ def create_package_skeletal_mesh_instance(
             mesh_obj.scale = rel_scale
             skeletal_collection.objects.link(mesh_obj)
             # Preserve the skin groups even if the asset has no usable skeleton.
-            _bind_package_skeletal_mesh_object(mesh_obj, asset.skeletal_mesh)
+            _bind_package_skeletal_mesh_object(
+                mesh_obj, asset.skeletal_mesh,
+                **({"game_features": False} if not game_features else {}),
+            )
             root_obj = mesh_obj
 
         for obj in (root_obj, mesh_obj):
             obj["source_name"] = name
             obj["template_object_path"] = asset.virtual_path
         if armature_obj is not None:
-            armature_obj["ff7r_skeleton_asset_path"] = (
-                asset.skeletal_mesh.get("skeletonPath") or ""
+            armature_obj["sqex_skeleton_asset_path"] = (
+                # Kingdom Hearts commonly stores the full reference skeleton
+                # inline in a SkeletalMesh rather than in a linked USkeleton.
+                # The mesh package is still a stable animation-source identity.
+                asset.skeletal_mesh.get("skeletonPath") or asset.virtual_path
             )
-        mesh_obj["ff7r_skeletal_mesh_lod"] = int(asset.skeletal_mesh.get("lodIndex", 0))
-        mesh_obj["ff7r_normal_format"] = asset.skeletal_mesh.get("normalFormat") or ""
-        mesh_obj["ff7r_linked_skeleton_path"] = asset.skeletal_mesh.get("skeletonPath") or ""
-        _initialize_external_emissive_context(mesh_obj)
+            armature_obj["sqex_skeletal_mesh_asset_path"] = asset.virtual_path
+        mesh_obj["sqex_skeletal_mesh_lod"] = int(asset.skeletal_mesh.get("lodIndex", 0))
+        mesh_obj["sqex_normal_format"] = asset.skeletal_mesh.get("normalFormat") or ""
+        mesh_obj["sqex_linked_skeleton_path"] = asset.skeletal_mesh.get("skeletonPath") or ""
+        if game_features:
+            _initialize_external_emissive_context(mesh_obj)
         return root_obj
     except Exception:
         if mesh_obj is not None:
@@ -1269,14 +1461,17 @@ def collect_asset_names_for_import(data: list) -> tuple[set[str], set[str]]:
             continue
 
         t = entry.get("Type")
-        if t in {"EndEnvironmentStaticMeshComponent", "StaticMeshComponent"}:
+        if t in {
+            "EndEnvironmentStaticMeshComponent", "StaticMeshComponent",
+            "FoliageInstancedStaticMeshComponent",
+        }:
             props = entry.get("Properties", {})
             static_mesh = props.get("StaticMesh", {})
             if isinstance(static_mesh, dict):
                 asset_name = extract_static_mesh_name(static_mesh.get("ObjectName"))
                 if asset_name:
                     static_asset_names.add(asset_name)
-        elif t in {"EndSkeletalMeshComponent", "SkeletalMeshComponent"}:
+        elif t in _SKELETAL_COMPONENT_TYPES:
             asset_name, _template_object_path = extract_skeletal_mesh_name(entry)
             if asset_name:
                 skeletal_asset_names.add(asset_name)
@@ -1290,6 +1485,7 @@ def collect_package_static_mesh_paths_for_import(data: list) -> set[str]:
     for entry in data:
         if not isinstance(entry, dict) or entry.get("Type") not in {
             "EndEnvironmentStaticMeshComponent", "StaticMeshComponent",
+            "FoliageInstancedStaticMeshComponent",
         }:
             continue
         props = entry.get("Properties", {})
@@ -1304,9 +1500,7 @@ def collect_package_skeletal_mesh_paths_for_import(data: list) -> set[str]:
     """Collect full SkeletalMesh object paths supplied by a package UMAP payload."""
     paths: set[str] = set()
     for entry in data:
-        if not isinstance(entry, dict) or entry.get("Type") not in {
-            "EndSkeletalMeshComponent", "SkeletalMeshComponent",
-        }:
+        if not isinstance(entry, dict) or entry.get("Type") not in _SKELETAL_COMPONENT_TYPES:
             continue
         _asset_name, template_object_path = extract_skeletal_mesh_name(entry)
         if template_object_path:
@@ -1380,9 +1574,20 @@ def import_map_entries(
     import_models: bool = True,
     import_lights: bool = True,
     import_reflection_probes: bool | None = None,
+    target_collection: bpy.types.Collection | None = None,
+    game_features: bool = True,
+    component_initializer=None,
+    import_point_lights: bool = True,
+    import_spot_lights: bool = True,
 ) -> tuple[int, set[str]]:
     """Create requested Blender models and lights from package-decoded UMAP entries."""
     location_scale = _float_or_default(location_scale, 0.01)
+    import_lights = import_lights and (import_point_lights or import_spot_lights)
+
+    def resolve_parent(props, component_objects, child_name="object", report_missing=True):
+        return resolve_attach_parent_object(
+            props, component_objects, child_name, report_missing, allow_scene_lookup=game_features,
+        )
 
     if not isinstance(data, list):
         raise ValueError("Package map entries must be a list of objects")
@@ -1419,11 +1624,17 @@ def import_map_entries(
     def ensure_root_collection() -> bpy.types.Collection:
         nonlocal parent_collection
         if parent_collection is None:
-            parent_collection = ensure_parent_collection_for_source(source_name)
+            parent_collection = target_collection or ensure_parent_collection_for_source(source_name)
         return parent_collection
 
     def ensure_static_collection() -> bpy.types.Collection:
         return ensure_typed_import_collection(ensure_root_collection(), "_Static")
+
+    def ensure_foliage_collection() -> bpy.types.Collection:
+        return ensure_typed_import_collection(ensure_root_collection(), "_Foliage")
+
+    def ensure_foliage_source_collection() -> bpy.types.Collection:
+        return ensure_child_collection(ensure_foliage_collection(), "__Sources")
 
     def ensure_skeletal_collection() -> bpy.types.Collection:
         return ensure_typed_import_collection(ensure_root_collection(), "_Skeletal")
@@ -1449,7 +1660,9 @@ def import_map_entries(
     pending_material_parameter_lights: list[dict] = []
     pending_vector_parameters: list[tuple[int, dict]] = []
     map_mesh_objects: list[bpy.types.Object] = []
-    if import_models:
+    foliage_source_cache: dict[int, bpy.types.Object] = {}
+    foliage_node_group_cache: dict[int, bpy.types.NodeTree] = {}
+    if import_models and game_features:
         created_count += particles.create_niagara_empties_from_effect_json(
             data,
             source_name,
@@ -1478,14 +1691,10 @@ def import_map_entries(
     # is materialized in the following skeletal pass.
     ordered_entries = [
         (index, entry) for index, entry in enumerate(data)
-        if not isinstance(entry, dict) or entry.get("Type") not in {
-            "EndSkeletalMeshComponent", "SkeletalMeshComponent",
-        }
+        if not isinstance(entry, dict) or entry.get("Type") not in _SKELETAL_COMPONENT_TYPES
     ] + [
         (index, entry) for index, entry in enumerate(data)
-        if isinstance(entry, dict) and entry.get("Type") in {
-            "EndSkeletalMeshComponent", "SkeletalMeshComponent",
-        }
+        if isinstance(entry, dict) and entry.get("Type") in _SKELETAL_COMPONENT_TYPES
     ]
     for entry_index, entry in ordered_entries:
         if not isinstance(entry, dict):
@@ -1493,7 +1702,52 @@ def import_map_entries(
 
         t = entry.get("Type")
 
-        if import_models and t in {"EndEnvironmentStaticMeshComponent", "StaticMeshComponent"}:
+        if import_models and t == "FoliageInstancedStaticMeshComponent":
+            props = entry.get("Properties", {})
+            props = props if isinstance(props, dict) else {}
+            static_mesh = props.get("StaticMesh", {})
+            asset_key = extract_static_mesh_game_path(static_mesh)
+            asset = static_asset_cache.get(asset_key) if asset_key else None
+            component_name = entry.get("Name", "FoliageInstancedStaticMeshComponent")
+            component_name = (
+                component_name
+                if isinstance(component_name, str) and component_name
+                else "FoliageInstancedStaticMeshComponent"
+            )
+            if asset is None:
+                if asset_key:
+                    missing_assets.add(asset_key)
+                print(
+                    f"[Rebirth Map Import]   Foliage component '{component_name}' "
+                    "has no importable StaticMesh; skipping its instances."
+                )
+                continue
+
+            foliage = create_foliage_instances_from_entry(
+                entry,
+                asset,
+                ensure_foliage_collection(),
+                ensure_foliage_source_collection(),
+                foliage_source_cache,
+                foliage_node_group_cache,
+                location_scale,
+            )
+            if foliage is None:
+                print(
+                    f"[Rebirth Map Import]   Foliage component '{component_name}' "
+                    "has no decoded instance transforms; skipping it."
+                )
+                continue
+
+            register_component_object(component_objects, entry, foliage)
+            if component_initializer is not None:
+                component_initializer(foliage, entry)
+            _register_actor_object(actor_objects, _resolve_outer_name(entry) or component_name, foliage)
+            register_override_material_targets(material_targets, props, foliage)
+            map_mesh_objects.append(foliage)
+            created_count += int(foliage.get("sqex_foliage_instance_count", 0))
+
+        elif import_models and t in {"EndEnvironmentStaticMeshComponent", "StaticMeshComponent"}:
             props = entry.get("Properties", {})
             if not isinstance(props, dict):
                 props = {}
@@ -1552,6 +1806,7 @@ def import_map_entries(
                         new_obj = create_static_mesh_instance_from_datablock(
                             mesh=asset, name=attach_name, loc=loc, rot=rot,
                             static_collection=static_collection, rel_scale=rel_scale,
+                            game_features=game_features,
                         )
                         new_obj["source_name"] = attach_name
                         new_obj["source_type"] = t
@@ -1578,6 +1833,7 @@ def import_map_entries(
                 new_obj = create_static_mesh_instance_from_datablock(
                     mesh=asset, name=attach_name, loc=loc, rot=rot,
                     static_collection=static_collection, rel_scale=rel_scale,
+                    game_features=game_features,
                 )
             else:
                 missing_assets.add(asset_key or asset_name)
@@ -1593,12 +1849,14 @@ def import_map_entries(
                 attach_socket = None
 
             register_component_object(component_objects, entry, new_obj)
+            if component_initializer is not None:
+                component_initializer(new_obj, entry)
             _register_actor_object(actor_objects, attach_name, new_obj)
             register_override_material_targets(material_targets, props, new_obj)
             map_mesh_objects.append(new_obj)
 
             if props.get("AttachParent") and not has_attach_socket:
-                parent_obj = resolve_attach_parent_object(
+                parent_obj = resolve_parent(
                     props,
                     component_objects,
                     attach_name,
@@ -1620,7 +1878,7 @@ def import_map_entries(
             # -------------------------------------------------------------- #
             created_count += 1
 
-        elif import_models and t in {"EndSkeletalMeshComponent", "SkeletalMeshComponent"}:
+        elif import_models and t in _SKELETAL_COMPONENT_TYPES:
             skeletal_collection = ensure_skeletal_collection()
 
             props = entry.get("Properties", {})
@@ -1666,6 +1924,7 @@ def import_map_entries(
                     rot=rot,
                     skeletal_collection=skeletal_collection,
                     rel_scale=rel_scale,
+                    game_features=game_features,
                 )
                 print(
                     f"[Rebirth Map Import]   SkeletalMesh '{instance_name}' "
@@ -1687,6 +1946,8 @@ def import_map_entries(
                 )
 
             register_component_object(component_objects, entry, obj)
+            if component_initializer is not None:
+                component_initializer(obj, entry)
             _register_actor_object(actor_objects, instance_name, obj)
             map_mesh_objects.append(obj)
 
@@ -1694,7 +1955,7 @@ def import_map_entries(
             if attach_socket:
                 pending_attaches.append((obj, props, attach_socket))
             elif props.get("AttachParent"):
-                parent_obj = resolve_attach_parent_object(
+                parent_obj = resolve_parent(
                     props,
                     component_objects,
                     instance_name,
@@ -1710,6 +1971,44 @@ def import_map_entries(
                 else:
                     pending_parent_attaches.append((obj, props, instance_name))
 
+            created_count += 1
+
+        elif ((import_models and t == "TresRootComponent") or
+              (not game_features and (import_models or import_lights) and t == "SceneComponent")):
+            # Kingdom Hearts event-pawn Blueprints put their actor/world
+            # transform on a TresRootComponent and attach the visible
+            # TresSkeletalMeshComponent below it.  Preserve that tiny parent
+            # node so the shared deferred-attachment logic can retain the
+            # authored hierarchy instead of treating every rig as world-zero.
+            props = entry.get("Properties", {})
+            if not isinstance(props, dict):
+                props = {}
+            root_name = _resolve_outer_name(entry)
+            if not root_name:
+                component_name = entry.get("Name", "TresRoot")
+                root_name = component_name if isinstance(component_name, str) else "TresRoot"
+            loc = location_from_relative(
+                props.get("RelativeLocation", entry.get("RelativeLocation", {})),
+                scale_factor=location_scale,
+            )
+            rot = rotation_from_relative(
+                props.get("RelativeRotation", entry.get("RelativeRotation", {}))
+            )
+            root_obj = create_mesh_empty(
+                root_name,
+                loc,
+                rot,
+                ensure_skeletal_collection(),
+                scale=scale_from_entry(props, entry),
+            )
+            root_obj["source_name"] = root_name
+            root_obj["source_type"] = t
+            register_component_object(component_objects, entry, root_obj)
+            _register_actor_object(actor_objects, root_name, root_obj)
+            if not game_features:
+                map_mesh_objects.append(root_obj)
+                if props.get("AttachParent"):
+                    pending_parent_attaches.append((root_obj, props, root_name))
             created_count += 1
 
         elif import_models and t == "SceneComponent" and extract_setpos_lookup_name_from_entry(entry):
@@ -1729,7 +2028,7 @@ def import_map_entries(
             if not isinstance(props, dict):
                 props = {}
             if props.get("AttachParent"):
-                parent_obj = resolve_attach_parent_object(
+                parent_obj = resolve_parent(
                     props,
                     component_objects,
                     obj.name,
@@ -1763,13 +2062,13 @@ def import_map_entries(
 
             created_count += pack_created_count
 
-        elif import_lights and t == "PointLightComponent":
+        elif import_lights and import_point_lights and t == "PointLightComponent":
             lights_collection = ensure_lights_collection()
 
             props = entry.get("Properties", {})
             light_name = _resolve_light_name(entry, "PointLight")
             attach_socket = props.get("AttachSocketName")
-            attach_parent_obj = None if attach_socket else resolve_attach_parent_object(
+            attach_parent_obj = None if attach_socket else resolve_parent(
                 props, component_objects, light_name, report_missing=False,
             )
             light_obj = create_point_light_from_entry(
@@ -1790,13 +2089,13 @@ def import_map_entries(
                 pending_light_attaches.append((light_obj, props, light_name))
             created_count += 1
 
-        elif import_lights and t == "SpotLightComponent":
+        elif import_lights and import_spot_lights and t == "SpotLightComponent":
             lights_collection = ensure_lights_collection()
 
             props = entry.get("Properties", {})
             light_name = _resolve_light_name(entry, "SpotLight")
             attach_socket = props.get("AttachSocketName")
-            attach_parent_obj = None if attach_socket else resolve_attach_parent_object(
+            attach_parent_obj = None if attach_socket else resolve_parent(
                 props, component_objects, light_name, report_missing=False,
             )
             light_obj = create_spot_light_from_entry(
@@ -1832,7 +2131,7 @@ def import_map_entries(
 
     if pending_parent_attaches:
         for child_obj, props, child_name in pending_parent_attaches:
-            parent_obj = resolve_attach_parent_object(
+            parent_obj = resolve_parent(
                 props,
                 component_objects,
                 child_name,
@@ -1853,12 +2152,13 @@ def import_map_entries(
         )
         for child_obj, props, attach_socket in pending_attaches:
             process_deferred_attach(
-                child_obj, props, attach_socket, location_scale, component_objects
+                child_obj, props, attach_socket, location_scale, component_objects,
+                allow_scene_lookup=game_features,
             )
 
     if pending_light_attaches:
         for light_obj, props, light_name in pending_light_attaches:
-            parent_obj = resolve_attach_parent_object(
+            parent_obj = resolve_parent(
                 props,
                 component_objects,
                 light_name,
@@ -1884,7 +2184,7 @@ def import_map_entries(
             _apply_material_parameter_light_props(target, props, exposure_mult=exposure_mult)
 
     for export_index, entry in pending_vector_parameters:
-        # Bridge actor lists are filtered, so their list offsets are not UE
+        # Gargoyle actor lists are filtered, so their list offsets are not UE
         # export indices. Resolve the MID's owning component first.
         owner_keys = _object_reference_lookup_keys(entry.get("Outer", {}))
         target = next((component_objects[key] for key in owner_keys

@@ -24,14 +24,14 @@ def main() -> None:
         )
     addons_directory, game_root, usmap_path = args
     sys.path.insert(0, str(Path(addons_directory).resolve()))
-    enabled = bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
+    enabled = bpy.ops.preferences.addon_enable(module="talisman")
     assert enabled == {"FINISHED"}, enabled
 
-    from ff7r_rebirth_tools.games.crisis_core.importers import static_mesh
+    from talisman.games.crisis_core.importers import static_mesh
 
-    preferences = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
+    preferences = bpy.context.preferences.addons["talisman"].preferences
     preferences.crisis_core_install_root = game_root
-    preferences.crisis_core_oodle_dll = ""
+    preferences.oodle_dll = ""
     preferences.crisis_core_usmap_path = usmap_path
     result = bpy.ops.import_scene.ff7r_crisis_core_static_mesh_game_packages(
         "EXEC_DEFAULT", virtual_path=ASSET

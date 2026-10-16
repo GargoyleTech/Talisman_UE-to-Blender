@@ -8,11 +8,11 @@ import bpy
 
 SKELETON = "End/Content/Character/Player/PC0000_00_Cloud_Standard/Model/PC0000_00_Skeleton.uasset"
 
-if "ff7r_rebirth_tools" not in bpy.context.preferences.addons:
-    bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
-prefs = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
+if "talisman" not in bpy.context.preferences.addons:
+    bpy.ops.preferences.addon_enable(module="talisman")
+prefs = bpy.context.preferences.addons["talisman"].preferences
 prefs.rebirth_install_root = r"G:\SteamLibrary\steamapps\common\FINAL FANTASY VII REBIRTH"
-prefs.rebirth_oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
+prefs.oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
 prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
 
 result = bpy.ops.import_scene.ff7r_rebirth_skeleton_game_packages(

@@ -66,14 +66,6 @@ NEVER_CONNECT_SUFFIXES: tuple[str, ...] = ("Kdi", "Spo")
 # was verified against the game data.
 CONNECT_DISTANCE_THRESHOLD = 0.0001
 
-# Naive IK setup: a plain IK constraint (no target, no pole) on each limb's end
-# bone, plus a hinge lock on the elbow/knee so the solver can't bend it
-# sideways. This is deliberately bare-bones -- the user still has to add and
-# aim their own target objects; it just saves the constraint/limit busywork.
-IK_END_BONES: tuple[str, ...] = ("R_Foot_a", "L_Foot_a", "R_Hand_a", "L_Hand_a")
-IK_CHAIN_COUNT = 2
-IK_HINGE_BONES: tuple[str, ...] = ("L_Foreleg_a", "R_Foreleg_a", "L_Forearm_a", "R_Forearm_a")
-
 # ``face_y_forward`` rotates the whole finished skeleton -90 degrees about Z, so a
 # root bone originally aimed down Blender's +X (Unreal's own forward axis, once
 # mirrored) ends up facing -Y instead (Blender's own forward convention). It is applied once to each root bone's
@@ -88,7 +80,10 @@ Y_FORWARD_ROTATION = Matrix.Rotation(math.radians(-90.0), 4, "Z")
 # and so the stored value and the enum value can never drift apart.
 FACE_FORWARD_UNREAL = "UNREAL"
 FACE_FORWARD_BLENDER = "BLENDER"
-FACE_FORWARD_PROPERTY = "ff7r_face_forward"
+FACE_FORWARD_PROPERTY = "sqex_face_forward"
+AXIS_ORDER_UNREAL = "UNREAL"
+AXIS_ORDER_BLENDER = "BLENDER"
+AXIS_ORDER_PROPERTY = "sqex_axis_order"
 
 
 def armature_face_forward(armature_obj: Any) -> str:
@@ -103,36 +98,9 @@ def armature_face_forward(armature_obj: Any) -> str:
 
 
 def apply_naive_ik(armature_obj: bpy.types.Object) -> tuple[int, int]:
-    """Add a chain-length-3 IK constraint to each present limb end bone, and
-    lock Y/Z rotation to 0 on each present elbow/knee. Missing bones are
-    skipped silently. Returns (end_bones_configured, hinge_bones_configured).
-    """
-    pose_bones = armature_obj.pose.bones
-
-    end_bones_configured = 0
-    for bone_name in IK_END_BONES:
-        pose_bone = pose_bones.get(bone_name)
-        if pose_bone is None:
-            continue
-        constraint = pose_bone.constraints.new(type="IK")
-        constraint.chain_count = IK_CHAIN_COUNT
-        constraint.use_tail = False
-        end_bones_configured += 1
-
-    hinge_bones_configured = 0
-    for bone_name in IK_HINGE_BONES:
-        pose_bone = pose_bones.get(bone_name)
-        if pose_bone is None:
-            continue
-        pose_bone.use_ik_limit_y = True
-        pose_bone.ik_min_y = 0.0
-        pose_bone.ik_max_y = 0.0
-        pose_bone.use_ik_limit_z = True
-        pose_bone.ik_min_z = 0.0
-        pose_bone.ik_max_z = 0.0
-        hinge_bones_configured += 1
-
-    return end_bones_configured, hinge_bones_configured
+    """Compatibility entry point for the optional target-and-pole IK generator."""
+    from .ik_rig import generate_limb_ik
+    return generate_limb_ik(armature_obj)
 
 
 def max_length_for_bone(bone_name: str) -> float | None:
@@ -154,6 +122,7 @@ def ue_bone_transform_to_blender(
         translation: tuple[float, float, float],
         rotation: tuple[float, float, float, float],
         scale_factor: float,
+        bone_scale: tuple[float, float, float] | None = None,
 ) -> Matrix:
     """Convert one parent-relative UE bone FTransform to a Blender matrix.
 
@@ -176,10 +145,13 @@ def ue_bone_transform_to_blender(
     location = Vector((tx * scale_factor, -ty * scale_factor, tz * scale_factor))
     orientation = Quaternion((rw, -rx, ry, -rz))
     orientation.normalize()
-    return Matrix.Translation(location) @ orientation.to_matrix().to_4x4()
+    result = Matrix.Translation(location) @ orientation.to_matrix().to_4x4()
+    if bone_scale is not None:
+        result = result @ Matrix.Diagonal((*bone_scale, 1.0))
+    return result
 
 
-def _bones_from_bridge(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _bones_from_gargoyle(data: dict[str, Any]) -> list[dict[str, Any]]:
     bones = []
     for bone in data.get("bones") or []:
         translation = bone.get("translation") or (0.0, 0.0, 0.0)
@@ -189,6 +161,7 @@ def _bones_from_bridge(data: dict[str, Any]) -> list[dict[str, Any]]:
             "parent_index": int(bone.get("parentIndex", -1)),
             "translation": tuple(translation),
             "rotation": tuple(rotation),
+            "scale": tuple(bone.get("scale") or (1.0, 1.0, 1.0)),
         })
     return bones
 
@@ -205,12 +178,14 @@ def build_armature_from_bones(
         setup_naive_ik: bool = False,
         face_y_forward: bool = False,
         create_limbal_bone: bool = False,
+        preserve_ue_axis_order: bool = False,
+        game_features: bool = True,
 ) -> bpy.types.Object:
     """Create a new armature object with one edit-bone per entry in `bones`.
 
     Each bone's head is placed by composing its parent-relative UE bind-pose
     transform down the hierarchy (bones must list parents before children,
-    which FinalRefBoneInfo/the bridge always guarantee).
+    which FinalRefBoneInfo/the gargoyle always guarantee).
 
     The game data carries no notion of bone length, so tails are derived: each
     bone is aimed down its UE local +X (see the axis note in the tail loop
@@ -258,11 +233,13 @@ def build_armature_from_bones(
     bpy.ops.object.mode_set(mode="EDIT")
     try:
         armature_space = _build_edit_bones(
-            armature_data, bones, scale_factor, connect_bones, face_y_forward
+            armature_data, bones, scale_factor, connect_bones, face_y_forward,
+            preserve_ue_axis_order, game_features,
         )
         socket_bone_names = (
-            _build_socket_edit_bones(
-                armature_data, sockets, bones, armature_space, scale_factor
+                _build_socket_edit_bones(
+                armature_data, sockets, bones, armature_space, scale_factor,
+                preserve_ue_axis_order,
             )
             if sockets and create_socket_bones
             else {}
@@ -286,13 +263,17 @@ def build_armature_from_bones(
     armature_obj[FACE_FORWARD_PROPERTY] = (
         FACE_FORWARD_BLENDER if face_y_forward else FACE_FORWARD_UNREAL
     )
+    armature_obj[AXIS_ORDER_PROPERTY] = (
+        AXIS_ORDER_UNREAL if preserve_ue_axis_order else AXIS_ORDER_BLENDER
+    )
+    armature_obj["ue_import_scale"] = scale_factor
 
     if limbal_created:
         _add_limbal_face_constraint(context, armature_obj)
         _assign_face_base_child_custom_shapes(context, armature_obj)
 
     if sockets:
-        armature_obj["ff7r_sockets"] = json.dumps(sockets, ensure_ascii=False)
+        armature_obj["sqex_sockets"] = json.dumps(sockets, ensure_ascii=False)
         if socket_bone_names:
             _finalize_socket_bones(armature_obj, socket_bone_names)
         if create_socket_empties and not socket_bone_names:
@@ -408,14 +389,14 @@ def _assign_face_base_child_custom_shapes(context: Any, armature_obj: bpy.types.
             continue
         pose_bone.custom_shape = shape
         pose_bone.use_custom_shape_bone_size = False
-        pose_bone.custom_shape_scale_xyz = (0.008, 0.008, 0.008)
+        pose_bone.custom_shape_scale_xyz = (0.008, 0.003, 0.003)
     return len(face_base.children)
 
 
 def _socket_local_matrix(socket: dict[str, Any], scale_factor: float) -> Matrix:
     """Convert one socket's bone-relative UE offset into a Blender-space matrix.
 
-    Handles both export shapes: the bridge emits ``translation``/``rotation`` with
+    Handles both export shapes: the gargoyle emits ``translation``/``rotation`` with
     the rotation already converted to a quaternion by CUE4Parse's own
     ``FRotator.Quaternion()``, while a raw FModel export carries
     ``relativeLocation``/``relativeRotation`` as a Pitch/Yaw/Roll Rotator in
@@ -465,7 +446,7 @@ def _create_socket_empties(
         bone_index = bone_index_by_name.get(bone_name)
         bone = armature_obj.data.bones.get(bone_name)
         if bone_index is None or bone is None:
-            print(f"[FF7R Skeleton] Socket '{socket_name}': bone '{bone_name}' not found; skipped.")
+            print(f"[Talisman Skeleton] Socket '{socket_name}': bone '{bone_name}' not found; skipped.")
             continue
 
         socket_matrix = armature_space[bone_index] @ _socket_local_matrix(socket, scale_factor)
@@ -473,7 +454,7 @@ def _create_socket_empties(
         empty = bpy.data.objects.new(f"{armature_obj.name}_{socket_name}", None)
         empty.empty_display_type = "PLAIN_AXES"
         empty.empty_display_size = 0.02
-        empty["ff7r_socket_bone"] = bone_name
+        empty["sqex_socket_bone"] = bone_name
         if collection is not None:
             collection.objects.link(empty)
 
@@ -499,6 +480,7 @@ def _build_socket_edit_bones(
         bones: list[dict[str, Any]],
         armature_space: list[Matrix],
         scale_factor: float,
+        preserve_ue_axis_order: bool = False,
 ) -> dict[str, str]:
     """Add one non-deforming edit bone at each socket transform.
 
@@ -516,7 +498,7 @@ def _build_socket_edit_bones(
         parent_index = bone_index_by_name.get(parent_name)
         parent_bone = edit_bones.get(parent_name) if parent_name else None
         if not socket_name or parent_index is None or parent_bone is None:
-            print(f"[FF7R Skeleton] Socket '{socket_name}': bone '{parent_name}' not found; skipped.")
+            print(f"[Talisman Skeleton] Socket '{socket_name}': bone '{parent_name}' not found; skipped.")
             continue
 
         socket_matrix = armature_space[parent_index] @ _socket_local_matrix(socket, scale_factor)
@@ -529,7 +511,8 @@ def _build_socket_edit_bones(
         socket_bone.head = head
         socket_bone.tail = head + aim * DEFAULT_BONE_LENGTH
         socket_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
-        socket_bone.roll += math.pi * 0.5
+        if not preserve_ue_axis_order:
+            socket_bone.roll += math.pi * 0.5
         socket_bone_names[socket_name] = socket_bone.name
     return socket_bone_names
 
@@ -560,6 +543,8 @@ def _build_edit_bones(
         scale_factor: float,
         connect_bones: bool,
         face_y_forward: bool = False,
+        preserve_ue_axis_order: bool = False,
+        game_features: bool = True,
 ) -> list[Matrix]:
     """Populate an armature's edit bones. Must be called in Edit mode.
 
@@ -579,7 +564,8 @@ def _build_edit_bones(
     children_of: dict[int, list[int]] = {}
     for index, bone in enumerate(bones):
         local_matrix = ue_bone_transform_to_blender(
-            bone["translation"], bone["rotation"], scale_factor
+            bone["translation"], bone["rotation"], scale_factor,
+            bone.get("scale") if not game_features else None,
         )
         parent_index = bone["parent_index"]
         if parent_index is not None and 0 <= parent_index < index:
@@ -629,7 +615,7 @@ def _build_edit_bones(
             # chain tips taper instead of collapsing into invisible stubs.
             parent_index = bones[index]["parent_index"]
             length = bone_length.get(parent_index, DEFAULT_BONE_LENGTH) * LEAF_LENGTH_RATIO
-        cap = max_length_for_bone(bones[index]["name"])
+        cap = max_length_for_bone(bones[index]["name"]) if game_features else None
         if cap is not None:
             length = min(length, cap)
         length = max(length, MIN_BONE_LENGTH)
@@ -639,15 +625,16 @@ def _build_edit_bones(
 
         # Blender defines a bone's local +Y as head->tail, but UE skeletal bones
         # run down their local +X (children are offset along the parent's +X).
-        # First aim Blender's +Y down UE's X.  The additional +90 degree roll is
-        # deliberate: it swaps the displayed local X/Z frame into the convention
-        # used by the existing loose-JSON KDI workflow, while leaving every head,
-        # tail direction, hierarchy relation, and bind-pose location untouched.
+        # The default display-frame basis is the add-on's Blender/KDI convention;
+        # preserving UE ordering leaves the source axis frame intact. The bone
+        # frame and the KDI coordinate profile must agree, or translations and
+        # rotations are interpreted in different frames.
         edit_bone.tail = head + aim * length
         edit_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
-        edit_bone.roll += math.pi * 0.5
+        if not preserve_ue_axis_order:
+            edit_bone.roll += math.pi * 0.5
 
-        if connect_bones and edit_bone.parent is not None and allows_connect(bones[index]["name"]):
+        if connect_bones and edit_bone.parent is not None and (not game_features or allows_connect(bones[index]["name"])):
             # Preserve the imported child head: move only the parent's tail before
             # enabling connected mode. Assigning use_connect first would snap the
             # child head onto the parent tail and lose its 1:1 game position.
@@ -655,7 +642,8 @@ def _build_edit_bones(
                 edit_bone.parent.tail = head
                 edit_bone.use_connect = True
 
-    _disable_kdi_root_deform(bones, created, children_of)
+    if game_features:
+        _disable_kdi_root_deform(bones, created, children_of)
 
     return armature_space
 

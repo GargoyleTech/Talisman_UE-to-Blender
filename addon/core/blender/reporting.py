@@ -1,4 +1,4 @@
-"""Shared reporting for FF7R Blender operators.
+"""Shared reporting for Square Enix Blender operators.
 
 Blender's status-bar reports are intentionally short-lived; mirror them to the
 system console so import diagnostics, warnings, and success summaries live in
@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 
 import bpy
+
+from ..package_utils import addon_package_name
 
 
 def _json_setting_value(value):
@@ -32,7 +34,7 @@ def _json_setting_value(value):
 
 
 def _addon_package_name() -> str:
-    return (__package__ or "").split(".", 1)[0]
+    return addon_package_name(__package__)
 
 
 def _last_settings_preferences(context):
@@ -40,7 +42,7 @@ def _last_settings_preferences(context):
     return addon.preferences if addon else None
 
 
-class FF7R_LoggedOperator(bpy.types.Operator):
+class SQEX_LoggedOperator(bpy.types.Operator):
     """Operator base which sends every Blender report to stdout too, and lets
     an importer remember its dialog settings across Blender sessions.
     """
@@ -99,10 +101,10 @@ class FF7R_LoggedOperator(bpy.types.Operator):
         }
         prefs.last_import_settings_json = json.dumps(all_settings)
 
-    def report(self, type, message):
-        levels = "/".join(sorted(str(level) for level in type))
-        print(f"[FF7R {levels}] {message}")
-        return super().report(type, message)
+    # Blender invokes its RNA ``Operator.report`` implementation directly,
+    # bypassing a Python override on this base class.  Operator code must use
+    # the module-level ``report()`` helper below so the same message reaches
+    # both Blender's Info log and the system console.
 
 
 def report(operator: bpy.types.Operator, levels, message: str) -> None:
@@ -112,5 +114,5 @@ def report(operator: bpy.types.Operator, levels, message: str) -> None:
     Python subclass override, so every operator calls this helper explicitly.
     """
     level_text = "/".join(sorted(str(level) for level in levels))
-    print(f"[FF7R {level_text}] {message}")
+    print(f"[Talisman {level_text}] {message}")
     operator.report(levels, message)

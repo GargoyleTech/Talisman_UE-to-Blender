@@ -66,13 +66,29 @@ public sealed class AclClip
         HasScale = h[9] != 0;
         DefaultScaleIsOne = h[10] != 0;
         NumSamples = BinaryPrimitives.ReadUInt32LittleEndian(h[12..]);
-        SampleRate = BinaryPrimitives.ReadSingleLittleEndian(h[16..]);
-        _segmentStartIndicesOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[20..]);
-        _segmentHeadersOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[22..]);
-        _defaultTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[24..]);
-        _constantTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[26..]);
-        _constantTrackDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[28..]);
-        _clipRangeDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[30..]);
+        SampleRate = Version == 3
+            ? BinaryPrimitives.ReadUInt32LittleEndian(h[16..])
+            : BinaryPrimitives.ReadSingleLittleEndian(h[16..]);
+        if (Version == 3)
+        {
+            // ACL 1.0's ClipHeader predates segment-start indices and uses a
+            // 20-byte SegmentHeader with its sample count as the first field.
+            _segmentStartIndicesOffset = InvalidOffset16;
+            _segmentHeadersOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[20..]);
+            _defaultTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[22..]);
+            _constantTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[24..]);
+            _constantTrackDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[26..]);
+            _clipRangeDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[28..]);
+        }
+        else
+        {
+            _segmentStartIndicesOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[20..]);
+            _segmentHeadersOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[22..]);
+            _defaultTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[24..]);
+            _constantTracksBitsetOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[26..]);
+            _constantTrackDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[28..]);
+            _clipRangeDataOffset = BinaryPrimitives.ReadUInt16LittleEndian(h[30..]);
+        }
     }
 
     public uint Size { get; }
@@ -100,11 +116,11 @@ public sealed class AclClip
 
     internal ReadOnlySpan<byte> Data => _data;
 
-    /// <summary>Absolute index into <see cref="Data"/> for a ClipHeader-relative offset.</summary>
-    private static int Resolve(ushort offset) =>
+    /// <summary>Absolute index into <see cref="Data"/> for a serialized offset.</summary>
+    private int Resolve(ushort offset) =>
         offset == InvalidOffset16 ? -1 : ClipHeaderOffset + offset;
 
-    private static int Resolve(uint offset) =>
+    private int Resolve(uint offset) =>
         offset == InvalidOffset32 ? -1 : ClipHeaderOffset + (int) offset;
 
     internal int DefaultTracksBitset => Resolve(_defaultTracksBitsetOffset);
@@ -114,17 +130,35 @@ public sealed class AclClip
 
     internal uint SegmentStartIndex(int segmentIndex)
     {
+        if (Version == 3)
+        {
+            uint start = 0;
+            for (var index = 0; index < segmentIndex; index++)
+                start += Segment(index).NumSamples;
+            return start;
+        }
         var at = Resolve(_segmentStartIndicesOffset);
         if (at < 0) return 0;
         return BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(at + segmentIndex * 4));
     }
 
-    /// <summary>A segment's animated pose bit size plus the three ClipHeader-relative data offsets.</summary>
-    internal (uint PoseBitSize, int FormatPerTrackData, int RangeData, int TrackData) Segment(int segmentIndex)
+    /// <summary>A segment's sample count, animated pose size, and data offsets.</summary>
+    internal (uint NumSamples, uint PoseBitSize, int FormatPerTrackData, int RangeData, int TrackData) Segment(int segmentIndex)
     {
-        var at = Resolve(_segmentHeadersOffset) + segmentIndex * 16;
+        var stride = Version == 3 ? 20 : 16;
+        var at = Resolve(_segmentHeadersOffset) + segmentIndex * stride;
         var s = _data.AsSpan(at);
+        if (Version == 3)
+        {
+            return (
+                BinaryPrimitives.ReadUInt32LittleEndian(s),
+                BinaryPrimitives.ReadUInt32LittleEndian(s[4..]),
+                Resolve(BinaryPrimitives.ReadUInt32LittleEndian(s[8..])),
+                Resolve(BinaryPrimitives.ReadUInt32LittleEndian(s[12..])),
+                Resolve(BinaryPrimitives.ReadUInt32LittleEndian(s[16..])));
+        }
         return (
+            0,
             BinaryPrimitives.ReadUInt32LittleEndian(s),
             Resolve(BinaryPrimitives.ReadUInt32LittleEndian(s[4..])),
             Resolve(BinaryPrimitives.ReadUInt32LittleEndian(s[8..])),

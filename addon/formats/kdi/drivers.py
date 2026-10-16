@@ -14,6 +14,8 @@ the ``*_KDI_BLENDER_AUDIT.json`` produced by kdi_step1_audit.py.
 
 from __future__ import annotations
 
+from ...language import tooltips
+
 import json
 import math
 import traceback
@@ -27,7 +29,7 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 
 from . import audit as kdi_audit
-from ...core.blender.reporting import FF7R_LoggedOperator
+from ...core.blender.reporting import SQEX_LoggedOperator, report
 
 
 SCRIPT_VERSION = "0.4.1"
@@ -37,29 +39,29 @@ SOURCE_PROPERTY = "kdi_scalar_source_audit"
 # Blender Text blocks are saved in the .blend, unlike the temporary JSON file
 # used by the direct-package import path.  Keep the report names on the rig so
 # the node viewer can always reconstruct its graph from the imported drivers.
-GRAPH_TEXTS_PROPERTY = "ff7r_kdi_graph_texts"
+GRAPH_TEXTS_PROPERTY = "sqex_kdi_graph_texts"
 KDI_BONE_COLLECTION = "KDI Helpers (Hidden)"
 PHYSICS_BONE_COLLECTION = "Physics Bones (Hidden)"
 LEAF_BONE_COLLECTION = "Leaf Bones (Hidden)"
 RUNTIME: dict[int, dict[str, Any]] = {}
-_DEFERRED_TIMER_KEY = "_ff7r_kdi_deferred_runtime_load"
-_HEADER_CALLBACK_KEY = "_ff7r_kdi_header_callback"
+_DEFERRED_TIMER_KEY = "_sqex_kdi_deferred_runtime_load"
+_HEADER_CALLBACK_KEY = "_sqex_kdi_header_callback"
 
 
 AXIS_ORDER_ITEMS = (
-    ("XYZ", "X → X, Y → Y, Z → Z", "Use the direct KDI-to-Blender channel mapping"),
-    ("XZY", "X → X, Y → Z, Z → Y", "Swap the Blender Y and Z target channels"),
-    ("YXZ", "X → Y, Y → X, Z → Z", "Swap the Blender X and Y target channels"),
-    ("YZX", "X → Y, Y → Z, Z → X", "Cycle the KDI X/Y/Z channels onto Blender Y/Z/X"),
-    ("ZXY", "X → Z, Y → X, Z → Y", "Cycle the KDI X/Y/Z channels onto Blender Z/X/Y"),
-    ("ZYX", "X → Z, Y → Y, Z → X", "Swap the Blender X and Z target channels"),
+    ("XYZ", "X → X, Y → Y, Z → Z", tooltips.KDI_AXIS_XYZ),
+    ("XZY", "X → X, Y → Z, Z → Y (Unreal)", tooltips.KDI_AXIS_XZY),
+    ("YXZ", "X → Y, Y → X, Z → Z", tooltips.KDI_AXIS_YXZ),
+    ("YZX", "X → Y, Y → Z, Z → X (Blender)", tooltips.KDI_AXIS_YZX),
+    ("ZXY", "X → Z, Y → X, Z → Y", tooltips.KDI_AXIS_ZXY),
+    ("ZYX", "X → Z, Y → Y, Z → X", tooltips.KDI_AXIS_ZYX),
 )
 
 # The loose JSON KDI workflow is the reference frame used by this module.  A
 # package skeleton made by skeleton/importer.py has the same heads and hierarchy
-# as that armature, but after its intentional +90 degree bone roll its local
-# axes are related by this constant basis matrix.  It maps package-local vectors
-# into the loose-JSON/reference local frame.  The inverse is its transpose.
+# as that armature, but its display-frame axis convention and authored KDI frame
+# are related by this constant basis matrix. It maps package-local vectors into
+# the loose-JSON/reference local frame. The inverse is its transpose.
 COORDINATE_PROFILE_REFERENCE = "REFERENCE"
 COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90 = "PACKAGE_SKELETON_ROLL_90"
 PACKAGE_TO_REFERENCE_BASIS = (
@@ -2382,7 +2384,7 @@ def build_scalar_drivers(
     if sourceless_anchors:
         anchor_nodes = [node for node in anchor_nodes if node not in sourceless_anchors]
         print(
-            "[FF7R KDI] Skipped "
+            "[Talisman KDI] Skipped "
             f"{len(sourceless_anchors)} constraint operator(s) with no source bone: "
             + ", ".join(
                 f"{node['operator_type']} #{node['operator_index']} -> "
@@ -2421,7 +2423,7 @@ def build_scalar_drivers(
     if undrivable_rotations:
         rotation_nodes = [node for node in rotation_nodes if node not in undrivable_rotations]
         print(
-            "[FF7R KDI] Skipped "
+            "[Talisman KDI] Skipped "
             f"{len(undrivable_rotations)} TargetRotate operator(s) with no quaternion source: "
             + ", ".join(
                 f"#{node['operator_index']} -> {(node.get('body') or {}).get('TargetObjectBoneName')}"
@@ -2674,11 +2676,11 @@ def build_scalar_drivers(
     }
 
 
-class KDI_OT_step2_scalar_drivers(FF7R_LoggedOperator, ImportHelper):
+class KDI_OT_step2_scalar_drivers(SQEX_LoggedOperator, ImportHelper):
     """Audit a KineDriver JSON file and build its drivers on the active armature"""
 
-    bl_idname = "import_scene.ff7r_kinedriver_json"
-    bl_label = "FF7R KineDriver JSON"
+    bl_idname = "import_scene.sqex_kinedriver_json"
+    bl_label = "Square Enix KineDriver JSON"
     bl_options = {"REGISTER", "UNDO"}
     filename_ext = ".json"
     filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
@@ -2688,13 +2690,13 @@ class KDI_OT_step2_scalar_drivers(FF7R_LoggedOperator, ImportHelper):
     )
     translation_axis_order: EnumProperty(
         name="Translation axis mapping",
-        description="Map KDI Translate X/Y/Z outputs onto Blender location channels",
+        description=tooltips.KDI_TRANSLATION_AXIS_ORDER,
         items=AXIS_ORDER_ITEMS,
         default="XZY",
     )
     scale_axis_order: EnumProperty(
         name="Scale axis mapping",
-        description="Map KDI Scale X/Y/Z outputs onto Blender scale channels",
+        description=tooltips.KDI_SCALE_AXIS_ORDER,
         items=AXIS_ORDER_ITEMS,
         default="XZY",
     )
@@ -2705,9 +2707,7 @@ class KDI_OT_step2_scalar_drivers(FF7R_LoggedOperator, ImportHelper):
     additive: BoolProperty(
         name="Add to the existing KDI layer",
         description=(
-            "Keep any KDI layer already on this armature and add this one beside it, "
-            "skipping channels the existing layer already drives. Used to stack a "
-            "character's secondary _KDI_Extra1/_Head/_Hood passes onto the main one"
+            tooltips.KDI_ADDITIVE
         ),
         default=False,
         options={"HIDDEN", "SKIP_SAVE"},
@@ -2735,7 +2735,7 @@ class KDI_OT_step2_scalar_drivers(FF7R_LoggedOperator, ImportHelper):
     def execute(self, context: Any) -> set[str]:
         armature = context.active_object
         if not armature or armature.type != "ARMATURE":
-            self.report({"ERROR"}, "Select the imported armature and make it active")
+            report(self, {"ERROR"}, "Select the imported armature and make it active")
             return {"CANCELLED"}
         try:
             source_path = Path(self.filepath)
@@ -2801,15 +2801,15 @@ class KDI_OT_step2_scalar_drivers(FF7R_LoggedOperator, ImportHelper):
                 + f"; audit: {text_name}"
             )
             self._save_last_import_settings(context)
-            self.report({"INFO"}, success_message)
+            report(self, {"INFO"}, success_message)
             return {"FINISHED"}
         except Exception as exc:
             traceback.print_exc()
-            self.report({"ERROR"}, f"KDI generation failed: {exc}")
+            report(self, {"ERROR"}, f"KDI generation failed: {exc}")
             return {"CANCELLED"}
 
 
-class KDI_OT_remove_scalar_drivers(FF7R_LoggedOperator):
+class KDI_OT_remove_scalar_drivers(SQEX_LoggedOperator):
     """Remove generated KDI drivers and restore inherited-scale settings"""
 
     bl_idname = "kdi.remove_scalar_drivers"
@@ -2819,22 +2819,22 @@ class KDI_OT_remove_scalar_drivers(FF7R_LoggedOperator):
     def execute(self, context: Any) -> set[str]:
         armature = context.active_object
         if not armature or armature.type != "ARMATURE":
-            self.report({"ERROR"}, "Select the generated armature and make it active")
+            report(self, {"ERROR"}, "Select the generated armature and make it active")
             return {"CANCELLED"}
         try:
             removed, restored = remove_generated(armature)
             bpy.context.view_layer.update()
-            self.report({"INFO"}, f"Removed {removed} drivers and restored {restored} scale-inheritance settings")
+            report(self, {"INFO"}, f"Removed {removed} drivers and restored {restored} scale-inheritance settings")
             return {"FINISHED"}
         except Exception as exc:
             traceback.print_exc()
-            self.report({"ERROR"}, f"KDI cleanup failed: {exc}")
+            report(self, {"ERROR"}, f"KDI cleanup failed: {exc}")
             return {"CANCELLED"}
 
 
 CLASSES = (KDI_OT_step2_scalar_drivers, KDI_OT_remove_scalar_drivers)
 
-KDI_DRIVERS_ENABLED_PROPERTY = "ff7r_kdi_drivers_enabled"
+KDI_DRIVERS_ENABLED_PROPERTY = "sqex_kdi_drivers_enabled"
 
 
 def _kdi_drivers_enabled_update(self, context) -> None:
@@ -2917,8 +2917,7 @@ def register() -> None:
         bpy.props.BoolProperty(
             name="KDI Drivers",
             description=(
-                "Enable or disable every FF7R KineDriver-generated driver on "
-                "armatures in this scene"
+                tooltips.KDI_DRIVERS_ENABLED
             ),
             default=True,
             update=_kdi_drivers_enabled_update,

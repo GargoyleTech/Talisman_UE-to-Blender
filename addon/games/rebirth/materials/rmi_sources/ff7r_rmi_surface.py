@@ -1,53 +1,29 @@
+"""FF7 Rebirth RMI_Surface ordinary-surface material generator.
+
+Builds the non-Eye_, non-Hair_ family only.  The dispatcher selects
+``ff7r_rmi_surface_eye.py`` or ``ff7r_rmi_surface_hair.py`` for their mutually
+exclusive variants, so this master contains no alternate eye or strand route.
+Switches and supported parameters are Material custom properties with normal
+single-property drivers.  Texture slots remain in the material tree because
+node groups share their images between every group instance.
+
+Run with Blender's ``--python ff7r_rmi_surface.py`` option, or from the Text
+Editor.  See the sibling profile scripts and ``RMI_SURFACE_INTEGRATION.md`` for
+the dispatch and ground-truth-switch provenance.
 """
-FF7 Rebirth RMI_Surface -> Blender master node tree
 
-Builds ONE material containing every implemented switch path, organised into
-named node groups and frames.  Switches and float parameters are exposed as
-CUSTOM PROPERTIES ON THE MATERIAL and driven into the tree, so the whole thing
-is controlled from the material's Custom Properties panel rather than by hunting
-for Value nodes in the graph.
+if __package__:
+    from .....language import tooltips
+else:
+    # Preserve running the packaged builder directly in Blender's Text Editor.
+    import sys as _sys
+    from pathlib import Path as _Path
 
-Spec:  ..\\BLENDER_PORT_PLAN.md   (PLAN x.y refs below are to it)
-Notes: ..\\SHADER_FINDINGS.md and ..\\DEFERRED_LIGHTING_HANDOFF.md
-
-Run:   blender --background --factory-startup --python ff7r_rmi_surface.py
-   or  paste into Blender's text editor and hit Run.
-
-Provenance
-----------
-The Eye and Hair paths are ports of the standalone shaders in
-..\\hair_and_eye\\ (ff7r_eye_material_v2.py, ff7r_hair_material.py), which were
-tuned by hand against captures.  They are kept as SELF-CONTAINED node
-groups so that further tweaks to those shading paths stay local to their own
-group and do not require restructuring the ubershader:
-
-    FF7R Eye Disc / FF7R Cornea / FF7R Limbal Occlusion
-    UE Frame To World (explicit TBN) / UE Limbal Occlusion (directional)
-    FF7R Hair Strand / UE Tangent To World (mikktspace)
-
-The current lighting-side cross-reference is the older-build RenderDoc dump
-`C:\\temp\\hair_and_eye\\rd_graphics_shaders\\
-07737_ps70172_Shader_bb252f56_DeferredLightPixelMain__DXBC_DXIL.txt`. Its hair
-branch (`_label53`, decompiler lines 2121-2527) proves that GBufferD is a
-full-RGB flow direction consumed through dot(flow, L), and that the three hair
-lobes are strand-aligned anisotropic GGX rather than Kajiya-Kay. Blender 5.2
-shader trees cannot access the light vector L, so this file preserves the
-decoded base-pass geometry and uses Principled as an explicit approximation;
-the exact downstream work and the shaders already in hand are inventoried in
-DEFERRED_LIGHTING_HANDOFF.md.
-
-Three structural facts this script is built around
---------------------------------------------------
-1. A node group SHARES its node tree between instances, so an Image Texture
-   inside a group would be the same image for every user of it.  Texture slots
-   therefore live in the MATERIAL tree, framed by feature; groups take plain
-   colour/vector inputs.
-2. Menu Switch is Blender 5.2+.  On 5.0/5.1 `_menu()` emits a compare+Mix ladder
-   with identical surrounding wiring, so one script runs on both.
-3. Custom properties drive node values through AVERAGE drivers with a single
-   SINGLE_PROP variable -- no scripted expressions, so this works without
-   "Auto Run Python Scripts".
-"""
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[4]))
+    try:
+        from language import tooltips
+    finally:
+        _sys.path.pop(0)
 
 import bpy
 
@@ -143,16 +119,14 @@ MENU_SWITCH_IDNAME, MENU_SWITCH_DRIVABLE = _detect_menu_switch()
 
 
 def _detect_menu_input():
-    """Return the Constant Menu node's idname, or None on builds without one.
+    """Return a Constant Menu idname for capability diagnostics.
 
-    A Menu Switch is only half of the manual path: its selector has to be fed
-    by one shared constant-menu node, which is also the single user-facing
-    dropdown.  Blender 5.0/5.1 ship the Menu Switch -- `GeometryNodeMenuSwitch`
-    even instantiates inside a ShaderNodeTree there -- but not the constant
-    menu, so probing for the switch alone made those builds choose a path they
-    could not finish: `RuntimeError: Node type FunctionNodeInputMenu undefined`
-    from build(), measured on 5.0.1.  Probe for both halves, and let 5.1 and
-    earlier take exactly the same comparison ladder 4.x takes."""
+    The generator deliberately keeps the portable numeric selector (see
+    ``HAS_MANUAL_MENU_SWITCH`` below), because a standalone Constant Menu
+    cannot author its enum definition in a ShaderNodeTree.  Retaining this
+    probe makes the console explain precisely which menu nodes a Blender build
+    exposes without mistaking their existence for a usable material path.
+    """
     candidates = ["FunctionNodeInputMenu", "ShaderNodeInputMenu",
                   "NodeInputMenu", "FunctionNodeMenuInput"]
     scratch = bpy.data.node_groups.new("_ff7r_menu_input_probe", "ShaderNodeTree")
@@ -170,15 +144,19 @@ def _detect_menu_input():
 
 
 MENU_INPUT_IDNAME = _detect_menu_input()
-# A manual Menu Switch remains useful even though its selector cannot be
-# driven: it is clearer in the Shader Editor and Python can set its enum value
-# at material creation time.  It needs the constant-menu node to drive it,
-# though, so both have to exist before build() may take that path -- see
-# _detect_menu_input().  Property-driven selectors still require the comparison
-# ladder below until Blender exposes an animatable Menu socket.
-HAS_MANUAL_MENU_SWITCH = (MENU_SWITCH_IDNAME is not None and
-                          MENU_INPUT_IDNAME is not None)
-if MENU_SWITCH_IDNAME is not None and MENU_INPUT_IDNAME is None:
+# ``FunctionNodeInputMenu`` exposes a selected value but no writable enum
+# definition.  In a ShaderNodeTree the new node therefore has an empty enum;
+# assigning ``Standard (SM1)`` raises ``enum ... not found in ()``.  The enum
+# definition of a Menu Switch cannot safely cross the material/group boundary
+# used by this generator either.  Keep the capability probes for diagnostics,
+# but use the established numeric comparison ladder until Blender exposes a
+# constructible, shader-tree-safe menu definition.
+HAS_MANUAL_MENU_SWITCH = False
+if MENU_SWITCH_IDNAME is not None and MENU_INPUT_IDNAME is not None:
+    print("Constant Menu: %r has no authorable enum definition in this "
+          "ShaderNodeTree path (Blender %s) -- using the comparison ladder."
+          % (MENU_INPUT_IDNAME, bpy.app.version_string))
+elif MENU_SWITCH_IDNAME is not None:
     print("Constant Menu: %r exists but this build (Blender %s) has no "
           "constant-menu node to select with -- using the same comparison "
           "ladder as 4.x." % (MENU_SWITCH_IDNAME, bpy.app.version_string))
@@ -309,6 +287,8 @@ def _expand_panels(node):
             return
 
 MAT_NAME = "FF7R_RMI_Surface_Master"
+PROFILE_NAME = "surface"
+PROFILE_REVISION = 2
 
 # ---------------------------------------------------------------------------
 # Literals hoisted out of the compiled shaders.  PLAN 0.2: the material JSONs
@@ -642,6 +622,18 @@ KNOWN_SWITCHES = [
     "WideOcclusion_",
 ]
 
+# This is the non-specialized builder.  The eye and hair scripts own the
+# switches which occur only on their respective carrier variants; retaining
+# them here would recreate dormant alternate-shading paths in every ordinary
+# surface master.  The profile lists deliberately come from the exact
+# current-build variant table, rather than a name heuristic.
+_PROFILE_EXCLUDED_SWITCHES = {
+    "Eye_", "EyeMigration_", "Hair_", "IrisColor_", "IrisEmissive_",
+    "IrisNormal_", "ScleraNormal_", "WideBentNormal_",
+}
+KNOWN_SWITCHES = [flag for flag in KNOWN_SWITCHES
+                  if flag not in _PROFILE_EXCLUDED_SWITCHES]
+
 # Exact identical-presence classes across the 104 current-build variants.
 # Keep this table synchronized with scripts/renderer_ground_truth.json. A future
 # breaker variant should split its class here as soon as it is observed.
@@ -677,19 +669,48 @@ COOCCURRENCE_GROUPS = [
     ("WideFlowDirectivity_", "WideFlowPhase_"),
 ]
 
+# A group can span profiles (notably Eye_ + iris slots and Hair_ + flow).
+# Keep only controls represented by this material family.
+COOCCURRENCE_GROUPS = [
+    tuple(member for member in members if member in KNOWN_SWITCHES)
+    for members in COOCCURRENCE_GROUPS
+]
+COOCCURRENCE_GROUPS = [members for members in COOCCURRENCE_GROUPS if members]
+
 _GROUP_FOR_SWITCH = {member: group for group in COOCCURRENCE_GROUPS
                      for member in group}
+SWITCH_PROPERTY_PREFIX = "sw "
+_MAX_ID_PROPERTY_NAME_LENGTH = 63
+
+
+def _legacy_switch_control_name(members):
+    """Return the property key emitted by pre-``sw `` master builds."""
+    full = " + ".join(members)
+    return (full if len(full) <= _MAX_ID_PROPERTY_NAME_LENGTH else
+            "%s + ... + %s (%d flags)" %
+            (members[0], members[-1], len(members)))
+
+
+def _switch_control_name(members):
+    """Return a short, alphabetically-grouped switch property key."""
+    full = " + ".join(members)
+    max_control_length = (_MAX_ID_PROPERTY_NAME_LENGTH -
+                          len(SWITCH_PROPERTY_PREFIX))
+    if len(full) <= max_control_length:
+        return SWITCH_PROPERTY_PREFIX + full
+    # The complete member list remains in the UI description and node label.
+    # Keeping the key below Blender's ID-property limit matters more than
+    # repeating it there, especially now that every switch has a prefix.
+    short = "%s + ... (%d flags)" % (members[0], len(members))
+    return SWITCH_PROPERTY_PREFIX + short[:max_control_length]
+
+
 SWITCH_CONTROLS = []
 for _flag in KNOWN_SWITCHES:
     _members = _GROUP_FOR_SWITCH.get(_flag, (_flag,))
     if _flag != _members[0]:
         continue
-    _full_control = " + ".join(_members)
-    # Blender ID-property keys are length-limited. Keep the complete list in
-    # the UI description and node label when it cannot fit in the checkbox key.
-    _control = (_full_control if len(_full_control) <= 63 else
-                "%s + ... + %s (%d flags)" %
-                (_members[0], _members[-1], len(_members)))
+    _control = _switch_control_name(_members)
     _default = any(bool(_SWITCH_DEFAULTS.get(m, 0.0)) for m in _members)
     SWITCH_CONTROLS.append((_control, _members, _default))
 CONTROL_FOR_SWITCH = {member: control for control, members, _default
@@ -699,73 +720,112 @@ CONTROL_FOR_SWITCH = {member: control for control, members, _default
 # meaningless as a switch of 0.37.  Drivers read ints fine.
 ENUM_PROPS = [
     ("Shading Model", 0, 0, 6,
-     "0 Standard | 1 Skin | 2 Subsurface Profile | 3 Hair | 4 Cloth | 5 Eye | 6 Unlit"),
+     tooltips.MATERIALS_SHADING_MODEL),
     ("Coverage Mode", 0, 0, 2,
-     "0 Alpha (native) | 1 Hard cutout | 2 Dithered (faithful)"),
+     tooltips.MATERIALS_COVERAGE_MODE),
     ("Detail Blend", 0, 0, 2,
-     "0 Additive slerp (character) | 1 Chained preview | 2 RNM (MEC); Isotropy_ forces RNM"),
+     tooltips.MATERIALS_DETAIL_BLEND),
     ("Vertex Expression Source", 0, 0, 2,
-     "0 Constant | 1 Geometry attribute | 2 Object property"),
+     tooltips.MATERIALS_VERTEX_EXPRESSION_SOURCE),
 ]
 
 FLOAT_PROPS = [
     # name,                     default,             min,  max,  description
-    ("Object Fade", 1.0, 0.0, 1.0, "Per-object fade/dissolve (UE b1[27].w)"),
+    ("Object Fade", 1.0, 0.0, 1.0, tooltips.MATERIALS_OBJECT_FADE),
     ("Opacity Clip", OPACITY_CLIP, 0.0, 1.0,
-     "Alpha-test threshold; authored value is 0.3333"),
+     tooltips.MATERIALS_OPACITY_CLIP),
     ("GBufferA.a", 0.645420, 0.0, 1.0,
-     "Dielectric specular level; eye 0.6454, hair 0.6848, blood 0.4438"),
+     tooltips.MATERIALS_GBUFFERA_A),
     # --- eye (ff7r_eye_material_v2.py) ---
-    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, "Cornea dome xy scale"),
-    ("Eye Eta", ETA, 0.0, 2.0, "1/IOR at the cornea; 0.671141 = IOR 1.49"),
-    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, "Iris depth constant term"),
-    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, "Iris depth r^2 falloff"),
-    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, "Iris parallax scale"),
-    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, "Limbus smoothstep inner radius"),
-    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, "Limbus smoothstep outer radius"),
-    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, "Limbal ring slide"),
-    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, "Limbal edge hardness"),
-    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, "Off-axis closing rate"),
-    ("Eye Limbal Amount", 1.0, 0.0, 1.0, "Limbal occlusion strength"),
+    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, tooltips.MATERIALS_EYE_CORNEA_SLOPE),
+    ("Eye Eta", ETA, 0.0, 2.0, tooltips.MATERIALS_EYE_ETA),
+    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_CONST),
+    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_FALLOFF),
+    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_SCALE),
+    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_INNER),
+    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_OUTER),
+    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_OFFSET),
+    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_SOFTNESS),
+    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, tooltips.MATERIALS_EYE_LIMBAL_APERTURE),
+    ("Eye Limbal Amount", 1.0, 0.0, 1.0, tooltips.MATERIALS_EYE_LIMBAL_AMOUNT),
     ("Eye Iris AO Factor", 1, 0.0, 1.0,
-     "Iris-occlusion multiplication amount; 0.5 is the import default"),
-    ("Pupil Dilation", 1.0, 0.05, 4.0, "Iris UV exponent; 1.0 = neutral"),
+     tooltips.MATERIALS_EYE_IRIS_AO_FACTOR),
+    ("Pupil Dilation", 1.0, 0.05, 4.0, tooltips.MATERIALS_PUPIL_DILATION),
     # --- hair (ff7r_hair_material.py -- measured) ---
     ("Hair Min VdotT", MIN_VDOTT, 0.001, 0.5,
-     "Shader clamps |dot(V, strand)| away from zero"),
+     tooltips.MATERIALS_HAIR_MIN_VDOTT),
     ("Hair Dither Sign", 1.0, 0.0, 1.0,
-     "1 = dithered sign (matches capture, hides the seam); 0 = hard sign()"),
+     tooltips.MATERIALS_HAIR_DITHER_SIGN),
     ("Hair Roughness Curvature", ROUGHNESS_CURVATURE, 0.0, 1.0,
-     "Specular-AA curvature floor; saturates at 0.18 on hair cards"),
+     tooltips.MATERIALS_HAIR_ROUGHNESS_CURVATURE),
     ("Hair Anisotropic", HAIR_ANISOTROPIC, -1.0, 1.0,
-     "NOTE: EEVEE ignores Anisotropic/Tangent entirely (measured)"),
+     tooltips.MATERIALS_HAIR_ANISOTROPIC),
     ("Hair Flow Influence", FLOW_INFLUENCE, 0.0, 1.0,
-     "Fold the flow map into the strand axis; 0 = capture-exact"),
+     tooltips.MATERIALS_HAIR_FLOW_INFLUENCE),
     ("Hair Specular F0", HAIR_SPECULAR_F0, 0.0, 0.16,
-     "Measured 0.046520 from GBufferA.a = 0.684779"),
+     tooltips.MATERIALS_HAIR_SPECULAR_F0),
     # --- shared normal-map calibration ---
     ("Normal Map Strength", NORMAL_MAP_STRENGTH, 0.0, 2.0,
-     "Shared Blender Normal Map slope strength; 0.7 is the import default"),
+     tooltips.MATERIALS_NORMAL_MAP_STRENGTH),
     # --- detail layer ---
     ("Detail Normal Strength", 0.5, 0.0, 1.0,
-     "DetailNormal intensity; 1.0 = the authored map, 0.5 = the import default"),
+     tooltips.MATERIALS_DETAIL_NORMAL_STRENGTH),
     # --- shading model parameters ---
-    ("Subsurface Scale", 0.05, 0.0, 1.0, "SSS radius scale in scene units"),
-    ("Sheen Roughness", 0.3, 0.0, 1.0, "Cloth/fur sheen roughness"),
+    ("Subsurface Scale", 0.05, 0.0, 1.0, tooltips.MATERIALS_SUBSURFACE_SCALE),
+    ("Sheen Roughness", 0.3, 0.0, 1.0, tooltips.MATERIALS_SHEEN_ROUGHNESS),
     # --- constant roles (PLAN 0.4: never a texture anywhere in the game) ---
-    ("Isotropy", 0.0, 0.0, 1.0, "Constant in all 9,485 materials"),
-    ("Sheen", 1.0, 0.0, 1.0, "Never a real texture"),
-    ("Wetness", 0.0, 0.0, 1.0, "Never a real texture; path is unused content-side"),
-    ("DetailWetness", 0.0, 0.0, 1.0, "Never a real texture"),
-    ("Visibility", 1.0, 0.0, 1.0, "Never a real texture"),
-    ("FilmStructure", 0.4, 0.0, 1.0, "Never a real texture"),
-    ("ExtraColor", 0.0, 0.0, 1.0, "Never a real texture"),
+    ("Isotropy", 0.0, 0.0, 1.0, tooltips.MATERIALS_ISOTROPY),
+    ("Sheen", 1.0, 0.0, 1.0, tooltips.MATERIALS_SHEEN),
+    ("Wetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_WETNESS),
+    ("DetailWetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAIL_WETNESS),
+    ("Visibility", 1.0, 0.0, 1.0, tooltips.MATERIALS_VISIBILITY),
+    ("FilmStructure", 0.4, 0.0, 1.0, tooltips.MATERIALS_FILM_STRUCTURE),
+    ("ExtraColor", 0.0, 0.0, 1.0, tooltips.MATERIALS_EXTRA_COLOR),
     ("OxygenSaturation", 0.078, 0.0, 1.0,
-     "Always a solid colour; only 3 assets exist (0.078 / 0.082 / 0.251)"),
-    ("DetailMetallic", 0.0, 0.0, 1.0, "Always solid 0"),
-    ("Thickness", 0.2, 0.0, 1.0, "Always solid 0.2"),
-    ("FilmThickness", 0.5, 0.0, 1.0, "Always solid 0.5"),
+     tooltips.MATERIALS_OXYGENSATURATION),
+    ("DetailMetallic", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAILMETALLIC),
+    ("Thickness", 0.2, 0.0, 1.0, tooltips.MATERIALS_THICKNESS),
+    ("FilmThickness", 0.5, 0.0, 1.0, tooltips.MATERIALS_FILMTHICKNESS),
 ]
+
+_PROFILE_EXCLUDED_FLOAT_PROPS = {
+    "Eye Cornea Slope", "Eye Eta", "Eye Depth Const", "Eye Depth Falloff",
+    "Eye Depth Scale", "Eye Mask Inner", "Eye Mask Outer", "Eye Limbal Offset",
+    "Eye Limbal Softness", "Eye Limbal Aperture", "Eye Limbal Amount",
+    "Eye Iris AO Factor", "Pupil Dilation", "Hair Min VdotT",
+    "Hair Dither Sign", "Hair Roughness Curvature", "Hair Anisotropic",
+    "Hair Flow Influence", "Hair Specular F0",
+}
+FLOAT_PROPS = [prop for prop in FLOAT_PROPS
+               if prop[0] not in _PROFILE_EXCLUDED_FLOAT_PROPS]
+
+
+_PROFILE_REMOVED_SWITCH_GROUPS = (
+    ("Eye_", "IrisColor_", "IrisNormal_", "ScleraNormal_"),
+    ("Hair_", "WideBentNormal_"),
+    ("EyeMigration_",),
+    ("IrisEmissive_",),
+)
+
+
+def _remove_unprofiled_properties(mat):
+    """Remove legacy ubershader controls when rebuilding the surface master.
+
+    ``FF7R_RMI_Surface_Master`` existed before the profile split.  Reusing its
+    datablock preserves a user's fake-user/template setup, but custom ID
+    properties survive a node-tree clear, so retire the old eye/hair controls
+    explicitly instead of leaving a dead UI behind.
+    """
+    for name in _PROFILE_EXCLUDED_FLOAT_PROPS:
+        if name in mat:
+            del mat[name]
+    for members in _PROFILE_REMOVED_SWITCH_GROUPS:
+        names = set(members)
+        names.add(_legacy_switch_control_name(members))
+        names.add(_switch_control_name(members))
+        for name in names:
+            if name in mat:
+                del mat[name]
 
 
 def _ensure_props(mat):
@@ -780,24 +840,42 @@ def _ensure_props(mat):
     for name in ENGINE_ONLY_SWITCHES:
         if name in mat:
             del mat[name]
+    renamed_switch_properties = {}
     for name, members, default in SWITCH_CONTROLS:
-        # Upgrade the old one-property-per-flag layout without losing an enabled
-        # member: a grouped control becomes true if ANY legacy member was true.
-        legacy = [bool(mat[m]) for m in members if m in mat]
+        # Upgrade the old one-property-per-flag and unprefixed grouped layouts
+        # without losing an enabled member.  The visible ``sw `` prefix keeps
+        # every boolean switch together in Blender's alphabetical list.
+        legacy_names = set(members)
+        legacy_names.add(_legacy_switch_control_name(members))
+        legacy = [bool(mat[old_name]) for old_name in legacy_names
+                  if old_name in mat]
         if name not in mat or not isinstance(mat[name], bool):
             mat[name] = bool(mat[name]) if name in mat else (
                 any(legacy) if legacy else bool(default))
         try:
             mat.id_properties_ui(name).update(
                 default=bool(default),
-                description=("RMI_Surface static switch" if len(members) == 1
-                             else "Always co-occurring RMI_Surface flags: " +
+                description=(tooltips.MATERIALS_STATIC_SWITCH if len(members) == 1
+                             else tooltips.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX +
                              " + ".join(members)))
         except Exception:
             pass
-        for member in members:
-            if member != name and member in mat:
-                del mat[member]
+        for old_name in legacy_names:
+            if old_name in mat:
+                renamed_switch_properties[old_name] = name
+                del mat[old_name]
+    # Existing masters keep their node tree when this script is upgraded.
+    # Move each driver target along with its property so a renamed switch does
+    # not silently become a permanently-zero node value.
+    animation = getattr(getattr(mat, "node_tree", None), "animation_data", None)
+    for curve in getattr(animation, "drivers", ()):
+        for variable in curve.driver.variables:
+            for target in variable.targets:
+                old_name = next((old for old in renamed_switch_properties
+                                 if target.id == mat and
+                                 target.data_path == '["%s"]' % old), None)
+                if old_name is not None:
+                    target.data_path = '["%s"]' % renamed_switch_properties[old_name]
     for name, default, mn, mx, desc in ENUM_PROPS:
         if name not in mat or isinstance(mat[name], (bool, float)):
             mat[name] = int(mat[name]) if name in mat else int(default)
@@ -1570,831 +1648,6 @@ def util_f0():
     return _rebuild_group("FF7R Util/F0 Remap", _b)
 
 
-# ================================================================ EYE PATH ===
-# Ported from ff7r_eye_material_v2.py.  These four groups are self-contained:
-# further eye tweaks should only need edits inside them.
-
-def eye_disc():
-    """uvC = (UV - centre)/radius; sclera mask = smoothstep(0.9, 1.1, |uvC|)."""
-    def _b(g):
-        _sock(g, "UV", "OUTPUT", "NodeSocketVector")
-        _sock(g, "uvC", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Sclera Mask", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "UV0", "INPUT", "NodeSocketVector")
-        _sock(g, "Mask Inner", "INPUT", "NodeSocketFloat", MASK_INNER, 0.0, 2.0)
-        _sock(g, "Mask Outer", "INPUT", "NodeSocketFloat", MASK_OUTER, 0.0, 2.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-900, -220))
-        go = _new(g, "NodeGroupOutput", "Group Output", (700, 0))
-        vc = _new(g, "ShaderNodeVectorMath", "uvC", (-460, 0),
-                  "uvC = (UV - centre) / radius")
-        _prop(vc, "operation", "MULTIPLY_ADD")
-        _sv(vc, 1, (_INV, _INV, 0.0))
-        _sv(vc, 2, (-EYE_UV_CENTER[0] * _INV, -EYE_UV_CENTER[1] * _INV, 0.0))
-        ln = _new(g, "ShaderNodeVectorMath", "r", (-220, 120), "r = |uvC|")
-        _prop(ln, "operation", "LENGTH")
-        mr = _new(g, "ShaderNodeMapRange", "mask", (20, 180),
-                  "sclera mask = smoothstep(inner, outer, r)")
-        _prop(mr, "interpolation_type", "SMOOTHSTEP")
-        _sv(mr, 3, 0.0)
-        _sv(mr, 4, 1.0)
-        _link(g, gi, "UV0", vc, 0)
-        _link(g, vc, 0, ln, 0)
-        _link(g, ln, 1, mr, 0)
-        _link(g, gi, "Mask Inner", mr, 1)
-        _link(g, gi, "Mask Outer", mr, 2)
-        _link(g, gi, "UV0", go, "UV")
-        _link(g, vc, 0, go, "uvC")
-        _link(g, mr, 0, go, "Sclera Mask")
-    return _rebuild_group("FF7R Eye Disc", _b)
-
-
-def eye_limbal_directional():
-    """UE Limbal Occlusion (directional) -- verbatim shader maths from the eye
-    capture.  Do not hand-edit; socket order is indexed positionally."""
-    def _b(g):
-        _sock(g, "Occlusion", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "uvC2", "INPUT", "NodeSocketVector")
-        _sock(g, "Light Dir", "INPUT", "NodeSocketVector")
-        _sock(g, "T2", "INPUT", "NodeSocketVector")
-        _sock(g, "B2", "INPUT", "NodeSocketVector")
-        _sock(g, "r", "INPUT", "NodeSocketFloat")
-        _sock(g, "Offset", "INPUT", "NodeSocketFloat", LIMBAL_OFFSET)
-        _sock(g, "Softness", "INPUT", "NodeSocketFloat", LIMBAL_SOFTNESS)
-        _sock(g, "Aperture", "INPUT", "NodeSocketFloat", LIMBAL_APERTURE)
-        _sock(g, "Normalize", "INPUT", "NodeSocketFloat", 0.5)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1900, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (1900, 0))
-
-        def vm(nm, loc, op, label=""):
-            n = _new(g, "ShaderNodeVectorMath", nm, loc, label)
-            _prop(n, "operation", op)
-            return n
-
-        def fm(nm, loc, op, label="", clamp=False):
-            n = _new(g, "ShaderNodeMath", nm, loc, label)
-            _prop(n, "operation", op)
-            _prop(n, "use_clamp", clamp)
-            return n
-
-        v0 = vm("Vector Math", (-1000, 380), "DOT_PRODUCT", "Lu = dot(L, T2)")
-        v1 = vm("Vector Math.001", (-1000, 240), "DOT_PRODUCT", "Lv = dot(L, B2)")
-        m0 = fm("Math", (-820, 420), "MULTIPLY")
-        m1 = fm("Math.001", (-820, 300), "MULTIPLY")
-        m2 = fm("Math.002", (-640, 360), "ADD", "|Lproj|^2")
-        sp = _new(g, "ShaderNodeSeparateXYZ", "Separate XYZ", (-1000, 60))
-        m3 = fm("Math.003", (-820, 120), "MULTIPLY")
-        m4 = fm("Math.004", (-820, 0), "MULTIPLY")
-        m5 = fm("Math.005", (-640, 60), "ADD")
-        m6 = fm("Math.006", (-460, 60), "DIVIDE", "Lx = radial component")
-        m7 = fm("Math.007", (-640, -120), "MULTIPLY", "d2 = r*0.5")
-        m8 = fm("Math.008", (-640, -240), "SQRT", "|Lproj|")
-        m9 = fm("Math.009", (-460, -160), "MULTIPLY")
-        m10 = fm("Math.010", (-280, -160), "MULTIPLY")
-        m11 = fm("Math.011", (-100, -160), "SUBTRACT", "1 - sat(...)", True)
-        _sv(m11, 0, 1.0)
-        m12 = fm("Math.012", (80, -160), "MAXIMUM", "aperture")
-        _sv(m12, 1, 0.01)
-        m13 = fm("Math.013", (-460, 240), "MULTIPLY")
-        m14 = fm("Math.014", (-280, 300), "MULTIPLY")
-        m15 = fm("Math.015", (-280, 160), "MULTIPLY")
-        m16 = fm("Math.016", (-100, 160), "MULTIPLY")
-        m17 = fm("Math.017", (80, 160), "MULTIPLY")
-        _sv(m17, 1, 2.0)
-        m18 = fm("Math.018", (-280, 20), "MULTIPLY")
-        m19 = fm("Math.019", (260, 240), "ADD")
-        m20 = fm("Math.020", (440, 240), "ADD")
-        m21 = fm("Math.021", (600, 240), "MAXIMUM")
-        _sv(m21, 1, 0.0)
-        m22 = fm("Math.022", (760, 240), "SQRT", "|offvec|")
-        m23 = fm("Math.023", (260, 60), "MULTIPLY")
-        m24 = fm("Math.024", (440, 60), "SUBTRACT",
-                 "sat(aperture - softness*|offvec|)", True)
-        m25 = fm("Math.025", (260, -160), "DIVIDE")
-        _sv(m25, 0, 1.0)
-        m26 = fm("Math.026", (440, -160), "MAXIMUM")
-        _sv(m26, 0, 1.0)
-        m27 = fm("Math.027", (440, -60), "DIVIDE")
-        m28 = fm("Math.028", (600, -60), "MINIMUM")
-        _sv(m28, 1, 1.0)
-        m29 = fm("Math.029", (760, -100), "MULTIPLY", "normalised form")
-        mix = _new(g, "ShaderNodeMix", "Mix", (760, 60), "raw <-> normalised")
-        _prop(mix, "data_type", "FLOAT")
-        m30 = fm("Math.030", (900, -100), "MULTIPLY", "f^2, clamped", True)
-
-        _link(g, gi, 1, v0, 0)
-        _link(g, gi, 2, v0, 1)
-        _link(g, gi, 1, v1, 0)
-        _link(g, gi, 3, v1, 1)
-        _link(g, v0, 1, m0, 0)
-        _link(g, v0, 1, m0, 1)
-        _link(g, v1, 1, m1, 0)
-        _link(g, v1, 1, m1, 1)
-        _link(g, m0, 0, m2, 0)
-        _link(g, m1, 0, m2, 1)
-        _link(g, gi, 0, sp, 0)
-        _link(g, v0, 1, m3, 0)
-        _link(g, sp, 0, m3, 1)
-        _link(g, v1, 1, m4, 0)
-        _link(g, sp, 1, m4, 1)
-        _link(g, m3, 0, m5, 0)
-        _link(g, m4, 0, m5, 1)
-        _link(g, m5, 0, m6, 0)
-        _link(g, gi, 4, m6, 1)
-        _link(g, gi, 4, m7, 0)
-        _link(g, m2, 0, m8, 0)
-        _link(g, m7, 0, m9, 0)
-        _link(g, gi, 7, m9, 1)
-        _link(g, m9, 0, m10, 0)
-        _link(g, m8, 0, m10, 1)
-        _link(g, m10, 0, m11, 1)
-        _link(g, m11, 0, m12, 0)
-        _link(g, gi, 5, m13, 0)
-        _link(g, gi, 5, m13, 1)
-        _link(g, m13, 0, m14, 0)
-        _link(g, m2, 0, m14, 1)
-        _link(g, m6, 0, m15, 0)
-        _link(g, gi, 4, m15, 1)
-        _link(g, m15, 0, m16, 0)
-        _link(g, gi, 5, m16, 1)
-        _link(g, m16, 0, m17, 0)
-        _link(g, gi, 4, m18, 0)
-        _link(g, gi, 4, m18, 1)
-        _link(g, m14, 0, m19, 0)
-        _link(g, m17, 0, m19, 1)
-        _link(g, m19, 0, m20, 0)
-        _link(g, m18, 0, m20, 1)
-        _link(g, m20, 0, m21, 0)
-        _link(g, m21, 0, m22, 0)
-        _link(g, m22, 0, m23, 0)
-        _link(g, gi, 6, m23, 1)
-        _link(g, m12, 0, m24, 0)
-        _link(g, m23, 0, m24, 1)
-        _link(g, m12, 0, m25, 1)
-        _link(g, m25, 0, m26, 1)
-        _link(g, m24, 0, m27, 0)
-        _link(g, m12, 0, m27, 1)
-        _link(g, m27, 0, m28, 0)
-        _link(g, m26, 0, m29, 0)
-        _link(g, m28, 0, m29, 1)
-        _link(g, gi, 8, mix, 0)
-        _link(g, m24, 0, mix, 2)
-        _link(g, m29, 0, mix, 3)
-        _link(g, mix, 0, m30, 0)
-        _link(g, mix, 0, m30, 1)
-        _link(g, m30, 0, go, 0)
-        _fix_conventions(g)
-    return _rebuild_group("UE Limbal Occlusion (directional)", _b)
-
-
-def eye_cornea():
-    """Cornea dome + view-side refraction parallax + iris UV.
-    Cornea IOR 1.49 is triangulated three independent ways (PLAN tier 1)."""
-    def _b(g):
-        _sock(g, "Cornea Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "uvC2", "OUTPUT", "NodeSocketVector")
-        _sock(g, "r", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "Iris UV", "OUTPUT", "NodeSocketVector")
-        _sock(g, "N8", "INPUT", "NodeSocketVector")
-        _sock(g, "Incoming", "INPUT", "NodeSocketVector")
-        _sock(g, "T2", "INPUT", "NodeSocketVector")
-        _sock(g, "B2", "INPUT", "NodeSocketVector")
-        _sock(g, "UV", "INPUT", "NodeSocketVector")
-        _sock(g, "uvC", "INPUT", "NodeSocketVector")
-        _sock(g, "Slope", "INPUT", "NodeSocketFloat", CORNEA_SLOPE, 0.0, 4.0)
-        _sock(g, "Eta", "INPUT", "NodeSocketFloat", ETA, 0.0, 2.0)
-        _sock(g, "Depth Const", "INPUT", "NodeSocketFloat", DEPTH_CONST, 0.0, 2.0)
-        _sock(g, "Depth Falloff", "INPUT", "NodeSocketFloat", DEPTH_FALLOFF, 0.0, 2.0)
-        _sock(g, "Depth Scale", "INPUT", "NodeSocketFloat", DEPTH_SCALE, 0.0, 2.0)
-        _sock(g, "Pupil Dilation", "INPUT", "NodeSocketFloat", 1.0, 0.05, 4.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1900, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (1900, 0))
-
-        dome = _new(g, "ShaderNodeVectorMath", "dome", (-634, 228),
-                    "dome = (uvC.xy * slope, 1)")
-        _prop(dome, "operation", "MULTIPLY_ADD")
-        _sv(dome, 2, (0.0, 0.0, 1.0))
-        slope3 = _new(g, "ShaderNodeCombineXYZ", "slope3", (-820, 100),
-                      "(slope, slope, 0)")
-        r2 = _new(g, "ShaderNodeVectorMath", "r2", (-624, 407), "r^2")
-        _prop(r2, "operation", "DOT_PRODUCT")
-        f2w = _grp(g, "UE Frame To World (explicit TBN)", "Group.003", (38, -89),
-                   "cornea normal -> world")
-        neg = _new(g, "ShaderNodeVectorMath", "I", (8, 262), "I = -Incoming")
-        _prop(neg, "operation", "SCALE")
-        _sv(neg, 3, -1.0)
-        refr = _new(g, "ShaderNodeVectorMath", "refract", (213, 43),
-                    "refract(I, cornea, eta)")
-        _prop(refr, "operation", "REFRACT")
-        dT = _new(g, "ShaderNodeVectorMath", "dotT", (415, 146), "dot(refr, T2)")
-        _prop(dT, "operation", "DOT_PRODUCT")
-        dB = _new(g, "ShaderNodeVectorMath", "dotB", (415, 6), "dot(refr, B2)")
-        _prop(dB, "operation", "DOT_PRODUCT")
-        dN = _new(g, "ShaderNodeVectorMath", "dotN", (415, -162), "dot(refr, N8)")
-        _prop(dN, "operation", "DOT_PRODUCT")
-        dep = _new(g, "ShaderNodeMath", "depth", (245, 231),
-                   "const - falloff*r^2")
-        _prop(dep, "operation", "MULTIPLY_ADD")
-        negf = _new(g, "ShaderNodeMath", "negfalloff", (60, 231), "-falloff")
-        _prop(negf, "operation", "MULTIPLY")
-        _sv(negf, 1, -1.0)
-        dmax = _new(g, "ShaderNodeMath", "dmax", (422, 318), "max(0, ...)")
-        _prop(dmax, "operation", "MAXIMUM")
-        _sv(dmax, 1, 0.0)
-        dsc = _new(g, "ShaderNodeMath", "dscale", (592, 317), "iris depth")
-        _prop(dsc, "operation", "MULTIPLY")
-        px = _new(g, "ShaderNodeMath", "px", (599, 108), "refr.x / refr.z")
-        _prop(px, "operation", "DIVIDE")
-        py = _new(g, "ShaderNodeMath", "py", (611, -123), "refr.y / refr.z")
-        _prop(py, "operation", "DIVIDE")
-        ox = _new(g, "ShaderNodeMath", "ox", (799, 108))
-        _prop(ox, "operation", "MULTIPLY")
-        oy = _new(g, "ShaderNodeMath", "oy", (799, -52))
-        _prop(oy, "operation", "MULTIPLY")
-        off = _new(g, "ShaderNodeCombineXYZ", "offset", (977, 21),
-                   "parallax offset")
-        uvr = _new(g, "ShaderNodeVectorMath", "uv_refr", (46, -501),
-                   "uv_refr = UV0 - offset")
-        _prop(uvr, "operation", "SUBTRACT")
-        uvc2 = _new(g, "ShaderNodeVectorMath", "uvC2", (198, -501),
-                    "uvC2 = (uv_refr - centre) / radius")
-        _prop(uvc2, "operation", "MULTIPLY_ADD")
-        _sv(uvc2, 1, (_INV, _INV, 0.0))
-        _sv(uvc2, 2, (-EYE_UV_CENTER[0] * _INV, -EYE_UV_CENTER[1] * _INV, 0.0))
-        ln2 = _new(g, "ShaderNodeVectorMath", "len2", (357, -553), "|uvC2|")
-        _prop(ln2, "operation", "LENGTH")
-        cl2 = _new(g, "ShaderNodeMath", "clamp2", (537, -553), "min(|uvC2|, 1)")
-        _prop(cl2, "operation", "MINIMUM")
-        _sv(cl2, 1, 1.0)
-        pw = _new(g, "ShaderNodeMath", "pow", (897, -353), "r' = pow(r, k)")
-        _prop(pw, "operation", "POWER")
-        nz2 = _new(g, "ShaderNodeVectorMath", "dir", (357, -681),
-                   "normalize(uvC2)")
-        _prop(nz2, "operation", "NORMALIZE")
-        sc2 = _new(g, "ShaderNodeVectorMath", "scaled", (1046, -635))
-        _prop(sc2, "operation", "SCALE")
-        iuv = _new(g, "ShaderNodeVectorMath", "iris_uv", (1226, -635),
-                   "iris UV = dir*len*0.5 + 0.5")
-        _prop(iuv, "operation", "MULTIPLY_ADD")
-        _sv(iuv, 1, (0.5, 0.5, 0.0))
-        _sv(iuv, 2, (0.5, 0.5, 0.0))
-
-        _link(g, gi, "Slope", slope3, 0)
-        _link(g, gi, "Slope", slope3, 1)
-        _link(g, slope3, 0, dome, 1)
-        _link(g, gi, "uvC", dome, 0)
-        _link(g, gi, "uvC", r2, 0)
-        _link(g, gi, "uvC", r2, 1)
-        _link(g, gi, "T2", f2w, 0)
-        _link(g, gi, "B2", f2w, 1)
-        _link(g, gi, "N8", f2w, 2)
-        _link(g, dome, 0, f2w, 3)
-        _link(g, gi, "Incoming", neg, 0)
-        _link(g, neg, 0, refr, 0)
-        _link(g, f2w, 0, refr, 1)
-        _link(g, gi, "Eta", refr, 3)
-        _link(g, refr, 0, dT, 0)
-        _link(g, gi, "T2", dT, 1)
-        _link(g, refr, 0, dB, 0)
-        _link(g, gi, "B2", dB, 1)
-        _link(g, refr, 0, dN, 0)
-        _link(g, gi, "N8", dN, 1)
-        _link(g, gi, "Depth Falloff", negf, 0)
-        _link(g, r2, 1, dep, 0)
-        _link(g, negf, 0, dep, 1)
-        _link(g, gi, "Depth Const", dep, 2)
-        _link(g, dep, 0, dmax, 0)
-        _link(g, dmax, 0, dsc, 0)
-        _link(g, gi, "Depth Scale", dsc, 1)
-        _link(g, dT, 1, px, 0)
-        _link(g, dN, 1, px, 1)
-        _link(g, dB, 1, py, 0)
-        _link(g, dN, 1, py, 1)
-        _link(g, px, 0, ox, 0)
-        _link(g, dsc, 0, ox, 1)
-        _link(g, py, 0, oy, 0)
-        _link(g, dsc, 0, oy, 1)
-        _link(g, ox, 0, off, 0)
-        _link(g, oy, 0, off, 1)
-        _link(g, gi, "UV", uvr, 0)
-        _link(g, off, 0, uvr, 1)
-        _link(g, uvr, 0, uvc2, 0)
-        _link(g, uvc2, 0, ln2, 0)
-        _link(g, ln2, 1, cl2, 0)
-        _link(g, cl2, 0, pw, 0)
-        _link(g, gi, "Pupil Dilation", pw, 1)
-        _link(g, uvc2, 0, nz2, 0)
-        _link(g, nz2, 0, sc2, 0)
-        _link(g, pw, 0, sc2, 3)
-        _link(g, sc2, 0, iuv, 0)
-        _link(g, f2w, 0, go, "Cornea Normal")
-        _link(g, uvc2, 0, go, "uvC2")
-        _link(g, ln2, 1, go, "r")
-        _link(g, iuv, 0, go, "Iris UV")
-        _fix_conventions(g)
-    return _rebuild_group("FF7R Cornea", _b)
-
-
-def eye_limbal():
-    """Limbal occlusion: radial term blended with the directional term, applied
-    to the iris only (the sclera stays at 1.0)."""
-    def _b(g):
-        _sock(g, "Occlusion", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "r", "INPUT", "NodeSocketFloat")
-        _sock(g, "Sclera Mask", "INPUT", "NodeSocketFloat")
-        _sock(g, "N8", "INPUT", "NodeSocketVector")
-        _sock(g, "uvC2", "INPUT", "NodeSocketVector")
-        _sock(g, "T2", "INPUT", "NodeSocketVector")
-        _sock(g, "B2", "INPUT", "NodeSocketVector")
-        _sock(g, "Light Position", "INPUT", "NodeSocketVector")
-        _sock(g, "Shading Point", "INPUT", "NodeSocketVector")
-        _sock(g, "Eta", "INPUT", "NodeSocketFloat", ETA, 0.0, 2.0)
-        _sock(g, "Offset", "INPUT", "NodeSocketFloat", LIMBAL_OFFSET, 0.0, 2.0)
-        _sock(g, "Softness", "INPUT", "NodeSocketFloat", LIMBAL_SOFTNESS, 0.0, 2.0)
-        _sock(g, "Aperture", "INPUT", "NodeSocketFloat", LIMBAL_APERTURE, 0.0, 8.0)
-        _sock(g, "Amount", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
-        _sock(g, "Directional", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1900, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (1900, 0))
-        rad = _new(g, "ShaderNodeMath", "radial", (111, 284),
-                   "1 - 0.55*|uvC2|")
-        _prop(rad, "operation", "MULTIPLY_ADD")
-        _prop(rad, "use_clamp", True)
-        _sv(rad, 2, 1.0)
-        negs = _new(g, "ShaderNodeMath", "negsoft", (-70, 284), "-softness")
-        _prop(negs, "operation", "MULTIPLY")
-        _sv(negs, 1, -1.0)
-        sq = _new(g, "ShaderNodeMath", "squared", (269, 274), "squared")
-        _prop(sq, "operation", "MULTIPLY")
-        iris_only = _new(g, "ShaderNodeMix", "iris_only", (628, 396),
-                         "iris only -- sclera stays 1.0")
-        _prop(iris_only, "data_type", "FLOAT")
-        _sv(iris_only, 3, 1.0)
-        amt = _new(g, "ShaderNodeMix", "amount", (793, 396),
-                   "limbal occlusion amount")
-        _prop(amt, "data_type", "FLOAT")
-        _sv(amt, 2, 1.0)
-        lsub = _new(g, "ShaderNodeVectorMath", "L", (-675, -139),
-                    "L = light position - shading point")
-        _prop(lsub, "operation", "SUBTRACT")
-        lnz = _new(g, "ShaderNodeVectorMath", "Lhat", (-519, -157),
-                   "unit light dir")
-        _prop(lnz, "operation", "NORMALIZE")
-        lref = _new(g, "ShaderNodeMix", "refract_L", (-363, -130),
-                    "lerp(N, L, eta) -- light-side refraction")
-        _prop(lref, "data_type", "VECTOR")
-        lrn = _new(g, "ShaderNodeVectorMath", "Lrefr", (-214, -130),
-                   "refracted light dir")
-        _prop(lrn, "operation", "NORMALIZE")
-        lsc = _new(g, "ShaderNodeVectorMath", "Lscaled", (-67, -132),
-                   "* directional")
-        _prop(lsc, "operation", "SCALE")
-        dirg = _grp(g, "UE Limbal Occlusion (directional)", "directional",
-                    (254, 88), "shader maths -- do not hand-edit")
-        blend = _new(g, "ShaderNodeMix", "blend", (448, 262),
-                     "radial <-> directional")
-        _prop(blend, "data_type", "FLOAT")
-        _link(g, gi, "Softness", negs, 0)
-        _link(g, gi, "r", rad, 0)
-        _link(g, negs, 0, rad, 1)
-        _link(g, rad, 0, sq, 0)
-        _link(g, rad, 0, sq, 1)
-        _link(g, gi, "Light Position", lsub, 0)
-        _link(g, gi, "Shading Point", lsub, 1)
-        _link(g, lsub, 0, lnz, 0)
-        _link(g, gi, "Eta", lref, "Factor")
-        _link(g, gi, "N8", lref, "A")
-        _link(g, lnz, 0, lref, "B")
-        _link(g, lref, "Result", lrn, 0)
-        _link(g, lrn, 0, lsc, 0)
-        _link(g, gi, "Directional", lsc, "Scale")
-        _link(g, gi, "uvC2", dirg, 0)
-        _link(g, lsc, 0, dirg, 1)
-        _link(g, gi, "T2", dirg, 2)
-        _link(g, gi, "B2", dirg, 3)
-        _link(g, gi, "r", dirg, 4)
-        _link(g, gi, "Offset", dirg, 5)
-        _link(g, gi, "Softness", dirg, 6)
-        _link(g, gi, "Aperture", dirg, 7)
-        _link(g, gi, "Directional", blend, "Factor")
-        _link(g, sq, 0, blend, "A")
-        _link(g, dirg, 0, blend, "B")
-        _link(g, blend, "Result", iris_only, "A")
-        _link(g, gi, "Sclera Mask", iris_only, "Factor")
-        _link(g, gi, "Amount", amt, "Factor")
-        _link(g, iris_only, "Result", amt, "B")
-        _link(g, amt, "Result", go, "Occlusion")
-        _fix_conventions(g)
-    return _rebuild_group("FF7R Limbal Occlusion", _b)
-
-
-def eye_uv():
-    """Geometry-only half of the eye path: disc -> cornea, producing Iris UV and
-    the cornea-local frame.  Deliberately has NO input derived from an iris
-    texture colour.
-
-    This split exists to avoid a node-graph cycle.  In the material tree the
-    iris textures (IrisColor/IrisNormal/IrisOcclusion/IrisEmissive) must be
-    sampled at the Iris UV this group computes -- but Blender treats a Group
-    node as opaque for cycle detection, so if ONE group both consumed those
-    textures' colours AND produced the UV they are sampled at, Blender refuses
-    the graph outright ("This link forms a cycle which is not supported"),
-    even though internally Iris UV never actually depends on iris colour.
-    Keeping UV production in its own node sidesteps that: eye_uv has no path
-    back into the textures that read its own output, so the two can wire to
-    each other safely.  See `grp_eye()`, which consumes these outputs, and
-    `build()` for the wiring."""
-    def _b(g):
-        _sock(g, "Iris UV", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Cornea Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "uvC2", "OUTPUT", "NodeSocketVector")
-        _sock(g, "r", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "Sclera Mask", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "T2", "OUTPUT", "NodeSocketVector")
-        _sock(g, "B2", "OUTPUT", "NodeSocketVector")
-        _sock(g, "UV0", "INPUT", "NodeSocketVector")
-        _sock(g, "Gaze Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Pupil Dilation", "INPUT", "NodeSocketFloat", 1.0, 0.05, 4.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1400, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (700, 0))
-
-        geo = _new(g, "ShaderNodeNewGeometry", "Geometry", (-1400, 300))
-        tbn = _grp(g, "FF7R Util/TBN", "TBN", (-1400, 0), "tangent frame")
-        disc = _grp(g, "FF7R Eye Disc", "Disc", (-1100, 300), "eye disc / limbus")
-        # cornea frame: B2 = normalize(cross(N8,T)), T2 = cross(B2,N8)
-        b2 = _new(g, "ShaderNodeVectorMath", "B2", (-900, 100), "cross(N8, T)")
-        _prop(b2, "operation", "CROSS_PRODUCT")
-        b2n = _new(g, "ShaderNodeVectorMath", "B2n", (-740, 100))
-        _prop(b2n, "operation", "NORMALIZE")
-        b2w = _new(g, "ShaderNodeVectorMath", "B2w", (-580, 100), "* w")
-        _prop(b2w, "operation", "SCALE")
-        t2 = _new(g, "ShaderNodeVectorMath", "T2", (-900, -100), "cross(B2, N8)")
-        _prop(t2, "operation", "CROSS_PRODUCT")
-        t2n = _new(g, "ShaderNodeVectorMath", "T2n", (-740, -100))
-        _prop(t2n, "operation", "NORMALIZE")
-        t2w = _new(g, "ShaderNodeVectorMath", "T2w", (-580, -100), "* w")
-        _prop(t2w, "operation", "SCALE")
-
-        cornea = _grp(g, "FF7R Cornea", "Cornea", (-300, 100), "cornea / parallax")
-
-        _link(g, gi, "UV0", disc, "UV0")
-        _link(g, tbn, "T", b2, 1)
-        _link(g, gi, "Gaze Normal", b2, 0)
-        _link(g, b2, 0, b2n, 0)
-        _link(g, b2n, 0, b2w, 0)
-        _link(g, tbn, "w", b2w, "Scale")
-        _link(g, b2w, 0, t2, 0)
-        _link(g, gi, "Gaze Normal", t2, 1)
-        _link(g, t2, 0, t2n, 0)
-        _link(g, t2n, 0, t2w, 0)
-        _link(g, tbn, "w", t2w, "Scale")
-
-        _link(g, gi, "Gaze Normal", cornea, "N8")
-        _link(g, geo, "Incoming", cornea, "Incoming")
-        _link(g, t2w, 0, cornea, "T2")
-        _link(g, b2w, 0, cornea, "B2")
-        _link(g, disc, "UV", cornea, "UV")
-        _link(g, disc, "uvC", cornea, "uvC")
-        _link(g, gi, "Pupil Dilation", cornea, "Pupil Dilation")
-
-        _link(g, cornea, "Iris UV", go, "Iris UV")
-        _link(g, cornea, "Cornea Normal", go, "Cornea Normal")
-        _link(g, cornea, "uvC2", go, "uvC2")
-        _link(g, cornea, "r", go, "r")
-        _link(g, disc, "Sclera Mask", go, "Sclera Mask")
-        _link(g, t2w, 0, go, "T2")
-        _link(g, b2w, 0, go, "B2")
-        _fix_conventions(g)
-    return _rebuild_group("FF7R Eye UV", _b)
-
-
-def grp_eye():
-    """Colour half of the eye path: limbal occlusion + iris/sclera composition.
-    Outputs everything the Principled needs for SM 9.  Takes the cornea-local
-    frame and Iris UV as INPUTS from `eye_uv()` rather than computing them --
-    see that function's docstring for why the two are split.
-
-    PLAN 0.3: slot 11 is `IrisOcclusion`, not a specular mask -- it multiplies
-    base colour (AO), it does not drive specular."""
-    def _b(g):
-        _sock(g, "Base Color", "OUTPUT", "NodeSocketColor")
-        _sock(g, "Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Coat Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Emission", "OUTPUT", "NodeSocketColor")
-        _sock(g, "Sclera Color", "INPUT", "NodeSocketColor", (0.6, 0.6, 0.6, 1.0))
-        _sock(g, "Iris Color", "INPUT", "NodeSocketColor", (0.3, 0.2, 0.1, 1.0))
-        _sock(g, "Iris Occlusion", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
-        _sock(g, "Iris AO Factor", "INPUT", "NodeSocketFloat", 0.5, 0.0, 1.0)
-        _sock(g, "Iris Emissive", "INPUT", "NodeSocketColor", (0.0, 0.0, 0.0, 1.0))
-        _sock(g, "Sclera Base Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Sclera Secondary Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Gaze Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Iris Detail Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Cornea Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "uvC2", "INPUT", "NodeSocketVector", (0.0, 0.0, 0.0))
-        _sock(g, "r", "INPUT", "NodeSocketFloat", 0.0, 0.0, 2.0)
-        _sock(g, "Sclera Mask", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
-        _sock(g, "T2", "INPUT", "NodeSocketVector", (1.0, 0.0, 0.0))
-        _sock(g, "B2", "INPUT", "NodeSocketVector", (0.0, 1.0, 0.0))
-        _sock(g, "Light Position", "INPUT", "NodeSocketVector", (17.0, 0.0, 17.0))
-        _sock(g, "IrisEmissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
-        _sock(g, "Limbal Amount", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1200, -200))
-        go = _new(g, "NodeGroupOutput", "Group Output", (900, 0))
-
-        geo = _new(g, "ShaderNodeNewGeometry", "Geometry", (-1200, 400),
-                   "only used for Position (limbal shading point)")
-        limbal = _grp(g, "FF7R Limbal Occlusion", "Limbal", (-700, 0),
-                      "limbal occlusion")
-
-        albedo = _new(g, "ShaderNodeMix", "iris_sclera", (200, 400),
-                      "lerp(iris, sclera, mask)")
-        _prop(albedo, "data_type", "RGBA")
-        irisao = _new(g, "ShaderNodeMix", "iris_ao", (20, 560),
-                      "iris colour * IrisOcclusion  [PLAN 0.3]")
-        _prop(irisao, "data_type", "RGBA")
-        _prop(irisao, "blend_type", "MULTIPLY")
-        _sv(irisao, "Factor", 0.5)
-        limbmul = _new(g, "ShaderNodeMix", "limbal_mul", (400, 400),
-                       "base colour * limbal occlusion")
-        _prop(limbmul, "data_type", "RGBA")
-        _prop(limbmul, "blend_type", "MULTIPLY")
-        _sv(limbmul, "Factor", 1.0)
-        nrm = _new(g, "ShaderNodeMix", "normal_mix", (200, 100),
-                   "lerp(cornea, sclera N, mask)")
-        _prop(nrm, "data_type", "VECTOR")
-        iris_normal = _new(g, "ShaderNodeMix", "iris_normal_mix", (420, 100),
-                            "lerp(iris detail normal, regular normal, sclera mask)")
-        _prop(iris_normal, "data_type", "VECTOR")
-        n2nd = _new(g, "ShaderNodeMix", "second_normal", (200, -200),
-                    "lerp(cornea map, gaze, mask)")
-        _prop(n2nd, "data_type", "VECTOR")
-        em = _new(g, "ShaderNodeMix", "emissive", (400, -420),
-                  "IrisEmissive_ gate (additive, unshadowed)")
-        _prop(em, "data_type", "RGBA")
-        _sv(em, "A", (0.0, 0.0, 0.0, 1.0))
-        eminv = _new(g, "ShaderNodeMath", "iris_side", (200, -420),
-                     "1 - sclera mask")
-        _prop(eminv, "operation", "SUBTRACT")
-        _sv(eminv, 0, 1.0)
-        emg = _new(g, "ShaderNodeMath", "em_gate", (360, -560), "* IrisEmissive_")
-        _prop(emg, "operation", "MULTIPLY")
-
-        _link(g, gi, "r", limbal, "r")
-        _link(g, gi, "Sclera Mask", limbal, "Sclera Mask")
-        _link(g, gi, "Gaze Normal", limbal, "N8")
-        _link(g, gi, "uvC2", limbal, "uvC2")
-        _link(g, gi, "T2", limbal, "T2")
-        _link(g, gi, "B2", limbal, "B2")
-        _link(g, gi, "Light Position", limbal, "Light Position")
-        _link(g, geo, "Position", limbal, "Shading Point")
-        _link(g, gi, "Limbal Amount", limbal, "Amount")
-
-        _link(g, gi, "Iris Color", irisao, "A")
-        _link(g, gi, "Iris Occlusion", irisao, "B")
-        _link(g, gi, "Iris AO Factor", irisao, "Factor")
-        _link(g, irisao, "Result", albedo, "A")
-        _link(g, gi, "Sclera Color", albedo, "B")
-        _link(g, gi, "Sclera Mask", albedo, "Factor")
-        _link(g, albedo, "Result", limbmul, "A")
-        _link(g, limbal, "Occlusion", limbmul, "B")
-
-        _link(g, gi, "Sclera Mask", nrm, "Factor")
-        _link(g, gi, "Cornea Normal", nrm, "A")
-        _link(g, gi, "Sclera Base Normal", nrm, "B")
-        _link(g, gi, "Sclera Mask", iris_normal, "Factor")
-        _link(g, gi, "Iris Detail Normal", iris_normal, "A")
-        _link(g, nrm, "Result", iris_normal, "B")
-        _link(g, gi, "Sclera Mask", n2nd, "Factor")
-        _link(g, gi, "Gaze Normal", n2nd, "A")
-        _link(g, gi, "Sclera Secondary Normal", n2nd, "B")
-
-        _link(g, gi, "Sclera Mask", eminv, 1)
-        _link(g, eminv, 0, emg, 0)
-        _link(g, gi, "IrisEmissive_", emg, 1)
-        _link(g, emg, 0, em, "Factor")
-        _link(g, gi, "Iris Emissive", em, "B")
-
-        _link(g, limbmul, "Result", go, "Base Color")
-        _link(g, iris_normal, "Result", go, "Normal")
-        _link(g, n2nd, "Result", go, "Coat Normal")
-        _link(g, em, "Result", go, "Emission")
-        _fix_conventions(g)
-    return _rebuild_group("FF7R Eye", _b)
-
-
-# =============================================================== HAIR PATH ===
-
-def grp_hair_strand(t2w_group_name="UE Tangent To World (mikktspace)",
-                    uv0_name=UV_MAP):
-    """Hair base-pass strand axis + view-tracking shading normal.
-
-        strand_ts = normalize( n.x*n.y , -(n.x^2+n.z^2) , n.y*n.z )
-        d = dot(V, strand);  if |d| < MIN: d = sign((2*noise-1) + d/MIN) * MIN
-        N = normalize(V - d*strand)
-
-    The downstream DeferredLightPixelMain `_label53` branch is now decoded: it
-    is a three-lobe strand-aligned anisotropic GGX model, not Kajiya-Kay. It
-    reconstructs the strand T from this view-tracking N and V, while GBufferD's
-    authored full-RGB flow vector is consumed only through dot(flow, L).
-    Blender 5.2 exposes no per-light L in a material tree, so exact highlight
-    placement is impossible here. Principled's Anisotropic is ~93% suppressed
-    by this N in Cycles and ignored by EEVEE. `Flow Influence` is therefore an
-    explicitly non-game approximation: it projects flow into the surface plane
-    and folds it into the strand axis so the map can still steer the normal.
-
-    ``Strand Map`` remains an unflipped DirectX vector for its final tangent
-    transform.  ``Strand Math Map`` is its locally Y-flipped twin: the
-    recovered component equation below was derived in Blender's Y convention,
-    making this the one path where component maths must see pre-flipped green.
-    """
-    def _b(g):
-        _sock(g, "Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Mapped Normal", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Tangent", "OUTPUT", "NodeSocketVector")
-        _sock(g, "Roughness", "OUTPUT", "NodeSocketFloat")
-        _sock(g, "Strand Map", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Strand Math Map", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Flow Map", "INPUT", "NodeSocketVector", (0.0, 0.0, 1.0))
-        _sock(g, "Normal Map Strength", "INPUT", "NodeSocketFloat",
-              NORMAL_MAP_STRENGTH, 0.0, 2.0)
-        _sock(g, "Roughness Map", "INPUT", "NodeSocketFloat", 0.35, 0.0, 1.0)
-        _sock(g, "Flow Influence", "INPUT", "NodeSocketFloat", 0.2, 0.0, 1.0)
-        _sock(g, "Min VdotT", "INPUT", "NodeSocketFloat", MIN_VDOTT, 0.001, 0.5)
-        _sock(g, "Dither Sign", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
-        _sock(g, "Roughness Curvature", "INPUT", "NodeSocketFloat",
-              ROUGHNESS_CURVATURE, 0.0, 1.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1900, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (1700, 0))
-        geo = _new(g, "ShaderNodeNewGeometry", "Geometry", (-1900, 600))
-
-        sep = _new(g, "ShaderNodeSeparateXYZ", "n", (-1600, 500),
-                   "strand map (Blender-Y for recovered equation)")
-        sx = _new(g, "ShaderNodeMath", "sx", (-1400, 640), "n.x * n.y")
-        _prop(sx, "operation", "MULTIPLY")
-        nxx = _new(g, "ShaderNodeMath", "nxx", (-1400, 480), "n.x^2")
-        _prop(nxx, "operation", "MULTIPLY")
-        nzz = _new(g, "ShaderNodeMath", "nzz", (-1400, 320), "n.z^2")
-        _prop(nzz, "operation", "MULTIPLY")
-        syp = _new(g, "ShaderNodeMath", "syp", (-1220, 400), "n.x^2 + n.z^2")
-        _prop(syp, "operation", "ADD")
-        sy = _new(g, "ShaderNodeMath", "sy", (-1040, 400), "-(n.x^2 + n.z^2)")
-        _prop(sy, "operation", "MULTIPLY")
-        _sv(sy, 1, -1.0)
-        sz = _new(g, "ShaderNodeMath", "sz", (-1400, 160), "n.y * n.z")
-        _prop(sz, "operation", "MULTIPLY")
-        sc = _new(g, "ShaderNodeCombineXYZ", "strand_ts", (-860, 460),
-                  "strand (tangent space)")
-        sn = _new(g, "ShaderNodeVectorMath", "strand_n", (-680, 460))
-        _prop(sn, "operation", "NORMALIZE")
-        sw = _grp(g, t2w_group_name, "strand_w", (-500, 460),
-                  "strand -> world")
-        fw = _grp(g, t2w_group_name, "flow_w", (-500, 200),
-                  "flow -> world (UV0 basis, shader-exact)")
-        fdot = _new(g, "ShaderNodeVectorMath", "flow_dot_n", (-300, 80),
-                    "dot(flow, geometric N)")
-        _prop(fdot, "operation", "DOT_PRODUCT")
-        fn = _new(g, "ShaderNodeVectorMath", "flow_n", (-120, 40),
-                  "N * dot(flow,N)")
-        _prop(fn, "operation", "SCALE")
-        fsub = _new(g, "ShaderNodeVectorMath", "flow_plane", (60, 140),
-                    "flow projected into surface plane")
-        _prop(fsub, "operation", "SUBTRACT")
-        fproj = _new(g, "ShaderNodeVectorMath", "flow_plane_n", (240, 140))
-        _prop(fproj, "operation", "NORMALIZE")
-        smix = _new(g, "ShaderNodeMix", "flow_blend", (-300, 340),
-                    "APPROXIMATION: blend projected flow into strand")
-        _prop(smix, "data_type", "VECTOR")
-        sused = _new(g, "ShaderNodeVectorMath", "strand_used", (-120, 340),
-                     "strand axis used for the normal")
-        _prop(sused, "operation", "NORMALIZE")
-
-        vdot = _new(g, "ShaderNodeVectorMath", "vdot", (80, 560),
-                    "d = dot(V, strand)")
-        _prop(vdot, "operation", "DOT_PRODUCT")
-        vabs = _new(g, "ShaderNodeMath", "vabs", (260, 660), "|d|")
-        _prop(vabs, "operation", "ABSOLUTE")
-        wn = _new(g, "ShaderNodeTexWhiteNoise", "noise", (80, 200),
-                  "blue-noise stand-in (world position)")
-        _prop(wn, "noise_dimensions", "3D")
-        nsc = _new(g, "ShaderNodeMath", "noise_signed", (260, 200), "noise*2 - 1")
-        _prop(nsc, "operation", "MULTIPLY_ADD")
-        _sv(nsc, 1, 2.0)
-        _sv(nsc, 2, -1.0)
-        dinv = _new(g, "ShaderNodeMath", "inv_min", (80, 40), "1 / MinVdotT")
-        _prop(dinv, "operation", "DIVIDE")
-        _sv(dinv, 0, 1.0)
-        d20 = _new(g, "ShaderNodeMath", "d_scaled", (260, 40), "d / MinVdotT")
-        _prop(d20, "operation", "MULTIPLY")
-        rsum = _new(g, "ShaderNodeMath", "rsum", (440, 120))
-        _prop(rsum, "operation", "ADD")
-        dsgn = _new(g, "ShaderNodeMath", "dith_sign", (600, 120), "dithered sign")
-        _prop(dsgn, "operation", "SIGN")
-        hsgn = _new(g, "ShaderNodeMath", "hard_sign", (600, -60), "sign(d)")
-        _prop(hsgn, "operation", "SIGN")
-        signsel = _new(g, "ShaderNodeMix", "sign_mode", (760, 40),
-                       "hard sign / dithered sign")
-        _prop(signsel, "data_type", "FLOAT")
-        dsmall = _new(g, "ShaderNodeMath", "d_small", (920, 40), "+/- MinVdotT")
-        _prop(dsmall, "operation", "MULTIPLY")
-        near = _new(g, "ShaderNodeMath", "near", (440, 660), "|d| < MinVdotT")
-        _prop(near, "operation", "LESS_THAN")
-        dmix = _new(g, "ShaderNodeMix", "d_clamped", (1080, 560), "clamped d")
-        _prop(dmix, "data_type", "FLOAT")
-        proj = _new(g, "ShaderNodeVectorMath", "proj", (1240, 460), "d * strand")
-        _prop(proj, "operation", "SCALE")
-        nsub = _new(g, "ShaderNodeVectorMath", "nsub", (1400, 560), "V - d*strand")
-        _prop(nsub, "operation", "SUBTRACT")
-        nsh = _new(g, "ShaderNodeVectorMath", "nshade", (1560, 560),
-                   "shading normal (world)")
-        _prop(nsh, "operation", "NORMALIZE")
-        n2w = _grp(g, t2w_group_name, "mapped_n", (1240, 760),
-                   "strand map as a plain normal")
-        rsq = _new(g, "ShaderNodeMath", "rsq", (1080, -320), "roughness^2")
-        _prop(rsq, "operation", "MULTIPLY")
-        radd = _new(g, "ShaderNodeMath", "radd", (1240, -320), "+ curvature")
-        _prop(radd, "operation", "ADD")
-        _prop(radd, "use_clamp", True)
-        rsqrt = _new(g, "ShaderNodeMath", "rsqrt", (1400, -320),
-                     "sqrt(clamp(curv + r^2))")
-        _prop(rsqrt, "operation", "SQRT")
-
-        _link(g, gi, "Strand Math Map", sep, 0)
-        _link(g, sep, 0, sx, 0)
-        _link(g, sep, 1, sx, 1)
-        _link(g, sep, 0, nxx, 0)
-        _link(g, sep, 0, nxx, 1)
-        _link(g, sep, 2, nzz, 0)
-        _link(g, sep, 2, nzz, 1)
-        _link(g, nxx, 0, syp, 0)
-        _link(g, nzz, 0, syp, 1)
-        _link(g, syp, 0, sy, 0)
-        _link(g, sep, 1, sz, 0)
-        _link(g, sep, 2, sz, 1)
-        _link(g, sx, 0, sc, 0)
-        _link(g, sy, 0, sc, 1)
-        _link(g, sz, 0, sc, 2)
-        _link(g, sc, 0, sn, 0)
-        _link(g, sn, 0, sw, 0)
-        _link(g, gi, "Normal Map Strength", sw, "Normal Map Strength")
-        _link(g, gi, "Flow Map", fw, 0)
-        _link(g, gi, "Normal Map Strength", fw, "Normal Map Strength")
-        _link(g, fw, 0, fdot, 0)
-        _link(g, geo, "Normal", fdot, 1)
-        _link(g, geo, "Normal", fn, 0)
-        _link(g, fdot, "Value", fn, "Scale")
-        _link(g, fw, 0, fsub, 0)
-        _link(g, fn, 0, fsub, 1)
-        _link(g, fsub, 0, fproj, 0)
-        _link(g, gi, "Flow Influence", smix, "Factor")
-        _link(g, sw, 0, smix, "A")
-        _link(g, fproj, 0, smix, "B")
-        _link(g, smix, "Result", sused, 0)
-        _link(g, geo, "Incoming", vdot, 0)
-        _link(g, sused, 0, vdot, 1)
-        _link(g, vdot, "Value", vabs, 0)
-        _link(g, geo, "Position", wn, "Vector")
-        _link(g, wn, "Value", nsc, 0)
-        _link(g, gi, "Min VdotT", dinv, 1)
-        _link(g, vdot, "Value", d20, 0)
-        _link(g, dinv, 0, d20, 1)
-        _link(g, nsc, 0, rsum, 0)
-        _link(g, d20, 0, rsum, 1)
-        _link(g, rsum, 0, dsgn, 0)
-        _link(g, vdot, "Value", hsgn, 0)
-        _link(g, gi, "Dither Sign", signsel, "Factor")
-        _link(g, hsgn, 0, signsel, "A")
-        _link(g, dsgn, 0, signsel, "B")
-        _link(g, signsel, "Result", dsmall, 0)
-        _link(g, gi, "Min VdotT", dsmall, 1)
-        _link(g, vabs, 0, near, 0)
-        _link(g, gi, "Min VdotT", near, 1)
-        _link(g, near, 0, dmix, "Factor")
-        _link(g, vdot, "Value", dmix, "A")
-        _link(g, dsmall, 0, dmix, "B")
-        _link(g, sused, 0, proj, 0)
-        _link(g, dmix, "Result", proj, "Scale")
-        _link(g, geo, "Incoming", nsub, 0)
-        _link(g, proj, 0, nsub, 1)
-        _link(g, nsub, 0, nsh, 0)
-        _link(g, gi, "Strand Map", n2w, 0)
-        _link(g, gi, "Normal Map Strength", n2w, "Normal Map Strength")
-        _link(g, gi, "Roughness Map", rsq, 0)
-        _link(g, gi, "Roughness Map", rsq, 1)
-        _link(g, rsq, 0, radd, 0)
-        _link(g, gi, "Roughness Curvature", radd, 1)
-        _link(g, radd, 0, rsqrt, 0)
-        _link(g, nsh, 0, go, "Normal")
-        _link(g, n2w, 0, go, "Mapped Normal")
-        # Texture 14/GBufferD is the only authored downstream flow direction.
-        # Feeding it to Principled Tangent is approximate, but less misleading
-        # than exporting the reconstructed strand as though it were that map.
-        _link(g, fw, 0, go, "Tangent")
-        _link(g, rsqrt, 0, go, "Roughness")
-    group_name = ("FF7R Hair Strand" if not uv0_name else
-                  "FF7R Hair Strand (%s)" % uv0_name)
-    return _rebuild_group(group_name, _b)
-
-
 # ============================================================ OTHER FEATURES ==
 
 def grp_coverage():
@@ -2834,165 +2087,6 @@ SHADING_MODELS = ["Standard (SM1)", "Skin (SM3)", "Subsurface Profile (SM5)",
                   "Hair (SM7)", "Cloth (SM8)", "Eye (SM9)", "Unlit (SM0)"]
 
 
-def grp_shading_model():
-    """PLAN 2.1 -- the GBuffer shading-model id does not select a different
-    shader, it selects a different reading of the same buffers.  So this switches
-    Principled's PARAMETERS and the material keeps exactly one BSDF."""
-    def _b(g):
-        outs = ["Subsurface Weight", "Sheen Weight", "Anisotropic",
-                "Coat Weight", "Metallic Scale", "Emission Boost",
-                "Diffuse Roughness"]
-        if THIN_WALL_SOCKET:
-            outs.append(THIN_WALL_SOCKET)
-        for nm_ in outs:
-            _sock(g, nm_, "OUTPUT", "NodeSocketFloat")
-        if HAS_MANUAL_MENU_SWITCH:
-            _sock(g, "Is Hair", "OUTPUT", "NodeSocketBool")
-            _sock(g, "Is Eye", "OUTPUT", "NodeSocketBool")
-        _sock(g, "Subsurface Radius", "OUTPUT", "NodeSocketVector")
-        # One selector for the entire material, supplied from the top-level
-        # Constant Menu.  A menu socket preserves the enum definition through
-        # the group boundary in Blender 5.2; older builds keep the numeric input
-        # and comparison-ladder implementation below.
-        if HAS_MANUAL_MENU_SWITCH:
-            _sock(g, "Shading Model", "INPUT", "NodeSocketMenu")
-        else:
-            _sock(g, "Shading Model", "INPUT", "NodeSocketFloat", 0.0, 0.0,
-                  float(len(SHADING_MODELS) - 1))
-        _sock(g, "Diffusion", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
-        _sock(g, "Thickness", "INPUT", "NodeSocketFloat", 0.2, 0.0, 1.0)
-        _sock(g, "Subsurface Scale", "INPUT", "NodeSocketFloat", 0.05, 0.0, 1.0)
-        _sock(g, "Hair Anisotropy", "INPUT", "NodeSocketFloat", 0.0, -1.0, 1.0)
-        gi = _new(g, "NodeGroupInput", "Group Input", (-1500, 0))
-        go = _new(g, "NodeGroupOutput", "Group Output", (1600, 0))
-        # Cloth is a thin translucent sheet, so from 5.2 on it takes full
-        # subsurface together with Principled's thin-wall mode.  Both stay off
-        # on 5.1 and earlier: that build has no thin-wall input, and turning
-        # subsurface on by itself would just darken and blur the cloth with no
-        # translucency to show for it.
-        cloth = SHADING_MODELS.index("Cloth (SM8)")
-        cloth_sss = 1.0 if THIN_WALL_SOCKET else 0.0
-        if HAS_MANUAL_MENU_SWITCH:
-            # One Menu Switch supplies a one-hot boolean output for every model.
-            # Those booleans are much clearer than seven separate compare/mix
-            # ladders and all follow the same menu arriving from the material.
-            flags, _sel, flag_values = _menu(
-                g, "SM_ModelFlags", (-1100, 700), SHADING_MODELS, "FLOAT",
-                "Selected shading model flags", selector_src=(gi, "Shading Model"),
-                manual=True)
-            for i in range(len(SHADING_MODELS)):
-                _menu_set(flag_values, i, 0.0)
-
-            def flag(model_name):
-                return flags.outputs[model_name]
-
-            def scaled_flag(name, model_name, scale, loc):
-                node = _new(g, "ShaderNodeMath", name, loc,
-                            "%s × %.3g" % (model_name, scale))
-                _prop(node, "operation", "MULTIPLY")
-                g.links.new(flag(model_name), node.inputs[0])
-                node.inputs[1].default_value = scale
-                return node
-
-            skin_sss = scaled_flag("SM_SkinSSS", "Skin (SM3)", 0.35, (-700, 800))
-            profile_sss = scaled_flag("SM_ProfileSSS", "Subsurface Profile (SM5)",
-                                      0.5, (-700, 600))
-            sss_sum = _new(g, "ShaderNodeMath", "SM_SSSSum", (-420, 750),
-                           "Skin + profile SSS")
-            _prop(sss_sum, "operation", "ADD")
-            _link(g, skin_sss, 0, sss_sum, 0)
-            _link(g, profile_sss, 0, sss_sum, 1)
-            sss_out = sss_sum
-            if cloth_sss:
-                cloth_sum = _new(g, "ShaderNodeMath", "SM_SSSWithCloth", (-160, 750),
-                                 "SSS + cloth thin-wall transmission")
-                _prop(cloth_sum, "operation", "ADD")
-                _link(g, sss_sum, 0, cloth_sum, 0)
-                g.links.new(flag("Cloth (SM8)"), cloth_sum.inputs[1])
-                sss_out = cloth_sum
-            _link(g, sss_out, 0, go, "Subsurface Weight")
-
-            sheen = _new(g, "ShaderNodeMath", "SM_ClothSheen", (-420, 400),
-                         "Cloth × Diffusion")
-            _prop(sheen, "operation", "MULTIPLY")
-            g.links.new(flag("Cloth (SM8)"), sheen.inputs[0])
-            _link(g, gi, "Diffusion", sheen, 1)
-            _link(g, sheen, 0, go, "Sheen Weight")
-
-            aniso = _new(g, "ShaderNodeMath", "SM_HairAnisotropy", (-420, 160),
-                         "Hair × anisotropy")
-            _prop(aniso, "operation", "MULTIPLY")
-            g.links.new(flag("Hair (SM7)"), aniso.inputs[0])
-            _link(g, gi, "Hair Anisotropy", aniso, 1)
-            _link(g, aniso, 0, go, "Anisotropic")
-
-            g.links.new(flag("Eye (SM9)"), go.inputs["Coat Weight"])
-            g.links.new(flag("Unlit (SM0)"), go.inputs["Emission Boost"])
-            g.links.new(flag("Hair (SM7)"), go.inputs["Is Hair"])
-            g.links.new(flag("Eye (SM9)"), go.inputs["Is Eye"])
-
-            nonmetal_a = _new(g, "ShaderNodeMath", "SM_NonMetalA", (-700, -120),
-                              "Skin or profile")
-            _prop(nonmetal_a, "operation", "MAXIMUM")
-            g.links.new(flag("Skin (SM3)"), nonmetal_a.inputs[0])
-            g.links.new(flag("Subsurface Profile (SM5)"), nonmetal_a.inputs[1])
-            nonmetal_b = _new(g, "ShaderNodeMath", "SM_NonMetalB", (-420, -120),
-                              "Skin/profile or eye")
-            _prop(nonmetal_b, "operation", "MAXIMUM")
-            _link(g, nonmetal_a, 0, nonmetal_b, 0)
-            g.links.new(flag("Eye (SM9)"), nonmetal_b.inputs[1])
-            metallic = _new(g, "ShaderNodeMath", "SM_MetallicScale", (-160, -120),
-                            "1 - non-metal shading models")
-            _prop(metallic, "operation", "SUBTRACT")
-            metallic.inputs[0].default_value = 1.0
-            _link(g, nonmetal_b, 0, metallic, 1)
-            _link(g, metallic, 0, go, "Metallic Scale")
-
-            diffuse = scaled_flag("SM_ClothDiffuseRoughness", "Cloth (SM8)",
-                                  0.5, (-420, -360))
-            _link(g, diffuse, 0, go, "Diffuse Roughness")
-            if THIN_WALL_SOCKET:
-                g.links.new(flag("Cloth (SM8)"), go.inputs[THIN_WALL_SOCKET])
-        else:
-            # per-model constants indexed by SHADING_MODELS; None = wire an input
-            specs = [
-                ("Subsurface Weight",  [0.0, 0.35, 0.5, 0.0, cloth_sss, 0.0, 0.0]),
-                ("Sheen Weight",       [0.0, 0.0, 0.0, 0.0, None, 0.0, 0.0]),
-                ("Anisotropic",        [0.0, 0.0, 0.0, None, 0.0, 0.0, 0.0]),
-                ("Coat Weight",        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
-                ("Metallic Scale",     [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
-                ("Emission Boost",     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
-                ("Diffuse Roughness",  [0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0]),
-            ]
-            if THIN_WALL_SOCKET:
-                thin = [0.0] * len(SHADING_MODELS)
-                thin[cloth] = 1.0
-                specs.append((THIN_WALL_SOCKET, thin))
-            wire = {"Sheen Weight": "Diffusion", "Anisotropic": "Hair Anisotropy"}
-            for row, (out_name, consts) in enumerate(specs):
-                y = 900 - row * 620
-                node, sel, vals = _menu(g, "SM_" + out_name.replace(" ", ""),
-                                        (-1100, y), SHADING_MODELS, "FLOAT", out_name,
-                                        selector_src=(gi, "Shading Model"))
-                for i, c in enumerate(consts):
-                    if c is None:
-                        _menu_feed(g, vals, i, gi, wire[out_name])
-                    else:
-                        _menu_set(vals, i, c)
-                _link(g, node, _menu_out(node), go, out_name)
-        rscale = _new(g, "ShaderNodeMath", "radius_scale", (-700, -3600),
-                      "thickness * subsurface scale")
-        _prop(rscale, "operation", "MULTIPLY")
-        _link(g, gi, "Thickness", rscale, 0)
-        _link(g, gi, "Subsurface Scale", rscale, 1)
-        rad = _new(g, "ShaderNodeCombineXYZ", "sss_radius", (-460, -3600),
-                   "SSS radius  [ROUGH: no real unit mapping]")
-        for i in range(3):
-            _link(g, rscale, 0, rad, i)
-        _link(g, rad, 0, go, "Subsurface Radius")
-    return _rebuild_group("FF7R Shading Model", _b)
-
-
 # ================================================================= MATERIAL ==
 
 # frame, role, kind, colourspace, neutral default        (PLAN 0.1 / 0.4)
@@ -3060,6 +2154,16 @@ SWITCH_FOR_ROLE = {
     "IrisColor": "IrisColor_", "IrisNormal": "IrisNormal_",
     "IrisOcclusion": "IrisOcclusion_", "IrisEmissive": "IrisEmissive_",
     "ScrelaNormal": "ScleraNormal_", "GazeNormal": "GazeNormal_",
+}
+
+_PROFILE_EXCLUDED_ROLES = {
+    "WideBentNormal", "IrisColor", "IrisNormal", "IrisOcclusion",
+    "IrisEmissive", "ScrelaNormal", "GazeNormal",
+}
+ROLES = [spec for spec in ROLES if spec[1] not in _PROFILE_EXCLUDED_ROLES]
+SWITCH_FOR_ROLE = {
+    role: flag for role, flag in SWITCH_FOR_ROLE.items()
+    if role not in _PROFILE_EXCLUDED_ROLES
 }
 
 # PLAN 2.13 / 2.15 -- deliberately absent, reported at the end so the omission
@@ -3158,31 +2262,85 @@ def _resolve_uv_names(n=4):
     return names, notes
 
 
+# ======================================================== SURFACE PROFILE ===
+
+def grp_surface_shading_model():
+    """Shading-model parameters for variants that are neither Eye_ nor Hair_.
+
+    The generic master previously carried alternate eye and strand routes in
+    its model selector.  Those variants now receive their own masters, so this
+    group intentionally has no Eye/Hair outputs or inputs.  The seven selector
+    values are retained to keep the material's persisted Shading Model enum
+    compatible with the variant table and with older Blend files.
+    """
+    def _b(g):
+        outs = ["Subsurface Weight", "Sheen Weight", "Anisotropic",
+                "Coat Weight", "Metallic Scale", "Emission Boost",
+                "Diffuse Roughness"]
+        if THIN_WALL_SOCKET:
+            outs.append(THIN_WALL_SOCKET)
+        for name in outs:
+            _sock(g, name, "OUTPUT", "NodeSocketFloat")
+        _sock(g, "Subsurface Radius", "OUTPUT", "NodeSocketVector")
+        if HAS_MANUAL_MENU_SWITCH:
+            _sock(g, "Shading Model", "INPUT", "NodeSocketMenu")
+        else:
+            _sock(g, "Shading Model", "INPUT", "NodeSocketFloat", 0.0, 0.0,
+                  float(len(SHADING_MODELS) - 1))
+        _sock(g, "Diffusion", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
+        _sock(g, "Thickness", "INPUT", "NodeSocketFloat", 0.2, 0.0, 1.0)
+        _sock(g, "Subsurface Scale", "INPUT", "NodeSocketFloat", 0.05, 0.0, 1.0)
+        gi = _new(g, "NodeGroupInput", "Group Input", (-1250, 0))
+        go = _new(g, "NodeGroupOutput", "Group Output", (1200, 0))
+        cloth_sss = 1.0 if THIN_WALL_SOCKET else 0.0
+        specs = [
+            ("Subsurface Weight", [0.0, 0.35, 0.5, 0.0, cloth_sss, 0.0, 0.0]),
+            ("Sheen Weight",      [0.0, 0.0, 0.0, 0.0, None, 0.0, 0.0]),
+            ("Anisotropic",       [0.0] * len(SHADING_MODELS)),
+            ("Coat Weight",       [0.0] * len(SHADING_MODELS)),
+            ("Metallic Scale",    [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]),
+            ("Emission Boost",    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+            ("Diffuse Roughness", [0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0]),
+        ]
+        if THIN_WALL_SOCKET:
+            thin = [0.0] * len(SHADING_MODELS)
+            thin[SHADING_MODELS.index("Cloth (SM8)")] = 1.0
+            specs.append((THIN_WALL_SOCKET, thin))
+        for row, (out_name, values) in enumerate(specs):
+            node, _selector, sockets = _menu(
+                g, "SurfaceSM_" + out_name.replace(" ", ""),
+                (-950, 800 - row * 520), SHADING_MODELS, "FLOAT", out_name,
+                selector_src=(gi, "Shading Model"), manual=HAS_MANUAL_MENU_SWITCH)
+            for index, value in enumerate(values):
+                if value is None:
+                    _menu_feed(g, sockets, index, gi, "Diffusion")
+                else:
+                    _menu_set(sockets, index, value)
+            _link(g, node, _menu_out(node), go, out_name)
+        radius_scale = _new(g, "ShaderNodeMath", "radius_scale", (-350, -3600),
+                            "thickness * subsurface scale")
+        _prop(radius_scale, "operation", "MULTIPLY")
+        radius = _new(g, "ShaderNodeCombineXYZ", "sss_radius", (-80, -3600))
+        _link(g, gi, "Thickness", radius_scale, 0)
+        _link(g, gi, "Subsurface Scale", radius_scale, 1)
+        for index in range(3):
+            _link(g, radius_scale, 0, radius, index)
+        _link(g, radius, 0, go, "Subsurface Radius")
+    return _rebuild_group("FF7R Surface Shading Model", _b)
+
+
 def build():
-    # Resolve coordinate names before constructing UV-dependent groups. Hair's
-    # slot 14 samples UV1 but UE transforms both slot 2 and slot 14 through the
-    # mesh's UV0 tangent frame; relying on Blender's active layer is too fragile.
+    """Build the ordinary RMI_Surface profile without Eye_ or Hair_ paths."""
     uv_names, uv_notes = _resolve_uv_names(4)
     _UV_NOTES.extend(uv_notes)
 
-    # --- groups, in dependency order
-    util_tbn()
-    util_tangent_to_world()
-    hair_t2w = util_tangent_to_world(uv_names[0])
-    util_frame_to_world()
+    tangent_to_world = util_tangent_to_world()
     util_slerp()
     util_rnm()
     util_detail_normal_additive()
     util_ao_combine()
     util_rough_combine()
     util_f0()
-    eye_disc()
-    eye_limbal_directional()
-    eye_cornea()
-    eye_limbal()
-    eye_uv()
-    grp_eye()
-    hair_group = grp_hair_strand(hair_t2w.name, uv_names[0])
     grp_coverage()
     grp_detail_layer()
     grp_segment_layers()
@@ -3191,530 +2349,291 @@ def build():
     grp_emissive()
     grp_blood()
     grp_film()
-    grp_shading_model()
+    grp_surface_shading_model()
 
     mat = bpy.data.materials.get(MAT_NAME) or bpy.data.materials.new(MAT_NAME)
     if mat.node_tree is None and bpy.app.version < (5, 0, 0):
         mat.use_nodes = True
+    _remove_unprofiled_properties(mat)
     _ensure_props(mat)
-    t = mat.node_tree
-    # re-running keeps whatever images are already assigned, matched by role
-    preserved = {n.name: n.image for n in t.nodes
-                 if n.bl_idname == "ShaderNodeTexImage" and n.image
-                 and n.name.startswith("TEX_")}
-    t.nodes.clear()
+    tree = mat.node_tree
+    preserved = {node.name: node.image for node in tree.nodes
+                 if node.bl_idname == "ShaderNodeTexImage" and node.image
+                 and node.name.startswith("TEX_")}
+    tree.nodes.clear()
 
-    F = {}
-    for key, label in [("Props", "MATERIAL CONTROLS  ->  PROPERTY BUNDLE"),
-                       ("Coords", "UV MAP SETS"),
-                       ("Base", "TEXTURES   Base"),
-                       ("Coverage", "TEXTURES   Coverage"),
-                       ("Detail", "TEXTURES   Detail layer"),
-                       ("SkinCloth", "TEXTURES   Skin / Cloth"),
-                       ("Segment", "TEXTURES   Segment / Layer blend"),
-                       ("Emissive", "TEXTURES   Emissive"),
-                       ("Hair", "TEXTURES   Hair"),
-                       ("Transition", "TEXTURES   Transition normal"),
-                       ("Eye", "TEXTURES   Eye"),
-                       ("Shade", "SHADING"),
-                       ("EyePath", "SHADING   Eye  (SM 9)"),
-                       ("HairPath", "SHADING   Hair  (SM 7)"),
-                       ("Out", "OUTPUT")]:
-        F[key] = _frame(t, "FRAME_" + key, label)
+    frames = {}
+    for key, label in [
+            ("Props", "MATERIAL CONTROLS  ->  PROPERTY BUNDLE"),
+            ("Coords", "UV MAP SETS"), ("Base", "TEXTURES   Base"),
+            ("Coverage", "TEXTURES   Coverage"),
+            ("Detail", "TEXTURES   Detail layer"),
+            ("SkinCloth", "TEXTURES   Skin / Cloth"),
+            ("Segment", "TEXTURES   Segment / Layer blend"),
+            ("Emissive", "TEXTURES   Emissive"),
+            ("Transition", "TEXTURES   Transition normal"),
+            ("Shade", "SHADING   Surface"), ("Out", "OUTPUT")]:
+        frames[key] = _frame(tree, "FRAME_" + key, label)
 
-    # ---- driven parameter nodes ---------------------------------------
-    # Every switch and float parameter is a Value node driven from the
-    # material's custom properties, so the graph mirrors the property panel.
-    P = {}
-    property_sources = {}
-    property_types = {}
-    for i, (name, members, _default) in enumerate(SWITCH_CONTROLS):
-        node_name = "SW_" + members[0]
-        col = min(i // SWITCH_COLUMN_LEN, len(SWITCH_COLUMNS) - 1)
-        cx, cy = SWITCH_COLUMNS[col]
-        row = i - col * SWITCH_COLUMN_LEN
-        v = _new(t, "ShaderNodeValue", node_name,
-                 (cx, cy - row * PROP_ROW_PITCH),
-                 " + ".join(members), F["Props"])
-        _drive(v.outputs[0], mat, name)
-        property_sources[name] = v
+    props, property_sources, property_types = {}, {}, {}
+    for index, (name, members, _default) in enumerate(SWITCH_CONTROLS):
+        column = min(index // SWITCH_COLUMN_LEN, len(SWITCH_COLUMNS) - 1)
+        x, y = SWITCH_COLUMNS[column]
+        node = _new(tree, "ShaderNodeValue", "SW_" + members[0],
+                    (x, y - (index - column * SWITCH_COLUMN_LEN) * PROP_ROW_PITCH),
+                    " + ".join(members), frames["Props"])
+        _drive(node.outputs[0], mat, name)
+        property_sources[name] = node
         property_types[name] = "BOOLEAN"
         for member in members:
-            P[member] = v
-    for i, (name, _d, _mn, _mx, _desc) in enumerate(ENUM_PROPS):
+            props[member] = node
+    for index, (name, _default, _min, _max, _description) in enumerate(ENUM_PROPS):
         if name == "Shading Model" and HAS_MANUAL_MENU_SWITCH:
-            v = _new(t, MENU_INPUT_IDNAME, "E_Shading_Model",
-                     (ENUM_COLUMN[0], ENUM_COLUMN[1] - i * PROP_ROW_PITCH),
-                     "Shading Model", F["Props"])
+            node = _new(tree, MENU_INPUT_IDNAME, "E_Shading_Model",
+                        (ENUM_COLUMN[0], ENUM_COLUMN[1] - index * PROP_ROW_PITCH),
+                        name, frames["Props"])
         else:
-            v = _new(t, "ShaderNodeValue", "E_" + name.replace(" ", "_"),
-                     (ENUM_COLUMN[0], ENUM_COLUMN[1] - i * PROP_ROW_PITCH),
-                     name, F["Props"])
-            _drive(v.outputs[0], mat, name)
-        P[name] = v
-        property_sources[name] = v
+            node = _new(tree, "ShaderNodeValue", "E_" + name.replace(" ", "_"),
+                        (ENUM_COLUMN[0], ENUM_COLUMN[1] - index * PROP_ROW_PITCH),
+                        name, frames["Props"])
+            _drive(node.outputs[0], mat, name)
+        props[name] = node
+        property_sources[name] = node
         property_types[name] = ("MENU" if name == "Shading Model" and
                                 HAS_MANUAL_MENU_SWITCH else "FLOAT")
-    for i, (name, _d, _mn, _mx, _desc) in enumerate(FLOAT_PROPS):
-        v = _new(t, "ShaderNodeValue", "P_" + name.replace(" ", "_"),
-                 (FLOAT_COLUMN[0], FLOAT_COLUMN[1] - i * PROP_ROW_PITCH),
-                 name, F["Props"])
-        _drive(v.outputs[0], mat, name)
-        P[name] = v
-        property_sources[name] = v
+    for index, (name, _default, _min, _max, _description) in enumerate(FLOAT_PROPS):
+        node = _new(tree, "ShaderNodeValue", "P_" + name.replace(" ", "_"),
+                    (FLOAT_COLUMN[0], FLOAT_COLUMN[1] - index * PROP_ROW_PITCH),
+                    name, frames["Props"])
+        _drive(node.outputs[0], mat, name)
+        props[name] = node
+        property_sources[name] = node
         property_types[name] = "FLOAT"
 
-    # ---- UV sets --------------------------------------------------------
     uv = {}
-    for i in range(4):
-        uv[i] = _new(t, "ShaderNodeUVMap", "UV%d" % i,
-                     (UV_COLUMN[0], UV_COLUMN[1] - i * UV_ROW_PITCH),
-                     "UV Map %d" % i, F["Coords"])
-        if uv_names[i]:
-            _prop(uv[i], "uv_map", uv_names[i])
+    for index in range(4):
+        uv[index] = _new(tree, "ShaderNodeUVMap", "UV%d" % index,
+                         (UV_COLUMN[0], UV_COLUMN[1] - index * UV_ROW_PITCH),
+                         "UV Map %d" % index, frames["Coords"])
+        if uv_names[index]:
+            _prop(uv[index], "uv_map", uv_names[index])
 
-    # ---- texture slots ------------------------------------------------
-    slots, ycur = {}, {}
-    for frame_key, role, kind, cs, default in ROLES:
-        ox, oy = FRAME_ORIGIN[frame_key]
-        y = ycur.get(frame_key, oy + FRAME_PAD[1])
-        ycur[frame_key] = y - SLOT_ROW_PITCH
-        slots[role] = _tex_slot(t, mat, role, kind, cs, default, F[frame_key],
-                                ox + FRAME_PAD[0], y, uv,
-                                P.get(SWITCH_FOR_ROLE.get(role)))
+    slots, cursor = {}, {}
+    for frame_key, role, kind, colourspace, default in ROLES:
+        x, y = FRAME_ORIGIN[frame_key]
+        y = cursor.get(frame_key, y + FRAME_PAD[1])
+        cursor[frame_key] = y - SLOT_ROW_PITCH
+        slots[role] = _tex_slot(tree, mat, role, kind, colourspace, default,
+                                frames[frame_key], x + FRAME_PAD[0], y, uv,
+                                props.get(SWITCH_FOR_ROLE.get(role)))
 
-    def S(role):
+    def slot(role):
         return slots[role][1]
 
-    # ---- shared shading -----------------------------------------------
-    # Hand-arranged in 4.5 (see the node layout block): the normal chain runs
-    # along the top of the Shade frame, the coverage/alpha chain along the
-    # bottom, and the per-pixel feature groups stack down its right-hand edge.
-    nbase_in, nbase = _decode_tangent_normal(
-        t, "N_Base", (1803, 1138), "Normal -> DirectX tangent vector", F["Shade"])
-    ndet_in, ndet = _decode_tangent_normal(
-        t, "N_Detail", (1795, 167), "DetailNormal -> DirectX tangent vector", F["Shade"])
-    ntrans_in, ntrans = _decode_tangent_normal(
-        t, "N_Transition", (2013, 342),
-        "PositiveTransitionNormal -> DirectX tangent vector", F["Shade"])
-    detail = _grp(t, "FF7R Detail Layer", "DetailLayer", (2204, 825), "", F["Shade"])
-    trans = _grp(t, "FF7R Transition Normal", "TransitionNormal", (2442, 525),
-                 "", F["Shade"])
-    nworld = _grp(t, "UE Tangent To World (mikktspace)", "N_SharedWorld",
-                  (2655, 680), "final tangent normal -> world", F["Shade"])
-    seg = _grp(t, "FF7R Segment Layers", "SegmentLayers", (2448, 1126), "", F["Shade"])
-    layer = _grp(t, "FF7R Layer Blend", "LayerBlend", (2657, 1012), "", F["Shade"])
-    coverage_detail = _new(t, "ShaderNodeMath", "CoverageWithDetail", (1797, -197),
-                           "Coverage × DetailCoverage (fur/card alpha)", F["Shade"])
+    normal_in, normal = _decode_tangent_normal(
+        tree, "N_Base", (1803, 1138), "Normal -> DirectX tangent vector", frames["Shade"])
+    detail_in, detail_normal = _decode_tangent_normal(
+        tree, "N_Detail", (1795, 167), "DetailNormal -> DirectX tangent vector", frames["Shade"])
+    transition_in, transition_normal = _decode_tangent_normal(
+        tree, "N_Transition", (2013, 342),
+        "PositiveTransitionNormal -> DirectX tangent vector", frames["Shade"])
+    detail = _grp(tree, "FF7R Detail Layer", "DetailLayer", (2204, 825), "", frames["Shade"])
+    transition = _grp(tree, "FF7R Transition Normal", "TransitionNormal", (2442, 525),
+                      "", frames["Shade"])
+    world_normal = _grp(tree, tangent_to_world.name, "N_SharedWorld", (2655, 680),
+                        "final tangent normal -> world", frames["Shade"])
+    segments = _grp(tree, "FF7R Segment Layers", "SegmentLayers", (2448, 1126), "", frames["Shade"])
+    layers = _grp(tree, "FF7R Layer Blend", "LayerBlend", (2657, 1012), "", frames["Shade"])
+    coverage_detail = _new(tree, "ShaderNodeMath", "CoverageWithDetail", (1797, -197),
+                           "Coverage × DetailCoverage", frames["Shade"])
     _prop(coverage_detail, "operation", "MULTIPLY")
-    cov = _grp(t, "FF7R Coverage", "Coverage", (1979, -209), "", F["Shade"])
-    shadow_path = _new(t, "ShaderNodeLightPath", "DetailCoverageShadowRay",
-                       (1981, 31), "Is Shadow Ray", F["Shade"])
-    shadow_gate = _new(t, "ShaderNodeMath", "DetailCoverageShadowGate",
-                       (2189, 197), "DetailCoverage_ × Is Shadow Ray", F["Shade"])
+    coverage = _grp(tree, "FF7R Coverage", "Coverage", (1979, -209), "", frames["Shade"])
+    shadow_ray = _new(tree, "ShaderNodeLightPath", "DetailCoverageShadowRay", (1981, 31),
+                      "Is Shadow Ray", frames["Shade"])
+    shadow_gate = _new(tree, "ShaderNodeMath", "DetailCoverageShadowGate", (2189, 197),
+                       "DetailCoverage_ × Is Shadow Ray", frames["Shade"])
     _prop(shadow_gate, "operation", "MULTIPLY")
-    alpha_shadow = _new(t, "ShaderNodeMath", "AlphaWithoutDetailCoverageShadow",
-                        (2186, 23), "alpha - DetailCoverage_ shadow ray", F["Shade"])
+    alpha_shadow = _new(tree, "ShaderNodeMath", "AlphaWithoutDetailCoverageShadow", (2186, 23),
+                        "alpha - DetailCoverage_ shadow ray", frames["Shade"])
     _prop(alpha_shadow, "operation", "SUBTRACT")
     _prop(alpha_shadow, "use_clamp", True)
-    backface = _new(t, "ShaderNodeNewGeometry", "BackfaceCulling",
-                    (2415, 205), "Backfacing", F["Shade"])
-    alpha_backface = _new(t, "ShaderNodeMath", "AlphaWithoutBackfaces",
-                          (2656, 547), "alpha - backfacing", F["Shade"])
-    _prop(alpha_backface, "operation", "SUBTRACT")
-    _prop(alpha_backface, "use_clamp", True)
-    blood = _grp(t, "FF7R Blood", "Blood", (2654, 14), "", F["Shade"])
-    film = _grp(t, "FF7R Film", "Film", (2652, -127), "", F["Shade"])
-    f0 = _grp(t, "FF7R Util/F0 Remap", "F0", (2648, -336), "", F["Shade"])
-    emis = _grp(t, "FF7R Emissive", "Emissive", (2644, -484), "", F["Shade"])
-    smodel = _grp(t, "FF7R Shading Model", "ShadingModel", (2655, 366), "", F["Shade"])
+    backface = _new(tree, "ShaderNodeNewGeometry", "BackfaceCulling", (2415, 205),
+                    "Backfacing", frames["Shade"])
+    alpha = _new(tree, "ShaderNodeMath", "AlphaWithoutBackfaces", (2656, 547),
+                 "alpha - backfacing", frames["Shade"])
+    _prop(alpha, "operation", "SUBTRACT")
+    _prop(alpha, "use_clamp", True)
+    blood = _grp(tree, "FF7R Blood", "Blood", (2654, 14), "", frames["Shade"])
+    film = _grp(tree, "FF7R Film", "Film", (2652, -127), "", frames["Shade"])
+    f0 = _grp(tree, "FF7R Util/F0 Remap", "F0", (2648, -336), "", frames["Shade"])
+    emissive = _grp(tree, "FF7R Emissive", "Emissive", (2644, -484), "", frames["Shade"])
+    model = _grp(tree, "FF7R Surface Shading Model", "ShadingModel", (2655, 366),
+                 "surface shading model", frames["Shade"])
 
-    _link(t, S("Normal"), "Result", nbase_in, 0)
-    _link(t, S("DetailNormal"), "Result", ndet_in, 0)
-    _link(t, S("PositiveTransitionNormal"), "Result", ntrans_in, 0)
+    _link(tree, slot("Normal"), "Result", normal_in, 0)
+    _link(tree, slot("DetailNormal"), "Result", detail_in, 0)
+    _link(tree, slot("PositiveTransitionNormal"), "Result", transition_in, 0)
+    _link(tree, slot("Color"), "Result", detail, "Base Color")
+    _link(tree, normal, 0, detail, "Base Normal")
+    _link(tree, slot("Roughness"), "Result", detail, "Base Roughness")
+    _link(tree, slot("WideOcclusion"), "Result", detail, "Base AO")
+    _link(tree, slot("DetailColor"), "Result", detail, "Detail Color")
+    _link(tree, detail_normal, 0, detail, "Detail Normal")
+    _link(tree, slot("DetailRoughness"), "Result", detail, "Detail Roughness")
+    _link(tree, slot("DetailOcclusion"), "Result", detail, "Detail AO")
+    _link(tree, slot("Detail"), "Result", detail, "Detail Mask")
 
-    _link(t, S("Color"), "Result", detail, "Base Color")
-    _link(t, nbase, 0, detail, "Base Normal")
-    _link(t, S("Roughness"), "Result", detail, "Base Roughness")
-    _link(t, S("WideOcclusion"), "Result", detail, "Base AO")
-    _link(t, S("DetailColor"), "Result", detail, "Detail Color")
-    _link(t, ndet, 0, detail, "Detail Normal")
-    _link(t, S("DetailRoughness"), "Result", detail, "Detail Roughness")
-    _link(t, S("DetailOcclusion"), "Result", detail, "Detail AO")
-    _link(t, S("Detail"), "Result", detail, "Detail Mask")
-
-    # Character variants carry Detail_; the current MEC/environment overlay
-    # variants do not. Enable from any actual detail-role switch so those exact
-    # parent switch sets work without inventing a Detail_ flag they never had.
-    detail_flags = ["Detail_", "DetailColor_", "DetailMetallic_",
-                    "DetailNormal_", "DetailRoughness_", "DetailOcclusion_"]
-    # One rung per extra flag, climbing the left edge of the Shade frame.
-    DETAIL_ENABLE_POS = [(1987, 995), (1981, 826), (1976, 659),
-                         (1981, 499), (1990, 325)]
-    detail_enable = P[detail_flags[0]]
-    for j, flag in enumerate(detail_flags[1:]):
-        mx = _new(t, "ShaderNodeMath", "DetailEnable%d" % j,
-                  DETAIL_ENABLE_POS[min(j, len(DETAIL_ENABLE_POS) - 1)],
-                  "OR detail-role switches", F["Shade"])
-        _prop(mx, "operation", "MAXIMUM")
-        _link(t, detail_enable, 0, mx, 0)
-        _link(t, P[flag], 0, mx, 1)
-        detail_enable = mx
-    _link(t, detail_enable, 0, detail, "Enable")
-
-    # Isotropy_ identifies the confirmed MEC/environment path and forces exact
-    # RNM option 2. The manual selector remains useful for non-Isotropy previews.
-    rnm_index = _new(t, "ShaderNodeMath", "RNMWhenIsotropy", (1805, -34),
-                     "Isotropy_ * 2", F["Shade"])
+    detail_flags = ["Detail_", "DetailColor_", "DetailMetallic_", "DetailNormal_",
+                    "DetailRoughness_", "DetailOcclusion_"]
+    detail_enable = props[detail_flags[0]]
+    for index, flag in enumerate(detail_flags[1:]):
+        node = _new(tree, "ShaderNodeMath", "DetailEnable%d" % index,
+                    (1987, 995 - index * 165), "OR detail-role switches", frames["Shade"])
+        _prop(node, "operation", "MAXIMUM")
+        _link(tree, detail_enable, 0, node, 0)
+        _link(tree, props[flag], 0, node, 1)
+        detail_enable = node
+    _link(tree, detail_enable, 0, detail, "Enable")
+    rnm_index = _new(tree, "ShaderNodeMath", "RNMWhenIsotropy", (1805, -34),
+                     "Isotropy_ * 2", frames["Shade"])
     _prop(rnm_index, "operation", "MULTIPLY")
     _sv(rnm_index, 1, 2.0)
-    detail_mode = _new(t, "ShaderNodeMath", "EffectiveDetailBlend", (1980, -31),
-                       "max(manual blend, Isotropy RNM)", F["Shade"])
+    detail_mode = _new(tree, "ShaderNodeMath", "EffectiveDetailBlend", (1980, -31),
+                       "max(manual blend, Isotropy RNM)", frames["Shade"])
     _prop(detail_mode, "operation", "MAXIMUM")
-    _link(t, P["Isotropy_"], 0, rnm_index, 0)
-    _link(t, P["Detail Blend"], 0, detail_mode, 0)
-    _link(t, rnm_index, 0, detail_mode, 1)
-    _link(t, detail_mode, 0, detail, "Detail Blend")
-    _link(t, P["Detail Normal Strength"], 0, detail, "Normal Strength")
+    _link(tree, props["Isotropy_"], 0, rnm_index, 0)
+    _link(tree, props["Detail Blend"], 0, detail_mode, 0)
+    _link(tree, rnm_index, 0, detail_mode, 1)
+    _link(tree, detail_mode, 0, detail, "Detail Blend")
+    _link(tree, props["Detail Normal Strength"], 0, detail, "Normal Strength")
 
-    _link(t, detail, "Normal", trans, "Base Normal")
-    _link(t, ntrans, 0, trans, "Transition Normal")
-    _link(t, P["PositiveTransitionNormal_"], 0, trans, "Enable")
-    _link(t, P["Vertex Expression Source"], 0, trans, "Source")
-    _link(t, trans, "Normal", nworld, "Vector")
-    _link(t, P["Normal Map Strength"], 0, nworld, "Normal Map Strength")
+    _link(tree, detail, "Normal", transition, "Base Normal")
+    _link(tree, transition_normal, 0, transition, "Transition Normal")
+    _link(tree, props["PositiveTransitionNormal_"], 0, transition, "Enable")
+    _link(tree, props["Vertex Expression Source"], 0, transition, "Source")
+    _link(tree, transition, "Normal", world_normal, "Vector")
+    _link(tree, props["Normal Map Strength"], 0, world_normal, "Normal Map Strength")
+    _link(tree, detail, "Base Color", segments, "Base Color")
+    _link(tree, slot("SegmentLayer0"), "Result", segments, "Mask 0")
+    _link(tree, slot("SegmentLayer1"), "Result", segments, "Mask 1")
+    _link(tree, props["Segmented_"], 0, segments, "Enable")
+    _link(tree, segments, "Base Color", layers, "Base Color")
+    _link(tree, slot("LayeredColor"), "Result", layers, "Layer Color")
+    _link(tree, detail, "Roughness", layers, "Base Roughness")
+    _link(tree, slot("ShadingLayer"), "Result", layers, "Mask")
+    _link(tree, props["Layered_"], 0, layers, "Enable")
 
-    _link(t, detail, "Base Color", seg, "Base Color")
-    _link(t, S("SegmentLayer0"), "Result", seg, "Mask 0")
-    _link(t, S("SegmentLayer1"), "Result", seg, "Mask 1")
-    _link(t, P["Segmented_"], 0, seg, "Enable")
+    _link(tree, slot("Coverage"), "Result", coverage_detail, 0)
+    _link(tree, slot("DetailCoverage"), "Result", coverage_detail, 1)
+    _link(tree, coverage_detail, 0, coverage, "Coverage")
+    _link(tree, props["Object Fade"], 0, coverage, "Object Fade")
+    _link(tree, props["Opacity Clip"], 0, coverage, "Clip")
+    _link(tree, props["Coverage_"], 0, coverage, "Enable")
+    _link(tree, props["Coverage Mode"], 0, coverage, "Mode")
+    _link(tree, shadow_ray, "Is Shadow Ray", shadow_gate, 0)
+    _link(tree, props["DetailCoverage_"], 0, shadow_gate, 1)
+    _link(tree, coverage, "Alpha", alpha_shadow, 0)
+    _link(tree, shadow_gate, 0, alpha_shadow, 1)
+    _link(tree, alpha_shadow, 0, alpha, 0)
+    _link(tree, backface, "Backfacing", alpha, 1)
 
-    _link(t, seg, "Base Color", layer, "Base Color")
-    _link(t, S("LayeredColor"), "Result", layer, "Layer Color")
-    _link(t, detail, "Roughness", layer, "Base Roughness")
-    _link(t, S("ShadingLayer"), "Result", layer, "Mask")
-    _link(t, P["Layered_"], 0, layer, "Enable")
+    _link(tree, props["OxygenSaturation"], 0, blood, "Oxygen Saturation")
+    _link(tree, props["FilmThickness"], 0, film, "Thickness")
+    _link(tree, props["FilmStructure"], 0, film, "Structure")
+    _link(tree, props["Film_"], 0, film, "Enable")
+    _link(tree, props["GBufferA.a"], 0, f0, "GBufferA.a")
+    _link(tree, slot("Emissive"), "Result", emissive, "Emissive")
+    _link(tree, slot("ExtraEmissive"), "Result", emissive, "Extra Emissive")
+    _link(tree, props["Emissive_"], 0, emissive, "Emissive_")
+    _link(tree, props["ExtraEmissive_"], 0, emissive, "ExtraEmissive_")
+    _link(tree, props["ExternalEmissive_"], 0, emissive, "ExternalEmissive_")
+    _link(tree, slot("Diffusion"), "Result", model, "Diffusion")
+    _link(tree, props["Thickness"], 0, model, "Thickness")
+    _link(tree, props["Subsurface Scale"], 0, model, "Subsurface Scale")
+    try:
+        tree.links.new(props["Shading Model"].outputs[0], _in(model, "Shading Model"))
+        if HAS_MANUAL_MENU_SWITCH:
+            props["Shading Model"].value = SHADING_MODELS[int(mat.get("Shading Model", 0))]
+    except (IndexError, TypeError, ValueError):
+        if HAS_MANUAL_MENU_SWITCH:
+            props["Shading Model"].value = SHADING_MODELS[0]
+    except Exception:
+        log("link refused: surface Shading Model")
 
-    # The EID 10082 fur base pass samples DetailCoverage separately on the
-    # detail coordinate and consumes it in its alpha-test branch. A product
-    # makes PC0004_00_Fur_A the effective card mask while retaining the base
-    # Coverage map; DetailCoverage's neutral bypass is 1 when unavailable.
-    _link(t, S("Coverage"), "Result", coverage_detail, 0)
-    _link(t, S("DetailCoverage"), "Result", coverage_detail, 1)
-    _link(t, coverage_detail, 0, cov, "Coverage")
-    _link(t, P["Object Fade"], 0, cov, "Object Fade")
-    _link(t, P["Opacity Clip"], 0, cov, "Clip")
-    _link(t, P["Coverage_"], 0, cov, "Enable")
-    _link(t, P["Coverage Mode"], 0, cov, "Mode")
-    _link(t, shadow_path, "Is Shadow Ray", shadow_gate, 0)
-    _link(t, P["DetailCoverage_"], 0, shadow_gate, 1)
-    _link(t, cov, "Alpha", alpha_shadow, 0)
-    _link(t, shadow_gate, 0, alpha_shadow, 1)
-    _link(t, alpha_shadow, 0, alpha_backface, 0)
-    _link(t, backface, "Backfacing", alpha_backface, 1)
-
-    _link(t, P["OxygenSaturation"], 0, blood, "Oxygen Saturation")
-    _link(t, P["FilmThickness"], 0, film, "Thickness")
-    _link(t, P["FilmStructure"], 0, film, "Structure")
-    _link(t, P["Film_"], 0, film, "Enable")
-    _link(t, P["GBufferA.a"], 0, f0, "GBufferA.a")
-
-    _link(t, S("Emissive"), "Result", emis, "Emissive")
-    _link(t, S("ExtraEmissive"), "Result", emis, "Extra Emissive")
-    _link(t, P["Emissive_"], 0, emis, "Emissive_")
-    _link(t, P["ExtraEmissive_"], 0, emis, "ExtraEmissive_")
-    _link(t, P["ExternalEmissive_"], 0, emis, "ExternalEmissive_")
-
-    _link(t, S("Diffusion"), "Result", smodel, "Diffusion")
-    _link(t, P["Thickness"], 0, smodel, "Thickness")
-    _link(t, P["Subsurface Scale"], 0, smodel, "Subsurface Scale")
-    _link(t, P["Hair Anisotropic"], 0, smodel, "Hair Anisotropy")
-
-    # ---- eye path -----------------------------------------------------
-    # The EyePath and HairPath frames sit above the Shade frame in the arranged
-    # layout, in their own y bands: the alternate shading models reuse Shade's
-    # x band, so separating the three frames is what keeps them from being
-    # drawn on top of each other.
-    # Standalone ff7r_eye_material_v2.py slot order is authoritative here:
-    #   0 Color, 2 Normal (sclera), 5 IrisEmissive, 7 ScrelaNormal
-    #   (secondary), 8 GazeNormal (N8/cornea), 9 IrisColor,
-    #   10 IrisNormal, 11 IrisOcclusion.
-    # Its slots 2/7/8 pass through DirectX Normal Map nodes before entering the
-    # eye maths, so these three values are world-space -- unlike the shared
-    # tangent-space normal layering path above.
-    nsclera = _new(t, "ShaderNodeNormalMap", "N_Sclera_Base_World", (2318, 2324),
-                   "Normal / slot 2 -> sclera base world normal", F["EyePath"])
-    nsecondary = _new(t, "ShaderNodeNormalMap", "N_Sclera_Secondary_World",
-                      (2146, 2202),
-                      "ScrelaNormal / slot 7 -> sclera secondary world normal",
-                      F["EyePath"])
-    ngaze = _new(t, "ShaderNodeNormalMap", "N_Gaze_World",
-                   (2147, 2048),
-                   "GazeNormal / slot 8 -> N8 gaze world normal",
-                   F["EyePath"])
-    for eye_nmap in (nsclera, nsecondary, ngaze):
-        _prop(eye_nmap, "space", "TANGENT")
-        if uv_names[0]:
-            _prop(eye_nmap, "uv_map", uv_names[0])
-        _convention(eye_nmap, "DIRECTX")
-        _link(t, P["Normal Map Strength"], 0, eye_nmap, "Strength")
-    # split geometry (produces Iris UV) from colour (consumes iris textures) --
-    # a single group doing both is a node-graph cycle, see eye_uv()'s docstring
-    eyeuv = _grp(t, "FF7R Eye UV", "EyeUV", (2319, 1887),
-                "eye disc + cornea (Iris UV)", F["EyePath"])
-    # Texture 10/IrisNormal is a cornea-frame detail normal in the standalone
-    # eye reconstruction. Decode its DirectX texel, transform it through the
-    # parallax cornea frame, then use it on the iris side of the main normal.
-    iris_unpack = _new(t, "ShaderNodeVectorMath", "N_Iris_Detail", (2500, 1845),
-                       "IrisNormal: (r*2-1, -(g*2-1), b*2-1)", F["EyePath"])
-    _prop(iris_unpack, "operation", "MULTIPLY_ADD")
-    _sv(iris_unpack, 1, (2.0, -2.0, 2.0))
-    _sv(iris_unpack, 2, (-1.0, 1.0, -1.0))
-    iris_world = _grp(t, "UE Frame To World (explicit TBN)", "N_Iris_World",
-                      (2690, 1810), "iris detail normal -> cornea frame", F["EyePath"])
-    # Held clear of EyeUV's own row: the eye group is ~530 tall, so it takes
-    # the column to the right rather than the slot underneath.
-    eye = _grp(t, "FF7R Eye", "Eye", (2502, 2300), "eye path (SM 9)",
-               F["EyePath"])
-    _link(t, S("Normal"), "Result", nsclera, "Color")
-    _link(t, S("ScrelaNormal"), "Result", nsecondary, "Color")
-    _link(t, S("GazeNormal"), "Result", ngaze, "Color")
-    _link(t, S("IrisNormal"), "Result", iris_unpack, 0)
-    _link(t, uv[0], "UV", eyeuv, "UV0")
-    _link(t, ngaze, "Normal", eyeuv, "Gaze Normal")
-    _link(t, P["Pupil Dilation"], 0, eyeuv, "Pupil Dilation")
-    _link(t, eyeuv, "T2", iris_world, "T")
-    _link(t, eyeuv, "B2", iris_world, "B")
-    _link(t, ngaze, "Normal", iris_world, "N")
-    _link(t, iris_unpack, 0, iris_world, "Vector")
-    _link(t, S("Color"), "Result", eye, "Sclera Color")
-    _link(t, S("IrisColor"), "Result", eye, "Iris Color")
-    _link(t, S("IrisOcclusion"), "Result", eye, "Iris Occlusion")
-    _link(t, P["Eye Iris AO Factor"], 0, eye, "Iris AO Factor")
-    _link(t, S("IrisEmissive"), "Result", eye, "Iris Emissive")
-    _link(t, nsclera, "Normal", eye, "Sclera Base Normal")
-    _link(t, nsecondary, "Normal", eye, "Sclera Secondary Normal")
-    _link(t, ngaze, "Normal", eye, "Gaze Normal")
-    _link(t, iris_world, "Vector", eye, "Iris Detail Normal")
-    _link(t, eyeuv, "Cornea Normal", eye, "Cornea Normal")
-    _link(t, eyeuv, "uvC2", eye, "uvC2")
-    _link(t, eyeuv, "r", eye, "r")
-    _link(t, eyeuv, "Sclera Mask", eye, "Sclera Mask")
-    _link(t, eyeuv, "T2", eye, "T2")
-    _link(t, eyeuv, "B2", eye, "B2")
-    # Deliberately leave Light Position unlinked: the eye group defaults its
-    # artist hook to (17, 0, 17), but it can still be driven by an Empty/bone
-    # position when a scene needs a different limbal-occlusion source.
-    _link(t, P["IrisEmissive_"], 0, eye, "IrisEmissive_")
-    _link(t, P["Eye Limbal Amount"], 0, eye, "Limbal Amount")
-    # the iris textures sample on the parallax-corrected UV eyeuv produces.
-    # eyeuv has no path back into eye or into these texture nodes, so this
-    # closes the loop the OTHER way round without forming a cycle.
-    for role in ("IrisColor", "IrisNormal", "IrisOcclusion", "IrisEmissive"):
-        _link(t, eyeuv, "Iris UV", slots[role][0], "Vector")
-
-    # ---- hair path ----------------------------------------------------
-    nflow_in, nflow = _decode_tangent_normal(
-        t, "N_Flow", (1743, 1515),
-        "WideBentNormal / flow -> DirectX tangent vector (UV1)", F["HairPath"])
-    nhair_math = _new(t, "ShaderNodeVectorMath", "N_Base_Hair_Math", (2132, 1515),
-                      "Y-flip only for hair strand component equation", F["HairPath"])
-    _prop(nhair_math, "operation", "MULTIPLY")
-    _sv(nhair_math, 1, (1.0, -1.0, 1.0))
-    hair = _grp(t, hair_group.name, "HairStrand", (2583, 1515),
-                "hair path (SM 7)", F["HairPath"])
-    _link(t, S("WideBentNormal"), "Result", nflow_in, 0)
-    _link(t, nbase, 0, hair, "Strand Map")
-    _link(t, nbase, 0, nhair_math, 0)
-    _link(t, nhair_math, 0, hair, "Strand Math Map")
-    _link(t, nflow, 0, hair, "Flow Map")
-    _link(t, P["Normal Map Strength"], 0, hair, "Normal Map Strength")
-    _link(t, S("Roughness"), "Result", hair, "Roughness Map")
-    _link(t, P["Hair Flow Influence"], 0, hair, "Flow Influence")
-    _link(t, P["Hair Min VdotT"], 0, hair, "Min VdotT")
-    _link(t, P["Hair Dither Sign"], 0, hair, "Dither Sign")
-    _link(t, P["Hair Roughness Curvature"], 0, hair, "Roughness Curvature")
-
-    eye_rough = _new(t, "ShaderNodeMath", "EyeRoughness", (4200, 1640),
-                     "eye roughness ^ 0.4", F["EyePath"])
-    _prop(eye_rough, "operation", "POWER")
-    _sv(eye_rough, 1, 0.4)
-    _link(t, layer, "Roughness", eye_rough, 0)
-
-    # ---- per-model routing --------------------------------------------
-    # Blender 5.2 uses one Constant Menu -> FF7R Shading Model Menu Switch.
-    # The group's one-hot Hair/Eye outputs drive these small routing mixes, so
-    # there is exactly one enum definition and one user-facing dropdown.
-    if HAS_MANUAL_MENU_SWITCH:
-        colsel = _new(t, "ShaderNodeMix", "SM_BaseColor",
-                      _out_pos("SM_BaseColor"),
-                      "Eye selects eye base colour", F["Out"])
-        _prop(colsel, "data_type", "RGBA")
-        _link(t, smodel, "Is Eye", colsel, "Factor")
-        _link(t, layer, "Base Color", colsel, "A")
-        _link(t, eye, "Base Color", colsel, "B")
-
-        nrmhair = _new(t, "ShaderNodeMix", "SM_Normal_Hair",
-                       _out_pos("SM_Normal_Hair"),
-                       "Hair selects strand normal", F["Out"])
-        _prop(nrmhair, "data_type", "VECTOR")
-        _link(t, smodel, "Is Hair", nrmhair, "Factor")
-        _link(t, nworld, "Vector", nrmhair, "A")
-        _link(t, hair, "Normal", nrmhair, "B")
-        nrmsel = _new(t, "ShaderNodeMix", "SM_Normal", _out_pos("SM_Normal"),
-                      "Eye selects refracted eye normal", F["Out"])
-        _prop(nrmsel, "data_type", "VECTOR")
-        _link(t, smodel, "Is Eye", nrmsel, "Factor")
-        _link(t, nrmhair, "Result", nrmsel, "A")
-        _link(t, eye, "Normal", nrmsel, "B")
-
-        rgsel = _new(t, "ShaderNodeMix", "SM_Roughness",
-                     _out_pos("SM_Roughness"),
-                     "Hair selects strand roughness", F["Out"])
-        _prop(rgsel, "data_type", "FLOAT")
-        _link(t, smodel, "Is Hair", rgsel, "Factor")
-        _link(t, layer, "Roughness", rgsel, "A")
-        _link(t, hair, "Roughness", rgsel, "B")
-        eye_rgsel = _new(t, "ShaderNodeMix", "SM_Roughness_Eye",
-                          _out_pos("SM_Roughness_Eye"),
-                          "Eye uses roughness ^ 0.4", F["Out"])
-        _prop(eye_rgsel, "data_type", "FLOAT")
-        _link(t, smodel, "Is Eye", eye_rgsel, "Factor")
-        _link(t, rgsel, "Result", eye_rgsel, "A")
-        _link(t, eye_rough, 0, eye_rgsel, "B")
-        rgsel = eye_rgsel
-
-        try:
-            t.links.new(P["Shading Model"].outputs[0],
-                        _in(smodel, "Shading Model"))
-            P["Shading Model"].value = SHADING_MODELS[int(mat.get("Shading Model", 0))]
-        except (IndexError, TypeError, ValueError):
-            P["Shading Model"].value = SHADING_MODELS[0]
-        except Exception:
-            log("link refused: shared Shading Model menu")
-    else:
-        # Older builds retain the numeric property-driven ladders.
-        colsel, colsel_in, colvals = _menu(
-            t, "SM_BaseColor", MENU_ANCHOR["SM_BaseColor"], SHADING_MODELS,
-            "RGBA", "Base Colour by shading model", F["Out"])
-        nrmsel, nrmsel_in, nrmvals = _menu(
-            t, "SM_Normal", MENU_ANCHOR["SM_Normal"], SHADING_MODELS,
-            "VECTOR", "Normal by shading model", F["Out"])
-        rgsel, rgsel_in, rgvals = _menu(
-            t, "SM_Roughness", MENU_ANCHOR["SM_Roughness"],
-            SHADING_MODELS, "FLOAT", "Roughness by shading model", F["Out"])
-        for i in range(7):
-            _menu_feed(t, colvals, i, layer, "Base Color")
-            _menu_feed(t, nrmvals, i, nworld, "Vector")
-            _menu_feed(t, rgvals, i, layer, "Roughness")
-        _menu_feed(t, colvals, 5, eye, "Base Color")
-        _menu_feed(t, nrmvals, 5, eye, "Normal")
-        _menu_feed(t, nrmvals, 3, hair, "Normal")
-        _menu_feed(t, rgvals, 3, hair, "Roughness")
-        _menu_feed(t, rgvals, 5, eye_rough)
-        model_sockets = (colsel_in, nrmsel_in, rgsel_in,
-                         _in(smodel, "Shading Model"))
-        for sock_ in model_sockets:
-            if sock_ is None:
-                continue
-            try:
-                t.links.new(P["Shading Model"].outputs[0], sock_)
-            except Exception:
-                _drive(sock_, mat, "Shading Model")
-
-    # blood replaces base colour wholesale when Blood_ is on
-    bloodmix = _new(t, "ShaderNodeMix", "BloodOverride", _out_pos("BloodOverride"),
-                    "Blood_ overrides base colour", F["Out"])
-    _prop(bloodmix, "data_type", "RGBA")
-    _link(t, colsel, _menu_out(colsel), bloodmix, "A")
-    _link(t, blood, "Base Color", bloodmix, "B")
-    _link(t, P["Blood_"], 0, bloodmix, "Factor")
-
-    # ---- one Principled, parameterised (PLAN 2.1) ---------------------
-    bsdf = _new(t, "ShaderNodeBsdfPrincipled", "Principled BSDF",
-                _out_pos("Principled BSDF"), "RMI_Surface", F["Out"])
+    blood_mix = _new(tree, "ShaderNodeMix", "BloodOverride", (5650, 650),
+                     "Blood_ overrides base colour", frames["Out"])
+    _prop(blood_mix, "data_type", "RGBA")
+    _link(tree, layers, "Base Color", blood_mix, "A")
+    _link(tree, blood, "Base Color", blood_mix, "B")
+    _link(tree, props["Blood_"], 0, blood_mix, "Factor")
+    bsdf = _new(tree, "ShaderNodeBsdfPrincipled", "Principled BSDF", (6100, 500),
+                "RMI_Surface", frames["Out"])
     _expand_panels(bsdf)
     _sv(bsdf, "IOR", 1.3)
     _sv(bsdf, "Coat IOR", 1.15)
     _sv(bsdf, "Subsurface Anisotropy", -0.5)
-    out = _new(t, "ShaderNodeOutputMaterial", "Material Output",
-               _out_pos("Material Output"), "", F["Out"])
-    _link(t, bloodmix, "Result", bsdf, "Base Color")
-    _link(t, nrmsel, _menu_out(nrmsel), bsdf, "Normal")
-    _link(t, rgsel, _menu_out(rgsel), bsdf, "Roughness")
-    _link(t, eye, "Coat Normal", bsdf, "Coat Normal")
-    _link(t, alpha_backface, 0, bsdf, "Alpha")
-    _link(t, f0, "Specular IOR Level", bsdf, "Specular IOR Level")
-    _link(t, hair, "Tangent", bsdf, "Tangent")
-    _link(t, film, "Thin Film Thickness", bsdf, "Thin Film Thickness")
-    _link(t, film, "Thin Film IOR", bsdf, "Thin Film IOR")
-    smodel_params = ["Subsurface Weight", "Sheen Weight", "Anisotropic",
-                     "Coat Weight", "Subsurface Radius", "Diffuse Roughness"]
+    out = _new(tree, "ShaderNodeOutputMaterial", "Material Output", (6500, 500), "", frames["Out"])
+    _link(tree, blood_mix, "Result", bsdf, "Base Color")
+    _link(tree, world_normal, "Vector", bsdf, "Normal")
+    _link(tree, layers, "Roughness", bsdf, "Roughness")
+    _link(tree, alpha, 0, bsdf, "Alpha")
+    _link(tree, f0, "Specular IOR Level", bsdf, "Specular IOR Level")
+    _link(tree, film, "Thin Film Thickness", bsdf, "Thin Film Thickness")
+    _link(tree, film, "Thin Film IOR", bsdf, "Thin Film IOR")
+    for name in ["Subsurface Weight", "Sheen Weight", "Anisotropic", "Coat Weight",
+                 "Subsurface Radius", "Diffuse Roughness"]:
+        _link(tree, model, name, bsdf, name)
     if THIN_WALL_SOCKET:
-        smodel_params.append(THIN_WALL_SOCKET)
-    for s in smodel_params:
-        _link(t, smodel, s, bsdf, s)
-    _link(t, P["Sheen Roughness"], 0, bsdf, "Sheen Roughness")
-
-    # emission: shared emissive plus the eye's unshadowed iris glow
-    emsum = _new(t, "ShaderNodeMix", "EmissionSum", _out_pos("EmissionSum"),
-                 "emissive + iris glow", F["Out"])
-    _prop(emsum, "data_type", "RGBA")
-    _prop(emsum, "blend_type", "ADD")
-    _sv(emsum, "Factor", 1.0)
-    _link(t, emis, "Emission", emsum, "A")
-    _link(t, eye, "Emission", emsum, "B")
-    _link(t, emsum, "Result", bsdf, "Emission Color")
-    embst = _new(t, "ShaderNodeMath", "EmissionStrength", _out_pos("EmissionStrength"),
-                 "max(emissive strength, unlit boost)", F["Out"])
-    _prop(embst, "operation", "MAXIMUM")
-    _link(t, emis, "Strength", embst, 0)
-    _link(t, smodel, "Emission Boost", embst, 1)
-    emissive_camera_only = _new(t, "ShaderNodeAttribute", "EmissiveCameraOnlyAttribute",
-                                 (embst.location.x + 180, embst.location.y - 220),
-                                 'object["EmissiveCameraOnly"]', F["Out"])
+        _link(tree, model, THIN_WALL_SOCKET, bsdf, THIN_WALL_SOCKET)
+    _link(tree, props["Sheen Roughness"], 0, bsdf, "Sheen Roughness")
+    _link(tree, emissive, "Emission", bsdf, "Emission Color")
+    emission_strength = _new(tree, "ShaderNodeMath", "EmissionStrength", (5850, 150),
+                             "max(emissive strength, unlit boost)", frames["Out"])
+    _prop(emission_strength, "operation", "MAXIMUM")
+    _link(tree, emissive, "Strength", emission_strength, 0)
+    _link(tree, model, "Emission Boost", emission_strength, 1)
+    emissive_camera_only = _new(tree, "ShaderNodeAttribute", "EmissiveCameraOnlyAttribute",
+                                 (6030, 40), 'object["sw EmissiveCameraOnly"]',
+                                 frames["Out"])
     _prop(emissive_camera_only, "attribute_type", "OBJECT")
-    _prop(emissive_camera_only, "attribute_name", "EmissiveCameraOnly")
-    camera_ray = _new(t, "ShaderNodeLightPath", "EmissiveCameraRay",
-                      (embst.location.x + 180, embst.location.y - 370),
-                      "Is Camera Ray", F["Out"])
-    restricted_strength = _new(t, "ShaderNodeMath", "EmissionCameraRayStrength",
-                               (embst.location.x + 420, embst.location.y - 130),
-                               "emission strength × camera ray", F["Out"])
+    _prop(emissive_camera_only, "attribute_name", "sw EmissiveCameraOnly")
+    camera_ray = _new(tree, "ShaderNodeLightPath", "EmissiveCameraRay", (6030, -110),
+                      "Is Camera Ray", frames["Out"])
+    restricted_strength = _new(tree, "ShaderNodeMath", "EmissionCameraRayStrength",
+                               (6210, 40), "emission strength × camera ray", frames["Out"])
     _prop(restricted_strength, "operation", "MULTIPLY")
-    camera_selector = _new(t, "ShaderNodeMix", "EmissionCameraOnly",
-                            (embst.location.x + 620, embst.location.y),
-                            "camera-only emission", F["Out"])
+    camera_selector = _new(tree, "ShaderNodeMix", "EmissionCameraOnly", (6390, 150),
+                         "camera-only emission", frames["Out"])
     _prop(camera_selector, "data_type", "FLOAT")
     _prop(camera_selector, "clamp_factor", True)
-    _link(t, embst, 0, restricted_strength, 0)
-    _link(t, camera_ray, "Is Camera Ray", restricted_strength, 1)
-    _link(t, emissive_camera_only, "Fac", camera_selector, "Factor")
-    _link(t, embst, 0, camera_selector, "A")
-    _link(t, restricted_strength, 0, camera_selector, "B")
-    _link(t, camera_selector, "Result", bsdf, "Emission Strength")
+    _link(tree, emission_strength, 0, restricted_strength, 0)
+    _link(tree, camera_ray, "Is Camera Ray", restricted_strength, 1)
+    _link(tree, emissive_camera_only, "Fac", camera_selector, "Factor")
+    _link(tree, emission_strength, 0, camera_selector, "A")
+    _link(tree, restricted_strength, 0, camera_selector, "B")
+    _link(tree, camera_selector, "Result", bsdf, "Emission Strength")
+    metallic = _new(tree, "ShaderNodeMath", "MetallicGate", (5840, -150),
+                    "Metallic map * Metallic_", frames["Out"])
+    _prop(metallic, "operation", "MULTIPLY")
+    _link(tree, slot("Metallic"), "Result", metallic, 0)
+    _link(tree, props["Metallic_"], 0, metallic, 1)
+    model_metallic = _new(tree, "ShaderNodeMath", "MetallicModelGate", (6020, -150),
+                          "* per-model scale", frames["Out"])
+    _prop(model_metallic, "operation", "MULTIPLY")
+    _link(tree, metallic, 0, model_metallic, 0)
+    _link(tree, model, "Metallic Scale", model_metallic, 1)
+    _link(tree, model_metallic, 0, bsdf, "Metallic")
+    _link(tree, bsdf, 0, out, "Surface")
 
-    # metallic: map * Metallic_ * per-model scale, with Layered_ able to override
-    mg = _new(t, "ShaderNodeMath", "MetallicGate", _out_pos("MetallicGate"),
-              "Metallic map * Metallic_", F["Out"])
-    _prop(mg, "operation", "MULTIPLY")
-    _link(t, S("Metallic"), "Result", mg, 0)
-    _link(t, P["Metallic_"], 0, mg, 1)
-    mg2 = _new(t, "ShaderNodeMath", "MetallicModelGate", _out_pos("MetallicModelGate"),
-               "* per-model scale", F["Out"])
-    _prop(mg2, "operation", "MULTIPLY")
-    _link(t, mg, 0, mg2, 0)
-    _link(t, smodel, "Metallic Scale", mg2, 1)
-    _link(t, mg2, 0, bsdf, "Metallic")
-    _link(t, bsdf, 0, out, "Surface")
-
-    _bundle_material_properties(t, property_sources, property_types, F["Props"])
-    _fix_conventions(t)
-    _hide_unused_system_outputs(t)
-    for name, img in preserved.items():
-        n = t.nodes.get(name)
-        if n is not None:
-            n.image = img
+    _bundle_material_properties(tree, property_sources, property_types, frames["Props"])
+    _fix_conventions(tree)
+    _hide_unused_system_outputs(tree)
+    for name, image in preserved.items():
+        node = tree.nodes.get(name)
+        if node is not None:
+            node.image = image
+    mat["_RMI_Profile"] = PROFILE_NAME
+    mat["_RMI_Profile_Revision"] = PROFILE_REVISION
     return mat
 
 

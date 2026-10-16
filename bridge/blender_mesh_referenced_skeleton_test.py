@@ -5,12 +5,40 @@ import bpy
 
 SKELETON = "End/Content/Character/Player/PC0000_00_Cloud_Standard/Model/PC0000_00_Skeleton.uasset"
 
-if "ff7r_rebirth_tools" not in bpy.context.preferences.addons:
-    bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
-prefs = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
+if "talisman" not in bpy.context.preferences.addons:
+    bpy.ops.preferences.addon_enable(module="talisman")
+prefs = bpy.context.preferences.addons["talisman"].preferences
 prefs.rebirth_install_root = r"G:\SteamLibrary\steamapps\common\FINAL FANTASY VII REBIRTH"
-prefs.rebirth_oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
+prefs.oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
 prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
+
+from talisman import game_packages
+
+# The SkeletalMesh importers now hand their selected mesh's own ReferenceSkeleton
+# straight to the reducer.  Verify the shared reducer retains only that bone and
+# its ancestor chain, and drops sockets whose parent no longer remains.
+fixture = {
+    "bones": [
+        {"name": "Root", "parentIndex": -1},
+        {"name": "Spine", "parentIndex": 0},
+        {"name": "Hand", "parentIndex": 1},
+        {"name": "Unused", "parentIndex": 0},
+    ],
+    "sockets": [
+        {"name": "HandSocket", "boneName": "Hand"},
+        {"name": "UnusedSocket", "boneName": "Unused"},
+    ],
+}
+reduced, referenced_count, retained_count = (
+    game_packages._restrict_skeleton_to_referenced_bones(fixture, {"Hand"})
+)
+if (
+    referenced_count != 1
+    or retained_count != 3
+    or [bone["name"] for bone in reduced["bones"]] != ["Root", "Spine", "Hand"]
+    or [socket["name"] for socket in reduced["sockets"]] != ["HandSocket"]
+):
+    raise SystemExit("Selected SkeletalMesh ReferenceSkeleton reduction failed.")
 
 result = bpy.ops.import_scene.ff7r_rebirth_skeleton_game_packages(
     "EXEC_DEFAULT",

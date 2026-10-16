@@ -98,7 +98,8 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector, Quaternion
 
-from .material import setup_material_nodes, resolve_hash
+from .material import setup_material_nodes, resolve_hash, texture_material_namespace, load_image
+from ...core.blender.material_nodes import refresh_material_textures
 
 
 OPPOSITE_FACE_OFFSET = 0.0005
@@ -712,6 +713,7 @@ def get_untextured_mec_material():
     shader = nodes.new("ShaderNodeBsdfPrincipled")
     shader.inputs["Base Color"].default_value = (0.19, 0.29, 0.12, 1.0)
     shader.inputs["Roughness"].default_value = 0.92
+    shader.inputs["IOR"].default_value = 1.3
     if "Specular IOR Level" in shader.inputs:
         shader.inputs["Specular IOR Level"].default_value = 0.2
     material.node_tree.links.new(shader.outputs["BSDF"], output.inputs["Surface"])
@@ -1418,9 +1420,14 @@ def build_objects_from_component(
                 if untextured:
                     mesh.materials.append(get_untextured_mec_material())
                 elif mat_name:
-                    mat = bpy.data.materials.get(mat_name)
+                    namespace = texture_material_namespace(tex_root, tex_ext)
+                    mat = next((item for item in bpy.data.materials
+                                if item.get("ue_mec_material_name") == mat_name
+                                and item.get("ue_texture_namespace") == namespace), None)
                     if mat is None:
                         mat = bpy.data.materials.new(mat_name)
+                        mat["ue_mec_material_name"] = mat_name
+                        mat["ue_texture_namespace"] = namespace
                         hashes = group_material_hashes[mat_name]
                         # Numbered by MaterialInfo slot (0-based) now that the
                         # list is positional; empty slots are simply omitted,
@@ -1431,6 +1438,8 @@ def build_objects_from_component(
                             mat[f"UE import {hash_idx:02d}"] = hash_val
                         setup_material_nodes(mat, hashes, tex_root, tex_ext,
                                              tex_index=tex_index)
+                    else:
+                        refresh_material_textures(mat, lambda path: load_image(path, tex_root, tex_ext, tex_index))
                     mesh.materials.append(mat)
                     npoly = len(mesh.polygons)
                     if npoly:

@@ -1,4 +1,4 @@
-"""Shared Blender render-setting helpers for FF7R imports."""
+"""Shared Blender render-setting helpers for Square Enix UE4 imports."""
 
 from __future__ import annotations
 

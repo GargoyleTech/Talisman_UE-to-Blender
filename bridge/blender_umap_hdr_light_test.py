@@ -22,7 +22,7 @@ for sparse in (False, True):
     entries = fixture
     if sparse:
         entries = [json.loads(json.dumps(e)) for e in fixture if e]
-        # Bridge ownership references use full object paths, not list offsets.
+        # Gargoyle ownership references use full object paths, not list offsets.
         for entry in entries:
             outer = entry['Outer']
             outer['ObjectPath'] = outer['ObjectName'].split("'")[1]
@@ -58,10 +58,10 @@ context_mesh = bpy.data.meshes.new('ExternalContextMesh')
 context_obj = bpy.data.objects.new('ExternalContextObject', context_mesh)
 bpy.context.scene.collection.objects.link(context_obj)
 neutral = bpy.data.materials.new('ExternalContextNeutral')
-neutral['ff7r_external_emissive'] = True
+neutral['sw ff7r_external_emissive'] = True
 neutral['ff7r_external_emissive_context'] = (1.0, 1.0, 1.0)
 authored = bpy.data.materials.new('ExternalContextAuthored')
-authored['ff7r_external_emissive'] = True
+authored['sw ff7r_external_emissive'] = True
 authored['ff7r_external_emissive_context'] = (2.0, 0.5, 4.0)
 context_mesh.materials.append(neutral)
 context_mesh.materials.append(authored)
@@ -71,10 +71,10 @@ context_obj['ExternalEmissiveContext'] = (7.0, 8.0, 9.0)
 assert not rmi_surface.initialize_external_emissive_context(context_obj)
 assert tuple(context_obj['ExternalEmissiveContext']) == (7.0, 8.0, 9.0)
 camera_only = bpy.data.materials.new('EmissiveCameraOnly')
-camera_only['ff7r_emissive'] = True
+camera_only['sw ff7r_emissive'] = True
 context_mesh.materials.append(camera_only)
 assert rmi_surface.initialize_external_emissive_context(context_obj)
-assert context_obj['EmissiveCameraOnly'] is True
+assert context_obj['sw EmissiveCameraOnly'] is True
 print('EXTERNAL_EMISSIVE_CONTEXT_PASS', tuple(context_obj['ExternalEmissiveContext']))
 
 # Existing saved RMI groups are migrated in place so their linked materials do

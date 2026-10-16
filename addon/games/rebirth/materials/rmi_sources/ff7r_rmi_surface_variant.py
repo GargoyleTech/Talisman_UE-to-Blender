@@ -165,10 +165,10 @@ MAKE_COPY_FROM_MASTER = False
 # reliable __file__ pointing at the real file on disk -- even after
 # drag-and-drop it resolves relative to the .blend, not the script's actual
 # folder. So this is hardcoded rather than auto-detected.
-# Blank in the add-on's bundled copy: ff7r_rmi_surface.py sits next to this
-# file in rmi_sources/, and the add-on loads this module from a real file path
-# via importlib, so __file__ is trustworthy here and _script_dir() resolves the
-# bundled master. The research checkout's copy keeps the hardcoded path for the
+# Blank in the add-on's bundled copy: the surface, eye, and hair profile
+# builders sit next to this file in rmi_sources/, and the add-on loads this
+# module from a real file path via importlib, so __file__ is trustworthy here.
+# The research checkout's copy can keep a hardcoded profile path for the
 # drag-into-Text-Editor workflow described above.
 MASTER_SCRIPT_PATH = ""
 
@@ -188,33 +188,58 @@ def _script_dir():
         "Cannot locate this script's own directory (no __file__ -- likely "
         "running from an unsaved Blender Text Editor buffer). Set "
         "MASTER_SCRIPT_PATH at the top of ff7r_rmi_surface_variant.py to the "
-        "full path of ff7r_rmi_surface.py and re-run.")
+        "full path of the matching surface, eye, or hair profile and re-run.")
 
 
-def _load_master_module(script_dir):
-    """Import ff7r_rmi_surface.py for its tables only. As of the
-    `if __name__ == "__main__":` guard at the bottom of that file, this does
-    NOT call build() and therefore does not touch FF7R_RMI_Surface_Master or
-    any shared node group -- see the module docstring above."""
-    path = MASTER_SCRIPT_PATH or os.path.join(script_dir, "ff7r_rmi_surface.py")
+def _master_source_name(switches):
+    """Return the one profile capable of building this exact variant."""
+    if "Eye_" in switches and "Hair_" in switches:
+        raise ValueError("An RMI_Surface variant cannot enable both Eye_ and Hair_.")
+    if "Eye_" in switches:
+        return "ff7r_rmi_surface_eye.py"
+    if "Hair_" in switches:
+        return "ff7r_rmi_surface_hair.py"
+    return "ff7r_rmi_surface.py"
+
+
+def _load_master_module(script_dir, switches):
+    """Import the matching profile builder for its tables only.
+
+    The guarded sources never call build() during import, so loading them does
+    not modify an existing material or any shared node group.  A manually set
+    MASTER_SCRIPT_PATH remains an explicit override for research checkouts.
+    """
+    filename = _master_source_name(switches)
+    path = MASTER_SCRIPT_PATH or os.path.join(script_dir, filename)
     if not os.path.isfile(path):
-        raise RuntimeError("ff7r_rmi_surface.py not found at %r" % path)
-    spec = importlib.util.spec_from_file_location("ff7r_rmi_surface", path)
+        raise RuntimeError("RMI profile source %r not found at %r" % (filename, path))
+    spec = importlib.util.spec_from_file_location("ff7r_rmi_" + filename[:-3], path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    unsupported = (set(switches) - set(getattr(mod, "ENGINE_ONLY_SWITCHES", ()))
+                   - set(mod.KNOWN_SWITCHES))
+    if unsupported:
+        raise RuntimeError(
+            "Profile %r cannot build this variant; unsupported switch(es): %s"
+            % (getattr(mod, "PROFILE_NAME", filename), ", ".join(sorted(unsupported))))
     return mod
 
 
 def _load_ground_truth(script_dir):
-    path = os.path.join(script_dir, "..", "scripts", "renderer_ground_truth.json")
-    path = os.path.normpath(path)
-    if not os.path.isfile(path):
+    candidates = [
+        os.path.join(script_dir, "renderer_ground_truth.json"),
+        os.path.normpath(os.path.join(script_dir, "..", "scripts",
+                                      "renderer_ground_truth.json")),
+    ]
+    path = next((candidate for candidate in candidates
+                 if os.path.isfile(candidate)), None)
+    if path is None:
         raise RuntimeError(
-            "Ground-truth switch table not found at %r. This is the exact, "
+            "Ground-truth switch table not found. Tried %s. This is the exact, "
             "current-build StaticSwitchParameters dump for all 104 "
             "RMI_Surface_* MaterialInstanceConstants -- see "
             "RMI_SURFACE_VARIANTS.md's opening section for where it comes "
-            "from." % path)
+            "from." % ", ".join(repr(candidate) for candidate in candidates))
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -490,7 +515,8 @@ def get_or_copy_master(master_mat_name, variant_full_name):
     if master is None:
         raise RuntimeError(
             "Master material %r not found even after (re)running "
-            "ff7r_rmi_surface.py -- something upstream failed." % master_mat_name)
+            "the selected RMI profile builder -- something upstream failed."
+            % master_mat_name)
     existing = bpy.data.materials.get(variant_full_name)
     if existing is not None:
         bpy.data.materials.remove(existing)   # always start from a clean copy
@@ -676,9 +702,9 @@ def report(mat, variant_full_name, switches, stats, master_mod):
 
 def build_variant(variant_name):
     script_dir = _script_dir()
-    master_mod = _load_master_module(script_dir)
     table = _load_ground_truth(script_dir)
     full_name, switches = resolve_variant(variant_name, table)
+    master_mod = _load_master_module(script_dir, switches)
 
     if MAKE_COPY_FROM_MASTER:
         master_mod.build()

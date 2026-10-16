@@ -3,48 +3,31 @@
 from __future__ import annotations
 
 import math
-import traceback
-from bisect import bisect_left
 from typing import Iterable
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
 
+from ....core.blender.animation import (
+    _selected_armature_skeleton_path, _vector, _action_curves, _insert_keys,
+    _key_times, _vector_sampler, _ue_quaternion_sampler,
+)
 from . import packages as game_packages
-from ....core.blender.reporting import FF7R_LoggedOperator, report
 from ....core.blender import skeletons as skeleton_importer
+from ... import package_browser
+from ...conventional_animation import make_animation_importer
+from ..profile import PROFILE
 
 
-def _selected_armature_skeleton_path(armature: bpy.types.Object) -> str | None:
-    """Get the source Skeleton path recorded by a package armature or bound mesh."""
-    direct_path = armature.get(game_packages.SKELETON_ASSET_PATH_PROPERTY)
-    if isinstance(direct_path, str) and direct_path.strip():
-        return direct_path
-
-    # Older package imports did not tag their armature.  A bound Rebirth mesh
-    # still carries the linked Skeleton path, which lets those existing scenes
-    # use the picker without reimporting their character.
-    for obj in bpy.context.scene.objects:
-        if obj.type != 'MESH':
-            continue
-        if not any(
-            modifier.type == 'ARMATURE' and modifier.object == armature
-            for modifier in obj.modifiers
-        ):
-            continue
-        linked_path = obj.get("ff7r_linked_skeleton_path")
-        if isinstance(linked_path, str) and linked_path.strip():
-            return linked_path
-    return None
+_ANIMATION_BROWSER = package_browser.make_state(
+    "compatible AnimSequence assets",
+    initial_directory="End/Content",
+    file_icon="ARMATURE_DATA",
+)
 
 
 def _search_matching_animations(_self, _context, edit_text):
     return game_packages._search_virtual_animations(_self, _context, edit_text)
-
-
-def _vector(value: Iterable[float], fallback: tuple[float, float, float]) -> Vector:
-    parts = tuple(float(part) for part in value)
-    return Vector(parts[:3] if len(parts) >= 3 else fallback)
 
 
 def _ue_location(value: Iterable[float]) -> Vector:
@@ -79,6 +62,18 @@ DISPLAY_CORRECTION = Matrix((
 ))
 DISPLAY_CORRECTION_INVERSE = DISPLAY_CORRECTION.inverted()
 
+# With UE axis ordering preserved, the package bone's local +X still points
+# down Blender's display-bone +Y and its local +Z stays the display +Z.  The
+# Blender-oriented convention below adds a further +90-degree roll to this
+# basis; see ``_build_edit_bones`` in ``core.blender.skeletons``.
+PRESERVED_AXIS_CORRECTION = Matrix((
+    (0.0, 1.0, 0.0, 0.0),
+    (-1.0, 0.0, 0.0, 0.0),
+    (0.0, 0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0, 1.0),
+))
+PRESERVED_AXIS_CORRECTION_INVERSE = PRESERVED_AXIS_CORRECTION.inverted()
+
 # The root track ("Trans") is not a bone-parented transform: its translation is
 # the actor's world placement (thousands of centimetres from the origin for a
 # cutscene clip, zero for a local action clip).  It is a component-to-world
@@ -97,10 +92,13 @@ DISPLAY_CORRECTION_INVERSE = DISPLAY_CORRECTION.inverted()
 # DISPLAY_CORRECTION) gives the -90 Y turn above followed by a further 90 degrees
 # about the bone's own X -- the axis that, for this bone, is world -Z, which is
 # why the error read as a pure yaw with the character otherwise upright.
-ROOT_DISPLAY_CORRECTION = (
-    DISPLAY_CORRECTION
-    @ Matrix.Rotation(math.radians(-90.0), 4, "Y")
+ROOT_TRACK_CORRECTION = (
+    Matrix.Rotation(math.radians(-90.0), 4, "Y")
     @ Matrix.Rotation(math.radians(90.0), 4, "X")
+)
+ROOT_DISPLAY_CORRECTION = DISPLAY_CORRECTION @ ROOT_TRACK_CORRECTION
+PRESERVED_ROOT_DISPLAY_CORRECTION = (
+    PRESERVED_AXIS_CORRECTION @ ROOT_TRACK_CORRECTION
 )
 
 # Largest per-element difference tolerated between a bone's rest matrix and the
@@ -150,10 +148,33 @@ def _blender_basis_values(
     return basis.decompose()
 
 
+def _display_corrections_for_armature(
+        armature: bpy.types.Object,
+) -> tuple[Matrix, Matrix, Matrix]:
+    """Return the bone-frame corrections recorded on a package armature.
+
+    Armatures created before axis ordering was recorded use the established
+    Blender-oriented display roll.  That is also the safe fallback for rigs
+    made elsewhere, whose bone frame cannot be inferred reliably.
+    """
+    if armature.get(skeleton_importer.AXIS_ORDER_PROPERTY) == skeleton_importer.AXIS_ORDER_UNREAL:
+        return (
+            PRESERVED_AXIS_CORRECTION,
+            PRESERVED_AXIS_CORRECTION_INVERSE,
+            PRESERVED_ROOT_DISPLAY_CORRECTION,
+        )
+    return (
+        DISPLAY_CORRECTION,
+        DISPLAY_CORRECTION_INVERSE,
+        ROOT_DISPLAY_CORRECTION,
+    )
+
+
 def _rest_convention_error(
         bone: bpy.types.Bone,
         bind_matrix: Matrix,
         forward_rotation: Matrix,
+        display_correction: Matrix = DISPLAY_CORRECTION,
 ) -> float:
     """How far this bone's rest pose is from the UE bind pose the clip assumes.
 
@@ -165,145 +186,15 @@ def _rest_convention_error(
     ``forward_rotation``.  Checking roots matters: the root is the one bone whose
     rest and animated frames are not related by ``DISPLAY_CORRECTION`` alone.
     """
+    display_correction_inverse = display_correction.inverted_safe()
     rest = _rest_local_matrix(bone)
     if bone.parent is None:
-        expected = forward_rotation @ bind_matrix @ DISPLAY_CORRECTION
+        expected = forward_rotation @ bind_matrix @ display_correction
     else:
-        expected = DISPLAY_CORRECTION_INVERSE @ bind_matrix @ DISPLAY_CORRECTION
+        expected = (
+            display_correction_inverse @ bind_matrix @ display_correction
+        )
     return max(abs(a - b) for row_a, row_b in zip(expected, rest) for a, b in zip(row_a, row_b))
-
-
-def _action_curves(action: bpy.types.Action, target: bpy.types.Object):
-    """Return a curve factory for the action, plus the slot that owns the curves.
-
-    Blender 4.4 moved an Action's curves into a slot/layer/strip channelbag and
-    5.0 dropped the old ``Action.fcurves`` shortcut, so build the channelbag when
-    the shortcut is gone.  The two collections name their group argument
-    differently and both refuse positional arguments, hence the factory.
-    """
-    legacy = getattr(action, "fcurves", None)
-    if legacy is not None:
-        def new_curve(data_path, axis, group):
-            return legacy.new(data_path, index=axis, action_group=group)
-        return new_curve, None
-
-    slot = action.slots.new(id_type='OBJECT', name=target.name)
-    strip = action.layers.new("Layer").strips.new(type='KEYFRAME')
-    curves = strip.channelbag(slot, ensure=True).fcurves
-
-    def new_curve(data_path, axis, group):
-        return curves.new(data_path, index=axis, group_name=group)
-    return new_curve, slot
-
-
-def _insert_keys(
-        new_curve,
-        bone_name: str,
-        data_path: str,
-        values: list[tuple[float, ...]],
-        source_frames: list[float],
-        frame_scale: float,
-        start_frame: float,
-) -> int:
-    if not values:
-        return 0
-    dimensions = len(values[0])
-    if not source_frames:
-        source_frames = [0.0] * len(values)
-    count = min(len(values), len(source_frames))
-    for axis in range(dimensions):
-        # ACL clips are uniformly sampled, but a channel can still be constant
-        # for its whole duration.  Retaining its per-sample copies adds work to
-        # Blender without changing evaluation.
-        first_value = values[0][axis]
-        is_constant = all(
-            math.isclose(value[axis], first_value, rel_tol=1e-7, abs_tol=1e-6)
-            for value in values[:count]
-        )
-        indices = (0,) if is_constant else range(count)
-        curve = new_curve(data_path, axis, bone_name)
-        points = curve.keyframe_points
-        points.add(len(indices))
-        points.foreach_set(
-            "co",
-            [coordinate
-             for index in indices
-             for coordinate in (
-                 start_frame + source_frames[index] * frame_scale,
-                 values[index][axis],
-             )],
-        )
-        for point in points:
-            point.interpolation = 'CONSTANT' if is_constant else 'LINEAR'
-        curve.update()
-    return sum(
-        1 if all(
-            math.isclose(value[axis], values[0][axis], rel_tol=1e-7, abs_tol=1e-6)
-            for value in values[:count]
-        ) else count
-        for axis in range(dimensions)
-    )
-
-
-def _key_times(values: list, frames: list[float], num_frames: int) -> list[float]:
-    if not values:
-        return []
-    if len(frames) == len(values):
-        return [float(frame) for frame in frames]
-    if len(values) == 1:
-        return [0.0]
-    last_frame = max(1, num_frames - 1)
-    return [index * last_frame / (len(values) - 1) for index in range(len(values))]
-
-
-def _vector_sampler(values: list, frames: list[float], default: Vector):
-    """Convert channel values once and sample them with a binary lookup."""
-    if not values:
-        return lambda _frame: default.copy()
-    keys = [_vector(value, tuple(default)) for value in values]
-
-    def sample(frame: float) -> Vector:
-        index = bisect_left(frames, frame)
-        if index <= 0:
-            return keys[0]
-        if index >= len(keys):
-            return keys[-1]
-        span = frames[index] - frames[index - 1]
-        fraction = 0.0 if span <= 0 else (frame - frames[index - 1]) / span
-        return keys[index - 1].lerp(keys[index], fraction)
-
-    return sample
-
-
-def _ue_quaternion_sampler(
-        values: list,
-        frames: list[float],
-        default: tuple[float, float, float, float],
-):
-    """Convert quaternion keys once and sample them with a binary lookup."""
-    def as_ue_quaternion(value) -> Quaternion:
-        parts = tuple(float(part) for part in value)
-        if len(parts) < 4:
-            parts = default
-        return Quaternion((parts[3], parts[0], parts[1], parts[2]))
-
-    if not values:
-        return lambda _frame: default
-    keys = [as_ue_quaternion(value) for value in values]
-
-    def sample(frame: float) -> tuple[float, float, float, float]:
-        index = bisect_left(frames, frame)
-        if index <= 0:
-            result = keys[0]
-        elif index >= len(keys):
-            result = keys[-1]
-        else:
-            span = frames[index] - frames[index - 1]
-            fraction = 0.0 if span <= 0 else (frame - frames[index - 1]) / span
-            result = keys[index - 1].slerp(keys[index], fraction)
-        return (result.x, result.y, result.z, result.w)
-
-    return sample
 
 
 def import_animation_asset(
@@ -313,6 +204,7 @@ def import_animation_asset(
         *,
         start_frame: float = 1.0,
         replace_current_action: bool = False,
+        use_fake_user: bool = False,
         scene=None,
 ) -> tuple[bpy.types.Action, int, int, int, float]:
     """Create a tagged Action from one decoded package AnimSequence.
@@ -334,9 +226,14 @@ def import_animation_asset(
     frame_scale = scene_fps / source_fps
     action_name = f"{armature.name} | {animation.get('name') or virtual_path.rsplit('/', 1)[-1]}"
     action = bpy.data.actions.new(action_name)
+    action.use_fake_user = use_fake_user
     new_curve, action_slot = _action_curves(action, armature)
-    action["ff7r_animation_virtual_path"] = virtual_path
-    action["ff7r_skeleton_asset_path"] = skeleton_path
+    action["sqex_animation_virtual_path"] = virtual_path
+    action["sqex_skeleton_asset_path"] = skeleton_path
+    action["sqex_axis_order"] = armature.get(
+        skeleton_importer.AXIS_ORDER_PROPERTY,
+        skeleton_importer.AXIS_ORDER_BLENDER,
+    )
     action["ff7r_source_fps"] = source_fps
     action["ff7r_source_duration"] = float(animation.get("duration") or 0.0)
 
@@ -348,6 +245,9 @@ def import_animation_asset(
         skeleton_importer.Y_FORWARD_ROTATION
         if skeleton_importer.armature_face_forward(armature) == skeleton_importer.FACE_FORWARD_BLENDER
         else Matrix.Identity(4)
+    )
+    display_correction, display_correction_inverse, root_display_correction = (
+        _display_corrections_for_armature(armature)
     )
     for track in animation.get("tracks") or []:
         bone_name = track.get("boneName")
@@ -384,14 +284,15 @@ def import_animation_asset(
         bind_matrix = Matrix.LocRotScale(
             _ue_location(bind_translation), _quaternion(bind_rotation), bind_scale
         )
-        basis_prefix = DISPLAY_CORRECTION_INVERSE @ bind_matrix.inverted_safe()
+        basis_prefix = display_correction_inverse @ bind_matrix.inverted_safe()
         display_target = (
-            ROOT_DISPLAY_CORRECTION if bone.parent is None else DISPLAY_CORRECTION
+            root_display_correction if bone.parent is None else display_correction
         )
         worst_rest_error = max(worst_rest_error, _rest_convention_error(
             bone,
             bind_matrix,
             forward_rotation,
+            display_correction,
         ))
         bases = [
             _blender_basis_values(
@@ -428,130 +329,31 @@ def import_animation_asset(
     return action, keyed_bones, key_count, skipped_bones, worst_rest_error
 
 
-class FF7R_REBIRTH_OT_apply_animation_game_packages(FF7R_LoggedOperator):
-    bl_idname = "object.ff7r_rebirth_apply_animation_game_packages"
-    bl_label = "Apply Rebirth Animation"
-    bl_description = "Find AnimSequence assets made for the selected package armature and apply one as a Blender Action"
-    bl_options = {'REGISTER', 'UNDO'}
+def _configured_paths(context):
+    preferences = game_packages._preferences(context)
+    if preferences is None:
+        raise RuntimeError("The add-on preferences are unavailable.")
+    return PROFILE.paths_from_preferences(preferences, bpy.path.abspath)
 
-    virtual_path: bpy.props.StringProperty(
-        name="Animation",
-        description="Only AnimSequence assets linked to this armature's Rebirth Skeleton are listed",
-        search=_search_matching_animations,
-        search_options={'SUGGESTION'},
-    )
-    start_frame: bpy.props.IntProperty(
-        name="Start Frame",
-        description="Blender frame for the beginning of the action",
-        default=1,
-    )
-    replace_current_action: bpy.props.BoolProperty(
-        name="Set as Active Action",
-        description="Assign the imported action to the selected armature immediately",
-        default=True,
+
+def _compatible_paths(context, armature):
+    skeleton_path = _selected_armature_skeleton_path(armature)
+    if not skeleton_path:
+        raise ValueError("The selected armature has no package Skeleton source. Import a package Skeleton first.")
+    paths = _configured_paths(context)
+    return game_packages.refresh_animation_index(
+        paths.install_root, paths.oodle_dll, paths.usmap_path, skeleton_path,
+        profile=PROFILE, aes_key=paths.aes_key,
     )
 
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == 'ARMATURE'
 
-    def invoke(self, context, _event):
-        armature = context.active_object
-        skeleton_path = _selected_armature_skeleton_path(armature)
-        if not skeleton_path:
-            report(self,
-                {'ERROR'},
-                "The selected armature has no Rebirth Skeleton source. Import it from packages, or bind a package SkeletalMesh first.",
-            )
-            return {'CANCELLED'}
-        prefs = game_packages._preferences(context)
-        if prefs is None:
-            report(self, {'ERROR'}, "FF7R Rebirth add-on preferences are unavailable.")
-            return {'CANCELLED'}
-        try:
-            game_packages.refresh_animation_index(
-                bpy.path.abspath(prefs.rebirth_install_root),
-                bpy.path.abspath(prefs.rebirth_oodle_dll),
-                bpy.path.abspath(prefs.rebirth_usmap_path),
-                skeleton_path,
-            )
-        except Exception as exc:
-            print(f"[FF7R animation ERROR] Search failed for skeleton '{skeleton_path}':")
-            traceback.print_exc()
-            report(self, {'ERROR'}, f"Animation search failed: {exc}")
-            return {'CANCELLED'}
-        if not game_packages._VIRTUAL_ANIMATIONS:
-            report(self, {'WARNING'}, "No AnimSequence assets were linked to this armature's Rebirth Skeleton.")
-            return {'CANCELLED'}
-        self.start_frame = context.scene.frame_current
-        return context.window_manager.invoke_props_dialog(self, width=900)
-
-    def draw(self, _context):
-        layout = self.layout
-        layout.label(text=f"{len(game_packages._VIRTUAL_ANIMATIONS):,} compatible AnimSequence asset(s) found", icon='ARMATURE_DATA')
-        layout.prop(self, "virtual_path", icon='VIEWZOOM')
-        layout.prop(self, "start_frame")
-        layout.prop(self, "replace_current_action")
-        layout.label(text="Keys use the scene frame rate and preserve the package rig's bone-roll convention.", icon='INFO')
-
-    def execute(self, context):
-        armature = context.active_object
-        prefs = game_packages._preferences(context)
-        if prefs is None or armature is None:
-            report(self, {'ERROR'}, "FF7R Rebirth add-on preferences are unavailable.")
-            return {'CANCELLED'}
-        skeleton_path = _selected_armature_skeleton_path(armature)
-        virtual_path = self.virtual_path.strip().replace("\\", "/").lstrip("/")
-        if not skeleton_path:
-            report(self, {'ERROR'}, "The selected armature has no Rebirth Skeleton source.")
-            return {'CANCELLED'}
-        try:
-            compatible = game_packages.refresh_animation_index(
-                bpy.path.abspath(prefs.rebirth_install_root),
-                bpy.path.abspath(prefs.rebirth_oodle_dll),
-                bpy.path.abspath(prefs.rebirth_usmap_path),
-                skeleton_path,
-            )
-            if virtual_path not in compatible:
-                raise ValueError("Choose an animation from the compatible package search results.")
-            with game_packages.PackageAssetSession(
-                bpy.path.abspath(prefs.rebirth_install_root),
-                bpy.path.abspath(prefs.rebirth_oodle_dll),
-                bpy.path.abspath(prefs.rebirth_usmap_path),
-            ) as session:
-                animation = session.animation_asset(virtual_path)
-        except Exception as exc:
-            print(f"[FF7R animation ERROR] Import failed for '{virtual_path}':")
-            traceback.print_exc()
-            report(self, {'ERROR'}, f"Animation import failed: {exc}")
-            return {'CANCELLED'}
-
-        try:
-            action, keyed_bones, key_count, skipped_bones, worst_rest_error = import_animation_asset(
-                armature,
-                virtual_path,
-                animation,
-                start_frame=self.start_frame,
-                replace_current_action=self.replace_current_action,
-                scene=context.scene,
-            )
-        except Exception as exc:
-            report(self, {'ERROR'}, str(exc))
-            return {'CANCELLED'}
-        if worst_rest_error > REST_CONVENTION_TOLERANCE:
-            report(self,
-                {'WARNING'},
-                f"'{armature.name}' rest pose differs from the animation's bind pose by "
-                f"{worst_rest_error:.3f}; the keys will not land where the clip intends. "
-                "Import the Skeleton from packages so the rig uses this add-on's bone frame.",
-            )
-        report(self,
-            {'INFO'},
-            f"Imported '{animation.get('name') or action.name}' to '{armature.name}': "
-            f"{keyed_bones} bone(s), {key_count:,} channel key(s)"
-            + (f"; skipped {skipped_bones} unavailable bone(s)" if skipped_bones else ""),
-        )
-        return {'FINISHED'}
+FF7R_REBIRTH_OT_apply_animation_game_packages = make_animation_importer(
+    class_name="FF7R_REBIRTH_OT_apply_animation_game_packages", module_name=__name__,
+    bl_idname="object.ff7r_rebirth_apply_animation_game_packages", game_name="Rebirth",
+    profile=PROFILE, configured_paths=_configured_paths, compatible_paths=_compatible_paths,
+    import_animation=import_animation_asset, browser=_ANIMATION_BROWSER,
+    rest_tolerance=REST_CONVENTION_TOLERANCE,
+)
 
 
 CLASSES = (FF7R_REBIRTH_OT_apply_animation_game_packages,)

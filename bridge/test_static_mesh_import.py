@@ -31,19 +31,19 @@ def main() -> None:
     # before importing anything from it.
     addon_directory = Path(__file__).resolve().parent.parent / "addon"
     spec = importlib.util.spec_from_file_location(
-        "ff7r_rebirth_tools",
+        "talisman",
         addon_directory / "__init__.py",
         submodule_search_locations=[str(addon_directory)],
     )
-    ff7r_rebirth_tools = importlib.util.module_from_spec(spec)
-    sys.modules["ff7r_rebirth_tools"] = ff7r_rebirth_tools
-    spec.loader.exec_module(ff7r_rebirth_tools)
-    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
+    talisman = importlib.util.module_from_spec(spec)
+    sys.modules["talisman"] = talisman
+    spec.loader.exec_module(talisman)
+    from talisman.games.rebirth.importers.packages import (
         PackageAssetSession,
         import_static_mesh_asset,
     )
 
-    ff7r_rebirth_tools.register()
+    talisman.register()
     with PackageAssetSession(game_root, oodle_dll, usmap_path) as session:
         static_mesh = session.static_mesh(asset_path)
     obj = import_static_mesh_asset(

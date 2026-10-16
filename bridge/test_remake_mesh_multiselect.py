@@ -26,7 +26,7 @@ def main() -> None:
 
     preferences = bpy.context.preferences.addons["addon"].preferences
     preferences.remake_install_root = game_root
-    preferences.remake_oodle_dll = ""
+    preferences.oodle_dll = ""
     preferences.remake_usmap_path = usmap_path
 
     indexed = static_mesh.refresh_static_mesh_index(bpy.context)

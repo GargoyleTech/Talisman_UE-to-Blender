@@ -25,7 +25,7 @@ def main() -> None:
 
     preferences = bpy.context.preferences.addons["addon"].preferences
     preferences.rebirth_install_root = game_root
-    preferences.rebirth_oodle_dll = oodle_dll
+    preferences.oodle_dll = oodle_dll
     preferences.rebirth_usmap_path = usmap_path
 
     result = bpy.ops.import_scene.ff7r_rebirth_skeletal_mesh_game_packages(

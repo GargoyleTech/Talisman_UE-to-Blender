@@ -26,18 +26,20 @@ path layering.
 
 from __future__ import annotations
 
+from ...language import tooltips
+
 import json
 from typing import Any
 
 import bpy
 from bpy.props import EnumProperty, IntProperty, StringProperty
 
-from ...core.blender.reporting import FF7R_LoggedOperator
+from ...core.blender.reporting import SQEX_LoggedOperator, report
 
-TREE_TYPE = "FF7R_KDI_NodeTree"
-SOCKET_TYPE = "FF7R_KDI_Socket"
-NODE_TYPE = "FF7R_KDI_Node"
-_ADD_MENU_CALLBACK_KEY = "_ff7r_kdi_add_menu_callback"
+TREE_TYPE = "SQEX_KDI_NodeTree"
+SOCKET_TYPE = "SQEX_KDI_Socket"
+NODE_TYPE = "SQEX_KDI_Node"
+_ADD_MENU_CALLBACK_KEY = "_sqex_kdi_add_menu_callback"
 
 # Node body colours by operator family, so a graph reads at a glance.
 FAMILY_COLORS = {
@@ -111,7 +113,7 @@ def node_summary(operator_type: str, body: dict[str, Any] | None) -> list[str]:
     return lines
 
 
-class FF7R_KDI_Socket(bpy.types.NodeSocket):
+class SQEX_KDI_Socket(bpy.types.NodeSocket):
     """One named KineDriver port (a ParameterType channel)."""
 
     bl_idname = SOCKET_TYPE
@@ -136,7 +138,7 @@ class FF7R_KDI_Socket(bpy.types.NodeSocket):
         return (0.70, 0.60, 0.35, 1.0)
 
 
-class FF7R_KDI_Node(bpy.types.Node):
+class SQEX_KDI_Node(bpy.types.Node):
     """Fallback node for an unknown KineDriver operator type."""
 
     bl_idname = NODE_TYPE
@@ -178,18 +180,18 @@ class FF7R_KDI_Node(bpy.types.Node):
                 layout.label(text=line)
 
 
-class FF7R_KDI_SourceTranslateNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_SourceTranslateNode"
+class SQEX_KDI_SourceTranslateNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_SourceTranslateNode"
     bl_label = "Source Translate"
-    bl_description = "Read translation channels from one or more source bones"
+    bl_description = tooltips.KDI_GRAPH_SOURCETRANSLATENODE_DESCRIPTION
     kdi_operator_type = "SourceTranslate"
     default_outputs = ("TranslateX", "TranslateY", "TranslateZ", "Distance")
 
 
-class FF7R_KDI_SourceRotateNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_SourceRotateNode"
+class SQEX_KDI_SourceRotateNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_SourceRotateNode"
     bl_label = "Source Rotate"
-    bl_description = "Read Bend, Roll, angle, or quaternion channels from source bones"
+    bl_description = tooltips.KDI_GRAPH_SOURCEROTATENODE_DESCRIPTION
     kdi_operator_type = "SourceRotate"
     default_outputs = (
         "BendS", "BendT", "Roll", "BendingAngle", "RotateAngle",
@@ -197,142 +199,142 @@ class FF7R_KDI_SourceRotateNode(FF7R_KDI_Node):
     )
 
 
-class FF7R_KDI_EffectorEZParamLinkNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorEZParamLinkNode"
+class SQEX_KDI_EffectorEZParamLinkNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorEZParamLinkNode"
     bl_label = "EZ Parameter Link"
-    bl_description = "Map a scalar through KineDriver's two-segment Bezier curve"
+    bl_description = tooltips.KDI_GRAPH_EFFECTOREZPARAMLINKNODE_DESCRIPTION
     kdi_operator_type = "EffectorEZParamLink"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_EffectorEZParamLinkLinearNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorEZParamLinkLinearNode"
+class SQEX_KDI_EffectorEZParamLinkLinearNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorEZParamLinkLinearNode"
     bl_label = "Linear Parameter Link"
-    bl_description = "Apply scalar scale, offset, and optional limits"
+    bl_description = tooltips.KDI_GRAPH_EFFECTOREZPARAMLINKLINEARNODE_DESCRIPTION
     kdi_operator_type = "EffectorEZParamLinkLinear"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_EffectorLinkWithNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorLinkWithNode"
+class SQEX_KDI_EffectorLinkWithNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorLinkWithNode"
     bl_label = "Link With"
-    bl_description = "KineDriver single-key driven interpolation"
+    bl_description = tooltips.KDI_GRAPH_EFFECTORLINKWITHNODE_DESCRIPTION
     kdi_operator_type = "EffectorLinkWith"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_EffectorRBFInterpNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorRBFInterpNode"
+class SQEX_KDI_EffectorRBFInterpNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorRBFInterpNode"
     bl_label = "RBF Interpolation"
-    bl_description = "KineDriver multidimensional radial-basis interpolation"
+    bl_description = tooltips.KDI_GRAPH_EFFECTORRBFINTERPNODE_DESCRIPTION
     kdi_operator_type = "EffectorRBFInterp"
     default_inputs = ("Input[0]",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_EffectorExprNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorExprNode"
+class SQEX_KDI_EffectorExprNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorExprNode"
     bl_label = "Expression"
-    bl_description = "Evaluate a compiled KineDriver expression"
+    bl_description = tooltips.KDI_GRAPH_EFFECTOREXPRNODE_DESCRIPTION
     kdi_operator_type = "EffectorExpr"
     default_inputs = ("Input[0]",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_EffectorInverseNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_EffectorInverseNode"
+class SQEX_KDI_EffectorInverseNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_EffectorInverseNode"
     bl_label = "Inverse"
-    bl_description = "KineDriver inverse effector"
+    bl_description = tooltips.KDI_GRAPH_EFFECTORINVERSENODE_DESCRIPTION
     kdi_operator_type = "EffectorInverse"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
 
 
-class FF7R_KDI_TargetTranslateNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetTranslateNode"
+class SQEX_KDI_TargetTranslateNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetTranslateNode"
     bl_label = "Target Translate"
-    bl_description = "Write translation channels to a target bone"
+    bl_description = tooltips.KDI_GRAPH_TARGETTRANSLATENODE_DESCRIPTION
     kdi_operator_type = "TargetTranslate"
     default_inputs = ("TranslateX", "TranslateY", "TranslateZ")
 
 
-class FF7R_KDI_TargetScaleNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetScaleNode"
+class SQEX_KDI_TargetScaleNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetScaleNode"
     bl_label = "Target Scale"
-    bl_description = "Write scale channels to a target bone"
+    bl_description = tooltips.KDI_GRAPH_TARGETSCALENODE_DESCRIPTION
     kdi_operator_type = "TargetScale"
     default_inputs = ("ScaleX", "ScaleY", "ScaleZ")
 
 
-class FF7R_KDI_TargetBendSTRollNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetBendSTRollNode"
+class SQEX_KDI_TargetBendSTRollNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetBendSTRollNode"
     bl_label = "Target Bend S/T/Roll"
-    bl_description = "Compose BendS, BendT, and Roll onto a target bone"
+    bl_description = tooltips.KDI_GRAPH_TARGETBENDSTROLLNODE_DESCRIPTION
     kdi_operator_type = "TargetBendSTRoll"
     default_inputs = ("BendS", "BendT", "Roll")
 
 
-class FF7R_KDI_TargetBendRollNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetBendRollNode"
+class SQEX_KDI_TargetBendRollNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetBendRollNode"
     bl_label = "Target Bend/Roll"
-    bl_description = "Compose a bending quaternion and scalar Roll onto a target bone"
+    bl_description = tooltips.KDI_GRAPH_TARGETBENDROLLNODE_DESCRIPTION
     kdi_operator_type = "TargetBendRoll"
     default_inputs = ("BendingQuat", "Roll")
 
 
-class FF7R_KDI_TargetRotateNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetRotateNode"
+class SQEX_KDI_TargetRotateNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetRotateNode"
     bl_label = "Target Rotate"
-    bl_description = "Write a quaternion rotation to a target bone"
+    bl_description = tooltips.KDI_GRAPH_TARGETROTATENODE_DESCRIPTION
     kdi_operator_type = "TargetRotate"
     default_inputs = ("RotateQuat",)
 
 
-class FF7R_KDI_TargetPoscnsNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetPoscnsNode"
+class SQEX_KDI_TargetPoscnsNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetPoscnsNode"
     bl_label = "Target Position Constraint"
-    bl_description = "Constrain a target bone's position to authored source bones"
+    bl_description = tooltips.KDI_GRAPH_TARGETPOSCNSNODE_DESCRIPTION
     kdi_operator_type = "TargetPoscns"
 
 
-class FF7R_KDI_TargetOricnsNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetOricnsNode"
+class SQEX_KDI_TargetOricnsNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetOricnsNode"
     bl_label = "Target Orientation Constraint"
-    bl_description = "Constrain a target bone's orientation to authored source bones"
+    bl_description = tooltips.KDI_GRAPH_TARGETORICNSNODE_DESCRIPTION
     kdi_operator_type = "TargetOricns"
 
 
-class FF7R_KDI_TargetDircnsNode(FF7R_KDI_Node):
-    bl_idname = "FF7R_KDI_TargetDircnsNode"
+class SQEX_KDI_TargetDircnsNode(SQEX_KDI_Node):
+    bl_idname = "SQEX_KDI_TargetDircnsNode"
     bl_label = "Target Direction Constraint"
-    bl_description = "Aim a target bone using KineDriver's direction constraint"
+    bl_description = tooltips.KDI_GRAPH_TARGETDIRCNSNODE_DESCRIPTION
     kdi_operator_type = "TargetDircns"
 
 
 SOURCE_NODE_CLASSES = (
-    FF7R_KDI_SourceTranslateNode,
-    FF7R_KDI_SourceRotateNode,
+    SQEX_KDI_SourceTranslateNode,
+    SQEX_KDI_SourceRotateNode,
 )
 EFFECTOR_NODE_CLASSES = (
-    FF7R_KDI_EffectorEZParamLinkNode,
-    FF7R_KDI_EffectorEZParamLinkLinearNode,
-    FF7R_KDI_EffectorLinkWithNode,
-    FF7R_KDI_EffectorRBFInterpNode,
-    FF7R_KDI_EffectorExprNode,
-    FF7R_KDI_EffectorInverseNode,
+    SQEX_KDI_EffectorEZParamLinkNode,
+    SQEX_KDI_EffectorEZParamLinkLinearNode,
+    SQEX_KDI_EffectorLinkWithNode,
+    SQEX_KDI_EffectorRBFInterpNode,
+    SQEX_KDI_EffectorExprNode,
+    SQEX_KDI_EffectorInverseNode,
 )
 TARGET_NODE_CLASSES = (
-    FF7R_KDI_TargetTranslateNode,
-    FF7R_KDI_TargetScaleNode,
-    FF7R_KDI_TargetBendSTRollNode,
-    FF7R_KDI_TargetBendRollNode,
-    FF7R_KDI_TargetRotateNode,
-    FF7R_KDI_TargetPoscnsNode,
-    FF7R_KDI_TargetOricnsNode,
-    FF7R_KDI_TargetDircnsNode,
+    SQEX_KDI_TargetTranslateNode,
+    SQEX_KDI_TargetScaleNode,
+    SQEX_KDI_TargetBendSTRollNode,
+    SQEX_KDI_TargetBendRollNode,
+    SQEX_KDI_TargetRotateNode,
+    SQEX_KDI_TargetPoscnsNode,
+    SQEX_KDI_TargetOricnsNode,
+    SQEX_KDI_TargetDircnsNode,
 )
 OPERATOR_NODE_CLASSES = SOURCE_NODE_CLASSES + EFFECTOR_NODE_CLASSES + TARGET_NODE_CLASSES
 NODE_TYPE_BY_OPERATOR = {
@@ -340,11 +342,11 @@ NODE_TYPE_BY_OPERATOR = {
 }
 
 
-class FF7R_KDI_NodeTree(bpy.types.NodeTree):
+class SQEX_KDI_NodeTree(bpy.types.NodeTree):
     """Read-only view of a KineDriver operator graph."""
 
     bl_idname = TREE_TYPE
-    bl_label = "FF7R KineDriver"
+    bl_label = "Square Enix KineDriver"
     bl_icon = "DRIVER"
 
 
@@ -355,24 +357,24 @@ def _draw_node_items(layout: Any, classes: tuple[type, ...]) -> None:
         props.use_transform = True
 
 
-class FF7R_KDI_MT_add_source(bpy.types.Menu):
-    bl_idname = "FF7R_KDI_MT_add_source"
+class SQEX_KDI_MT_add_source(bpy.types.Menu):
+    bl_idname = "SQEX_KDI_MT_add_source"
     bl_label = "Source"
 
     def draw(self, _context):
         _draw_node_items(self.layout, SOURCE_NODE_CLASSES)
 
 
-class FF7R_KDI_MT_add_effector(bpy.types.Menu):
-    bl_idname = "FF7R_KDI_MT_add_effector"
+class SQEX_KDI_MT_add_effector(bpy.types.Menu):
+    bl_idname = "SQEX_KDI_MT_add_effector"
     bl_label = "Effector"
 
     def draw(self, _context):
         _draw_node_items(self.layout, EFFECTOR_NODE_CLASSES)
 
 
-class FF7R_KDI_MT_add_target(bpy.types.Menu):
-    bl_idname = "FF7R_KDI_MT_add_target"
+class SQEX_KDI_MT_add_target(bpy.types.Menu):
+    bl_idname = "SQEX_KDI_MT_add_target"
     bl_label = "Target"
 
     def draw(self, _context):
@@ -385,9 +387,9 @@ def draw_kdi_add_menu(self: Any, context: Any) -> None:
         return
     layout = self.layout
     layout.separator()
-    layout.menu(FF7R_KDI_MT_add_source.bl_idname, icon="BONE_DATA")
-    layout.menu(FF7R_KDI_MT_add_effector.bl_idname, icon="DRIVER")
-    layout.menu(FF7R_KDI_MT_add_target.bl_idname, icon="CONSTRAINT_BONE")
+    layout.menu(SQEX_KDI_MT_add_source.bl_idname, icon="BONE_DATA")
+    layout.menu(SQEX_KDI_MT_add_effector.bl_idname, icon="DRIVER")
+    layout.menu(SQEX_KDI_MT_add_target.bl_idname, icon="CONSTRAINT_BONE")
 
 
 def _port_key(port: dict[str, Any]) -> str:
@@ -646,7 +648,7 @@ def selected_bone_has_kdi_driver(context: Any) -> bool:
         return False
 
 
-class FF7R_KDI_OT_visualize(FF7R_LoggedOperator):
+class SQEX_KDI_OT_visualize(SQEX_LoggedOperator):
     """Show a KineDriver rig as a node graph in the Node Editor"""
 
     bl_idname = "kdi.visualize_graph"
@@ -655,21 +657,18 @@ class FF7R_KDI_OT_visualize(FF7R_LoggedOperator):
 
     filepath: StringProperty(
         name="KDI JSON",
-        description="Optional KineDriver JSON. Leave blank to use the graph saved "
-                    "with the active armature's imported KDI drivers",
+        description=tooltips.KDI_GRAPH_OT_VISUALIZE_FILEPATH,
         subtype="FILE_PATH",
         default="",
     )
     target_bone: StringProperty(
         name="Only bones driving",
-        description="Show just the operators that transitively drive this target "
-                    "bone. Leave blank to show the whole graph, which is large",
+        description=tooltips.KDI_GRAPH_OT_VISUALIZE_TARGET_BONE,
         default="",
     )
     max_nodes: IntProperty(
         name="Node limit",
-        description="Stop after this many operators. Blender's node editor becomes "
-                    "unusable well before a full rig's operator count",
+        description=tooltips.KDI_GRAPH_OT_VISUALIZE_MAX_NODES,
         default=DEFAULT_MAX_NODES,
         min=10,
         max=5000,
@@ -687,7 +686,7 @@ class FF7R_KDI_OT_visualize(FF7R_LoggedOperator):
         layout.prop(self, "filepath")
         layout.prop(self, "target_bone")
         layout.prop(self, "max_nodes")
-        layout.label(text="Open a Node Editor and pick the 'FF7R KineDriver' tree type.",
+        layout.label(text="Open a Node Editor and pick the 'Square Enix KineDriver' tree type.",
                      icon="INFO")
 
     def execute(self, context):
@@ -704,7 +703,7 @@ class FF7R_KDI_OT_visualize(FF7R_LoggedOperator):
             if graph is None and armature:
                 source = armature.get(SOURCE_PROPERTY, "")
             if graph is None and not source:
-                self.report({"ERROR"},
+                report(self, {"ERROR"},
                             "No embedded KDI graph was found. Select an armature with "
                             "imported KDI drivers, or choose a KDI JSON file.")
                 return {"CANCELLED"}
@@ -712,25 +711,25 @@ class FF7R_KDI_OT_visualize(FF7R_LoggedOperator):
         if graph is None:
             path = Path(bpy.path.abspath(source))
             if not path.is_file():
-                self.report({"ERROR"}, f"KDI JSON not found: {path}")
+                report(self, {"ERROR"}, f"KDI JSON not found: {path}")
                 return {"CANCELLED"}
             try:
                 asset, raw = kdi_audit.read_kdi(path)
                 graph = kdi_audit.build_graph(asset, path, raw)
             except Exception as exc:
-                self.report({"ERROR"}, f"Could not read the KDI: {exc}")
+                report(self, {"ERROR"}, f"Could not read the KDI: {exc}")
                 return {"CANCELLED"}
         level, message = _show_graph(context, graph, armature, self.target_bone.strip(), self.max_nodes)
-        self.report({level}, message)
+        report(self, {level}, message)
         return {"FINISHED" if level == "INFO" else "CANCELLED"}
 
 
-class FF7R_KDI_OT_focus_selected_bone(FF7R_LoggedOperator):
+class SQEX_KDI_OT_focus_selected_bone(SQEX_LoggedOperator):
     """Focus the embedded KDI graph on the selected driven bone."""
 
     bl_idname = "kdi.focus_selected_bone_graph"
     bl_label = "KDI: Focus Selected Bone in Graph"
-    bl_description = "Show the KDI subgraph that drives the selected bone"
+    bl_description = tooltips.KDI_GRAPH_OT_FOCUS_SELECTED_BONE_DESCRIPTION
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -742,23 +741,23 @@ class FF7R_KDI_OT_focus_selected_bone(FF7R_LoggedOperator):
         bone_name = _selected_bone_name(context)
         graph = _graph_for_bone(_stored_graphs(armature), bone_name)
         if graph is None:
-            self.report({"ERROR"}, "This KDI layer has no embedded graph. Re-import it to enable graph focus.")
+            report(self, {"ERROR"}, "This KDI layer has no embedded graph. Re-import it to enable graph focus.")
             return {"CANCELLED"}
         level, message = _show_graph(context, graph, armature, bone_name, DEFAULT_MAX_NODES)
-        self.report({level}, message)
+        report(self, {level}, message)
         return {"FINISHED" if level == "INFO" else "CANCELLED"}
 
 
 CLASSES = (
-    FF7R_KDI_Socket,
-    FF7R_KDI_Node,
+    SQEX_KDI_Socket,
+    SQEX_KDI_Node,
     *OPERATOR_NODE_CLASSES,
-    FF7R_KDI_NodeTree,
-    FF7R_KDI_MT_add_source,
-    FF7R_KDI_MT_add_effector,
-    FF7R_KDI_MT_add_target,
-    FF7R_KDI_OT_visualize,
-    FF7R_KDI_OT_focus_selected_bone,
+    SQEX_KDI_NodeTree,
+    SQEX_KDI_MT_add_source,
+    SQEX_KDI_MT_add_effector,
+    SQEX_KDI_MT_add_target,
+    SQEX_KDI_OT_visualize,
+    SQEX_KDI_OT_focus_selected_bone,
 )
 
 

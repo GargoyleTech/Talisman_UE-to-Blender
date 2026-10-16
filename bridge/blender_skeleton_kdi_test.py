@@ -12,10 +12,10 @@ SKEL = "End/Content/Character/Player/PC0000_00_Cloud_Standard/Model/PC0000_00_Sk
 KDI = "End/Content/Character/Player/PC0000_00_Cloud_Standard/Model/PC0000_00_KDI.uasset"
 
 bpy.ops.wm.open_mainfile(filepath=BLEND)
-bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
-prefs = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
+bpy.ops.preferences.addon_enable(module="talisman")
+prefs = bpy.context.preferences.addons["talisman"].preferences
 prefs.rebirth_install_root = r"G:\SteamLibrary\steamapps\common\FINAL FANTASY VII REBIRTH"
-prefs.rebirth_oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
+prefs.oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
 prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
 
 # Remove the pre-existing baseline armature so the KDI operator can only bind to

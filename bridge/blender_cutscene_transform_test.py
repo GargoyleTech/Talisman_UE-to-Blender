@@ -59,14 +59,14 @@ for guid, cid in bindings.items():
     ci._write_keys(strip, slot, "location", 0, [
         {"frame": 0, "value": 400, "interp": 0, "arrive": 0, "leave": 0}])
 
-for reference_format in ("fmodel", "bridge", "qualified", "path_only"):
+for reference_format in ("fmodel", "gargoyle", "qualified", "path_only"):
     import_data = copy.deepcopy(data)
     for item in import_data:
         if item["Type"] != "MovieScene":
             continue
         for possessable in item["Properties"].get("Possessables", []):
             class_name = ci._possessed_class_name(possessable)
-            if reference_format == "bridge":
+            if reference_format == "gargoyle":
                 possessable["PossessedObjectClass"] = {
                     "ObjectName": f"Object'{class_name}'", "ObjectPath": class_name}
             elif reference_format == "qualified":

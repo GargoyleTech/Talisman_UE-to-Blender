@@ -1,8 +1,8 @@
 """Import a Rebirth AnimSequence onto a package armature and check the result.
 
 Rebirth stores animation as an ACL 1.x compressed clip that CUE4Parse cannot read;
-the bridge decodes it itself (see docs/REBIRTH_ANIMSEQUENCE_FORMAT.md). This covers
-the whole path: bridge decode, JSON transport, and the axis conversion in
+the gargoyle decodes it itself (see docs/REBIRTH_ANIMSEQUENCE_FORMAT.md). This covers
+the whole path: gargoyle decode, JSON transport, and the axis conversion in
 addon/games/rebirth/importers/animations.py.
 
 Two independent things are asserted.
@@ -33,19 +33,31 @@ from mathutils import Matrix, Quaternion, Vector
 BLEND = r"O:\Blender\Assets\FF7\cloud baseline.blend"
 SKELETON = "End/Content/Character/Player/PC0000_00_Cloud_Standard/Model/PC0000_00_Skeleton.uasset"
 ANIMATION = "End/Content/Cut/Game/0000-COMON/EV_COMON_0010/Motion/EV_COMON_0010_PC0000_00_C0060.uasset"
+GAMEPLAY_ANIMATION = "End/Content/Motion/Player/PC0000_Cloud/Battle01/B_Walk01_0_L90.uasset"
 START_FRAME = 1
 # acl segments this clip at samples 0/19/38.
 SEAMS = (19, 38)
 
 bpy.ops.wm.open_mainfile(filepath=BLEND)
-bpy.ops.preferences.addon_enable(module="ff7r_rebirth_tools")
-prefs = bpy.context.preferences.addons["ff7r_rebirth_tools"].preferences
+bpy.ops.preferences.addon_enable(module="talisman")
+prefs = bpy.context.preferences.addons["talisman"].preferences
 prefs.rebirth_install_root = r"G:\SteamLibrary\steamapps\common\FINAL FANTASY VII REBIRTH"
-prefs.rebirth_oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
+prefs.oodle_dll = r"G:\Games\Final Fantasy VII - Remake Intergrade\Engine\Binaries\ThirdParty\Oodle\Win64\oo2core_7_win64.dll"
 prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
 
-from ff7r_rebirth_tools import animations, game_packages
-from ff7r_rebirth_tools.core.blender import skeletons as skel
+from talisman import animations, game_packages
+from talisman.core.blender import skeletons as skel
+
+indexed_animations = game_packages.refresh_animation_index(
+    prefs.rebirth_install_root,
+    prefs.oodle_dll,
+    prefs.rebirth_usmap_path,
+    SKELETON,
+)
+if GAMEPLAY_ANIMATION not in indexed_animations:
+    print("TEST_GAMEPLAY_ANIMATION_MISSING", GAMEPLAY_ANIMATION)
+    raise SystemExit
+print("TEST_GAMEPLAY_ANIMATION_INDEXED", GAMEPLAY_ANIMATION)
 
 bpy.ops.import_scene.ff7r_rebirth_skeleton_game_packages(
     "EXEC_DEFAULT", virtual_path=SKELETON, armature_name="Cloud_Package_Skeleton",
@@ -60,7 +72,7 @@ armature.select_set(True)
 
 # The same payload the operator consumes, kept as the reference to compare against.
 with game_packages.PackageAssetSession(
-        prefs.rebirth_install_root, prefs.rebirth_oodle_dll, prefs.rebirth_usmap_path) as session:
+        prefs.rebirth_install_root, prefs.oodle_dll, prefs.rebirth_usmap_path) as session:
     source = session.animation_asset(ANIMATION)
 tracks = {track["boneName"]: track for track in source["tracks"]}
 
@@ -212,6 +224,97 @@ for name, track in tracks.items():
 print(f"TEST_REST_CONVENTION_ERR {worst_rest:.6f} (tolerance {animations.REST_CONVENTION_TOLERANCE})")
 if worst_rest > animations.REST_CONVENTION_TOLERANCE:
     failures.append("rest pose does not match the clip's bind pose")
+
+# --- Preserved UE bone-axis convention ----------------------------------------
+# The package importer records this on the armature.  Animation import must use
+# its matching frame rather than applying the Blender-oriented display roll.
+bpy.ops.import_scene.ff7r_rebirth_skeleton_game_packages(
+    "EXEC_DEFAULT", virtual_path=SKELETON,
+    armature_name="Cloud_Preserved_Axis_Skeleton",
+    face_y_forward=skel.FACE_FORWARD_UNREAL,
+    preserve_ue_axis_order=True,
+)
+preserved_armature = bpy.data.objects.get("Cloud_Preserved_Axis_Skeleton")
+if preserved_armature is None:
+    failures.append("preserved-axis skeleton was not imported")
+else:
+    bpy.context.view_layer.objects.active = preserved_armature
+    preserved_armature.select_set(True)
+    if preserved_armature.get(skel.AXIS_ORDER_PROPERTY) != skel.AXIS_ORDER_UNREAL:
+        failures.append("preserved-axis skeleton did not record its UE axis order")
+    bpy.ops.object.ff7r_rebirth_apply_animation_game_packages(
+        "EXEC_DEFAULT", virtual_path=ANIMATION, start_frame=START_FRAME,
+    )
+    P = animations.PRESERVED_AXIS_CORRECTION
+    for frame in (0, 1, 10, num_frames // 2, num_frames - 1):
+        bpy.context.scene.frame_set(START_FRAME + frame)
+        evaluated = preserved_armature.evaluated_get(
+            bpy.context.evaluated_depsgraph_get()
+        )
+        worst_rot = worst_loc = worst_scale = 0.0
+        worst_name = ""
+        for name, track in tracks.items():
+            bone = preserved_armature.data.bones[name]
+            if bone.parent is None or bone.parent.name not in tracks:
+                continue
+            got = (
+                evaluated.pose.bones[bone.parent.name].matrix.inverted()
+                @ evaluated.pose.bones[name].matrix
+            )
+            want = P.inverted() @ ue_local(track, frame) @ P
+            angle = math.degrees(abs(
+                got.to_quaternion().rotation_difference(want.to_quaternion()).angle
+            ))
+            angle = min(angle, 360.0 - angle)
+            if angle > worst_rot:
+                worst_rot, worst_name = angle, name
+            worst_loc = max(worst_loc, (got.translation - want.translation).length * 100.0)
+            worst_scale = max(worst_scale, max(
+                abs(a - b) for a, b in zip(got.to_scale(), want.to_scale())
+            ))
+        print(f"TEST_PRESERVED_AXIS_POSE_f{frame} worst_rot={worst_rot:.4f}deg "
+              f"({worst_name}) worst_loc={worst_loc:.5f}cm "
+              f"worst_scale={worst_scale:.3e}")
+        if worst_rot > 0.05 or worst_loc > 0.01 or worst_scale > 1e-4:
+            failures.append(
+                f"preserved-axis pose at frame {frame} does not match the source track"
+            )
+
+    preserved_worst_rest = 0.0
+    for name, track in tracks.items():
+        bind = Matrix.LocRotScale(
+            animations._ue_location(track["bindTranslation"]),
+            animations._quaternion(track["bindRotation"]),
+            Vector(track["bindScale"]),
+        )
+        preserved_worst_rest = max(
+            preserved_worst_rest,
+            animations._rest_convention_error(
+                preserved_armature.data.bones[name], bind, Matrix.Identity(4), P
+            ),
+        )
+    print(f"TEST_PRESERVED_AXIS_REST_ERR {preserved_worst_rest:.6f} "
+          f"(tolerance {animations.REST_CONVENTION_TOLERANCE})")
+    if preserved_worst_rest > animations.REST_CONVENTION_TOLERANCE:
+        failures.append("preserved-axis rest pose does not match the clip bind pose")
+    preserved_tilts = []
+    for frame in (0, 10, 25):
+        bpy.context.scene.frame_set(START_FRAME + frame)
+        evaluated = preserved_armature.evaluated_get(
+            bpy.context.evaluated_depsgraph_get()
+        )
+        body_up_vector = (
+            evaluated.pose.bones["C_Head_a"].matrix.translation
+            - evaluated.pose.bones["C_Hip_a"].matrix.translation
+        ).normalized()
+        preserved_tilts.append(math.degrees(math.acos(
+            max(-1.0, min(1.0, body_up_vector.z))
+        )))
+    print("TEST_PRESERVED_AXIS_UPRIGHT",
+          [round(tilt, 1) for tilt in preserved_tilts])
+    if max(preserved_tilts) > 25.0:
+        failures.append("preserved-axis root animation is not upright")
+    preserved_armature.select_set(False)
 
 # --- The root's absolute orientation: does the character stand up? --------------
 # The rest pose is known good, so the animated body must be upright too. A wrong

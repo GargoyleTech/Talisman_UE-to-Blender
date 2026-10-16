@@ -6,13 +6,15 @@ location avoids maintaining a divergent copy of a 3,000-line generated shader
 builder in this add-on.  This module is called by the direct package
 StaticMesh and SkeletalMesh importers -- and, through PackageStaticMeshResolver,
 by the package UMAP importer's StaticMesh actors, since they share the same
-importer.  Both mesh types reach it the same way, because the bridge reports a
+importer.  Both mesh types reach it the same way, because the gargoyle reports a
 section's material the same way for either (SkeletalMaterials vs
 StaticMaterials).  Loose MEC UMAPs, JSON imports, and non-RMI material instances
 retain their existing material paths.
 """
 
 from __future__ import annotations
+
+from ....language import tooltips
 
 import importlib.util
 import json
@@ -22,8 +24,10 @@ from typing import Any, Callable
 
 import bpy
 
+from ....core.blender.material_nodes import set_color_space as _set_image_color_space, refresh_material_textures
 
-_MODULES: tuple[Any, Any, dict[str, list[str]]] | None = None
+
+_MODULES: tuple[dict[str, Any], Any, dict[str, list[str]]] | None = None
 _MATERIAL_CACHE: dict[str, bpy.types.Material] = {}
 _GAZE_NORMAL_OVERRIDE_IMAGE: bpy.types.Image | None = None
 _COMMON_EYE_PLAYER_NG = "/game/character/common/eye/texture/common_eye_player_ng"
@@ -35,8 +39,25 @@ _EYE_PATH_LABEL = "eye path (SM 9)"
 EXTERNAL_EMISSIVE_CONTEXT_PROP = "ExternalEmissiveContext"
 _EXTERNAL_EMISSIVE_SWITCH = "ExternalEmissive_"
 _LEGACY_EXTERNAL_EMISSIVE_PROP = "ExternalEmissiveTint"
-EMISSIVE_CAMERA_ONLY_PROP = "EmissiveCameraOnly"
+EMISSIVE_CAMERA_ONLY_PROP = "sw EmissiveCameraOnly"
+_LEGACY_EMISSIVE_CAMERA_ONLY_PROP = "EmissiveCameraOnly"
 _EMISSIVE_SWITCH = "Emissive_"
+_EXTERNAL_EMISSIVE_STATUS_PROP = "sw ff7r_external_emissive"
+_EMISSIVE_STATUS_PROP = "sw ff7r_emissive"
+_LEGACY_EXTERNAL_EMISSIVE_STATUS_PROP = "ff7r_external_emissive"
+_LEGACY_EMISSIVE_STATUS_PROP = "ff7r_emissive"
+
+
+def _migrate_switch_status_properties(material: bpy.types.Material) -> None:
+    """Move importer switch-status flags into the visible switch group."""
+    for old_name, new_name in (
+            (_LEGACY_EXTERNAL_EMISSIVE_STATUS_PROP,
+             _EXTERNAL_EMISSIVE_STATUS_PROP),
+            (_LEGACY_EMISSIVE_STATUS_PROP, _EMISSIVE_STATUS_PROP)):
+        if new_name not in material and old_name in material:
+            material[new_name] = bool(material[old_name])
+        if old_name in material:
+            del material[old_name]
 
 
 def _migrate_external_emissive_attribute() -> None:
@@ -53,9 +74,15 @@ def _migrate_external_emissive_attribute() -> None:
 
 
 def _migrate_camera_only_emission(material: bpy.types.Material) -> None:
-    """Add the camera-only emission branch to an existing master in place."""
+    """Add or update the camera-only emission branch on an existing master."""
     tree = getattr(material, "node_tree", None)
-    if tree is None or tree.nodes.get("EmissionCameraOnly") is not None:
+    if tree is None:
+        return
+    existing_attribute = tree.nodes.get("EmissiveCameraOnlyAttribute")
+    if existing_attribute is not None:
+        existing_attribute.attribute_name = EMISSIVE_CAMERA_ONLY_PROP
+        existing_attribute.label = f'object["{EMISSIVE_CAMERA_ONLY_PROP}"]'
+    if tree.nodes.get("EmissionCameraOnly") is not None:
         return
     strength = tree.nodes.get("EmissionStrength")
     bsdf = tree.nodes.get("Principled BSDF")
@@ -112,14 +139,16 @@ def _external_emissive_context(props: dict[str, Any]) -> tuple[float, float, flo
 
 def _material_uses_external_emissive(material: bpy.types.Material) -> bool:
     return material is not None and (
-        material.get("ff7r_external_emissive", False)
+        material.get(_EXTERNAL_EMISSIVE_STATUS_PROP,
+                     material.get(_LEGACY_EXTERNAL_EMISSIVE_STATUS_PROP, False))
         or _EXTERNAL_EMISSIVE_SWITCH in material.get("_RMI_Variant_Switches", ())
     )
 
 
 def _material_uses_emissive(material: bpy.types.Material) -> bool:
     return material is not None and (
-        material.get("ff7r_emissive", False)
+        material.get(_EMISSIVE_STATUS_PROP,
+                     material.get(_LEGACY_EMISSIVE_STATUS_PROP, False))
         or _EMISSIVE_SWITCH in material.get("_RMI_Variant_Switches", ())
     )
 
@@ -141,6 +170,18 @@ def initialize_external_emissive_context(obj: bpy.types.Object) -> bool:
     if obj is None or obj.type != "MESH":
         return False
     changed = False
+    if _LEGACY_EMISSIVE_CAMERA_ONLY_PROP in obj:
+        if EMISSIVE_CAMERA_ONLY_PROP not in obj:
+            obj[EMISSIVE_CAMERA_ONLY_PROP] = bool(
+                obj[_LEGACY_EMISSIVE_CAMERA_ONLY_PROP])
+        del obj[_LEGACY_EMISSIVE_CAMERA_ONLY_PROP]
+        try:
+            obj.id_properties_ui(EMISSIVE_CAMERA_ONLY_PROP).update(
+                description=tooltips.MATERIALS_EMISSIVE_CAMERA_ONLY
+            )
+        except Exception:
+            pass
+        changed = True
     contexts = [
         material.get("ff7r_external_emissive_context", (1.0, 1.0, 1.0))
         for material in obj.data.materials
@@ -160,7 +201,7 @@ def initialize_external_emissive_context(obj: bpy.types.Object) -> bool:
         obj[EMISSIVE_CAMERA_ONLY_PROP] = True
         try:
             obj.id_properties_ui(EMISSIVE_CAMERA_ONLY_PROP).update(
-                description="Restrict Emissive_ contribution to camera rays"
+                description=tooltips.MATERIALS_EMISSIVE_CAMERA_ONLY
             )
         except Exception:
             pass
@@ -230,20 +271,32 @@ def configure_limbal_eye_drivers(
     return configured
 
 
-def _source_files() -> tuple[Path, Path, Path]:
-    """Locate packaged RMI sources, with the research checkout as a dev fallback."""
+def _source_files() -> tuple[dict[str, Path], Path, Path]:
+    """Locate the three RMI builders and their shared variant data.
+
+    An older external research checkout can still contain only the historical
+    ubershader.  In that case it remains a safe development fallback for all
+    profiles; installed add-ons always ship the dedicated eye and hair files.
+    """
     addon_directory = Path(__file__).resolve().parent
     packaged = addon_directory / "rmi_sources"
     development = addon_directory.parents[4] / "material related" / "blender"
     candidates = (
-        (packaged / "ff7r_rmi_surface.py", packaged / "ff7r_rmi_surface_variant.py",
+        (packaged, packaged / "ff7r_rmi_surface_variant.py",
          packaged / "renderer_ground_truth.json"),
-        (development / "ff7r_rmi_surface.py", development / "ff7r_rmi_surface_variant.py",
+        (development, development / "ff7r_rmi_surface_variant.py",
          development.parent / "scripts" / "renderer_ground_truth.json"),
     )
-    for master, variant, ground_truth in candidates:
-        if master.is_file() and variant.is_file() and ground_truth.is_file():
-            return master, variant, ground_truth
+    for directory, variant, ground_truth in candidates:
+        surface = directory / "ff7r_rmi_surface.py"
+        if surface.is_file() and variant.is_file() and ground_truth.is_file():
+            return {
+                "surface": surface,
+                "eye": (directory / "ff7r_rmi_surface_eye.py"
+                        if (directory / "ff7r_rmi_surface_eye.py").is_file() else surface),
+                "hair": (directory / "ff7r_rmi_surface_hair.py"
+                         if (directory / "ff7r_rmi_surface_hair.py").is_file() else surface),
+            }, variant, ground_truth
     raise FileNotFoundError(
         "RMI_Surface runtime sources are missing. Expected packaged sources in "
         f"'{packaged}' or the sibling material-research checkout. See README_ADDON.md."
@@ -251,7 +304,11 @@ def _source_files() -> tuple[Path, Path, Path]:
 
 
 def _load_module(name: str, path: Path) -> Any:
-    spec = importlib.util.spec_from_file_location(name, path)
+    # Keep file-loaded builders in the add-on namespace so their language
+    # imports also work for extension installs with a different package name.
+    spec = importlib.util.spec_from_file_location(
+        f"{__package__}.rmi_sources.{name}", path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Could not load RMI_Surface source module '{path}'.")
     module = importlib.util.module_from_spec(spec)
@@ -259,21 +316,54 @@ def _load_module(name: str, path: Path) -> Any:
     return module
 
 
-def _modules() -> tuple[Any, Any, dict[str, list[str]]]:
+def _module_set() -> tuple[dict[str, Any], Any, dict[str, list[str]]]:
     global _MODULES
     if _MODULES is not None:
         return _MODULES
-    master_path, variant_path, ground_truth_path = _source_files()
-    master = _load_module("ff7r_rebirth_tools_rmi_master", master_path)
-    variant = _load_module("ff7r_rebirth_tools_rmi_variant", variant_path)
+    master_paths, variant_path, ground_truth_path = _source_files()
+    masters: dict[str, Any] = {}
+    for profile, path in master_paths.items():
+        existing = next((module for other_profile, module in masters.items()
+                         if master_paths[other_profile] == path), None)
+        masters[profile] = (existing if existing is not None else _load_module(
+            "talisman_rmi_" + profile, path))
+    variant = _load_module("talisman_rmi_variant", variant_path)
     with ground_truth_path.open(encoding="utf-8") as stream:
         ground_truth = json.load(stream)
-    _MODULES = master, variant, ground_truth
+    _MODULES = masters, variant, ground_truth
     return _MODULES
 
 
+def _modules() -> tuple[Any, Any, dict[str, list[str]]]:
+    """Return the ordinary surface builder for legacy callers and variant data."""
+    masters, variant, ground_truth = _module_set()
+    return masters["surface"], variant, ground_truth
+
+
+def _master_for_switches(switches: set[str] | list[str] | tuple[str, ...]) -> Any:
+    """Choose the mutually exclusive Eye_/Hair_ or ordinary source profile."""
+    switch_set = set(switches)
+    if "Eye_" in switch_set and "Hair_" in switch_set:
+        raise ValueError("An RMI_Surface variant cannot select both Eye_ and Hair_.")
+    masters, _variant, _ground_truth = _module_set()
+    if "Eye_" in switch_set:
+        master = masters["eye"]
+    elif "Hair_" in switch_set:
+        master = masters["hair"]
+    else:
+        master = masters["surface"]
+    unsupported = (switch_set - set(getattr(master, "ENGINE_ONLY_SWITCHES", ()))
+                   - set(master.KNOWN_SWITCHES))
+    if unsupported:
+        raise RuntimeError(
+            "RMI %s profile lacks switch(es): %s"
+            % (getattr(master, "PROFILE_NAME", "surface"),
+               ", ".join(sorted(unsupported))))
+    return master
+
+
 def _properties(material_data: dict[str, Any]) -> dict[str, Any]:
-    """Turn the bridge's converted FPropertyTag sequence into a name map."""
+    """Turn the gargoyle's converted FPropertyTag sequence into a name map."""
     result: dict[str, Any] = {}
     for property_data in material_data.get("properties") or []:
         if not isinstance(property_data, dict):
@@ -356,7 +446,7 @@ def _renderer_constant_texture(texture_path: str) -> tuple[float, float, float, 
 
     These are baked colour constants, not image assets that need exporting --
     the 8 hex digits are the four RGBA bytes of a solid-colour texture the
-    renderer substitutes at that format. The bridge cannot create a DDS for
+    renderer substitutes at that format. The gargoyle cannot create a DDS for
     their uncompressed payload, and more importantly Blender should represent
     them as a constant node rather than sampling a texture.
 
@@ -447,14 +537,6 @@ def _make_colour_node(tree: bpy.types.NodeTree, image_node: bpy.types.Node, colo
         tree.links.new(constant.outputs["Color"], socket)
 
 
-def _set_image_color_space(image: bpy.types.Image, color_space: str) -> None:
-    """Apply the RMI slot's authored data type to its shared image datablock."""
-    try:
-        image.colorspace_settings.name = color_space
-    except (AttributeError, TypeError, ValueError):
-        print(f"  Warning: Blender has no '{color_space}' color space for '{image.name}'.")
-
-
 def _bundled_gaze_normal(texture_path: str) -> bpy.types.Image | None:
     """Use the lossless deblocked shared-eye normal for its exact game path."""
     normalized_path = texture_path.replace("\\", "/").split(".", 1)[0].casefold()
@@ -478,7 +560,7 @@ def _bundled_gaze_normal(texture_path: str) -> bpy.types.Image | None:
         image = bpy.data.images.load(str(asset_path), check_existing=True)
         image.name = "Common_Eye_Player_NG [FF7R deblocked]"
         image.colorspace_settings.name = "Non-Color"
-        image["ff7r_virtual_path"] = texture_path
+        image["sqex_virtual_path"] = texture_path
         image["ff7r_override_source"] = "Common_Eye_Player_NG BC5"
         image["ff7r_override_filter"] = "lossless 16-bit, 5x5 binomial"
         image.pack()
@@ -498,14 +580,24 @@ def _variant_name(props: dict[str, Any]) -> str:
 
 def _ensure_master(master: Any) -> bpy.types.Material:
     material = bpy.data.materials.get(master.MAT_NAME)
-    if material is None or material.node_tree is None or material.node_tree.nodes.get("TEX_Color") is None:
+    profile_name = getattr(master, "PROFILE_NAME", "surface")
+    profile_revision = getattr(master, "PROFILE_REVISION", 0)
+    if (material is None or material.node_tree is None
+            or material.node_tree.nodes.get("TEX_Color") is None
+            or material.get("_RMI_Profile") != profile_name
+            or material.get("_RMI_Profile_Revision") != profile_revision):
         material = master.build()
+    else:
+        # Keep saved masters live after a switch-key rename: this updates both
+        # their visible ID properties and the Value-node driver targets.
+        master._ensure_props(material)
     # The master is a template, never assigned to a mesh. Keep it across saves
     # so importing another package after reopening does not recreate it.
     material.use_fake_user = True
     _migrate_external_emissive_attribute()
     for candidate in bpy.data.materials:
-        if candidate == material or "ff7r_rmi_variant" in candidate:
+        _migrate_switch_status_properties(candidate)
+        if candidate == material or "sqex_rmi_variant" in candidate:
             _migrate_camera_only_emission(candidate)
     return material
 
@@ -530,7 +622,9 @@ def build_material(
     if switches is None:
         print(f"  RMI material '{material_name}' skipped: unknown variant '{variant_name}'.")
         return None
-    cache_key = f"{material_path.casefold()}::{variant_name}"
+    master = _master_for_switches(switches)
+    texture_namespace = getattr(image_loader, "texture_namespace", "")
+    cache_key = f"{material_path.casefold()}::{variant_name}::{texture_namespace}"
     cached = _MATERIAL_CACHE.get(cache_key)
     if cached is not None:
         try:
@@ -542,14 +636,15 @@ def build_material(
             # its freed RNA struct is itself what raises here.
             still_valid = False
         if still_valid:
-            return cached
+            return refresh_material_textures(cached, image_loader)
         del _MATERIAL_CACHE[cache_key]
 
     master_material = _ensure_master(master)
     material = master_material.copy()
     material.use_fake_user = False
     material.name = material_name
-    material["ff7r_virtual_path"] = material_path
+    material["sqex_virtual_path"] = material_path
+    material["ue_texture_namespace"] = texture_namespace
     variant_helper.apply_variant(material, master, variant_name, set(switches))
 
     texture_values, colour_values, scalar_values = _role_values(props)
@@ -598,9 +693,10 @@ def build_material(
         if value is not None and name in material:
             material[name] = value
     external_emissive_context = _external_emissive_context(props)
-    material["ff7r_rmi_variant"] = variant_name
-    material["ff7r_external_emissive"] = _EXTERNAL_EMISSIVE_SWITCH in switches
-    material["ff7r_emissive"] = _EMISSIVE_SWITCH in switches
+    material["sqex_rmi_variant"] = variant_name
+    material[_EXTERNAL_EMISSIVE_STATUS_PROP] = _EXTERNAL_EMISSIVE_SWITCH in switches
+    material[_EMISSIVE_STATUS_PROP] = _EMISSIVE_SWITCH in switches
+    _migrate_switch_status_properties(material)
     if external_emissive_context is not None:
         material["ff7r_external_emissive_context"] = external_emissive_context
     material["ff7r_rmi_texture_images"] = assigned_images

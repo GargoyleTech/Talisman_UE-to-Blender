@@ -12,6 +12,8 @@ Outside Blender the file can be run with a KDI path to exercise the parser:
 
 from __future__ import annotations
 
+from ...language import tooltips
+
 import hashlib
 import json
 import math
@@ -26,7 +28,7 @@ try:
     import bpy
     from bpy_extras.io_utils import ImportHelper
     from bpy.props import BoolProperty, StringProperty
-    from ...core.blender.reporting import FF7R_LoggedOperator
+    from ...core.blender.reporting import SQEX_LoggedOperator, report
 except ModuleNotFoundError:  # Allows parser testing with ordinary Python.
     bpy = None
     ImportHelper = object
@@ -473,7 +475,7 @@ def build_graph(asset: dict[str, Any], source_path: Path, raw: bytes) -> dict[st
     ]
 
     return {
-        "schema": "ff7r-kdi-step1-graph",
+        "schema": "sqex-kdi-step1-graph",
         "schema_version": 1,
         "source": {
             "path": str(source_path.resolve()),
@@ -684,7 +686,7 @@ def build_armature_audit(armature_object: Any, graph: dict[str, Any]) -> dict[st
 
     scene = bpy.context.scene
     return {
-        "schema": "ff7r-kdi-step1-armature-audit",
+        "schema": "sqex-kdi-step1-armature-audit",
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "script_version": SCRIPT_VERSION,
@@ -754,7 +756,7 @@ def compose_report(graph: dict[str, Any], armature: dict[str, Any]) -> dict[str,
     non_quaternion = armature["validation"]["non_quaternion_referenced_pose_bones"]
     ready = not graph_errors and not missing and not non_quaternion and graph["validation"]["graph"]["is_acyclic"]
     return {
-        "schema": "ff7r-kdi-step1-audit-report",
+        "schema": "sqex-kdi-step1-audit-report",
         "schema_version": 1,
         "ready_for_driver_generation": ready,
         "blockers": {
@@ -773,7 +775,7 @@ def compose_report(graph: dict[str, Any], armature: dict[str, Any]) -> dict[str,
 
 if bpy is not None:
 
-    class KDI_OT_step1_audit(FF7R_LoggedOperator, ImportHelper):
+    class KDI_OT_step1_audit(SQEX_LoggedOperator, ImportHelper):
         """Parse a KDI graph and audit it against the active armature"""
 
         bl_idname = "kdi.step1_audit"
@@ -784,14 +786,14 @@ if bpy is not None:
         filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
         write_external_report: BoolProperty(
             name="Write JSON report beside KDI",
-            description="Also save the report as a JSON file next to the selected KDI file",
+            description=tooltips.KDI_AUDIT_WRITE_EXTERNAL_REPORT,
             default=True,
         )
 
         def execute(self, context):
             armature_object = context.active_object
             if not armature_object or armature_object.type != "ARMATURE":
-                self.report({"ERROR"}, "Select the imported armature and make it active")
+                report(self, {"ERROR"}, "Select the imported armature and make it active")
                 return {"CANCELLED"}
 
             source_path = Path(self.filepath)
@@ -814,7 +816,7 @@ if bpy is not None:
                     try:
                         external_path.write_text(report_text, encoding="utf-8")
                     except OSError as exc:
-                        self.report({"WARNING"}, f"Text report created, but JSON file could not be written: {exc}")
+                        report(self, {"WARNING"}, f"Text report created, but JSON file could not be written: {exc}")
                         external_path = None
 
                 missing_count = armature["summary"]["missing_referenced_bone_count"]
@@ -822,7 +824,7 @@ if bpy is not None:
                 message = f"KDI audit {status}; {missing_count} missing bones; Text: {text_name}"
                 if external_path:
                     message += f"; File: {external_path.name}"
-                self.report({"INFO"}, message)
+                report(self, {"INFO"}, message)
                 print(message)
                 print(json.dumps({
                     "ready_for_driver_generation": report["ready_for_driver_generation"],
@@ -833,7 +835,7 @@ if bpy is not None:
                 return {"FINISHED"}
             except Exception as exc:
                 traceback.print_exc()
-                self.report({"ERROR"}, f"KDI audit failed: {exc}")
+                report(self, {"ERROR"}, f"KDI audit failed: {exc}")
                 return {"CANCELLED"}
 
 

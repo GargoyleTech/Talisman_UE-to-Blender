@@ -29,23 +29,23 @@ def main() -> None:
     # before importing anything from it.
     addon_directory = Path(__file__).resolve().parent.parent / "addon"
     spec = importlib.util.spec_from_file_location(
-        "ff7r_rebirth_tools",
+        "talisman",
         addon_directory / "__init__.py",
         submodule_search_locations=[str(addon_directory)],
     )
-    ff7r_rebirth_tools = importlib.util.module_from_spec(spec)
-    sys.modules["ff7r_rebirth_tools"] = ff7r_rebirth_tools
-    spec.loader.exec_module(ff7r_rebirth_tools)
-    from ff7r_rebirth_tools.games.rebirth.importers.packages import (
+    talisman = importlib.util.module_from_spec(spec)
+    sys.modules["talisman"] = talisman
+    spec.loader.exec_module(talisman)
+    from talisman.games.rebirth.importers.packages import (
         PackageAssetSession,
         import_skeletal_mesh_asset,
     )
-    from ff7r_rebirth_tools.core.blender.skeletons import (
-        _bones_from_bridge,
+    from talisman.core.blender.skeletons import (
+        _bones_from_gargoyle,
         build_armature_from_bones,
     )
 
-    ff7r_rebirth_tools.register()
+    talisman.register()
     with PackageAssetSession(game_root, oodle_dll, usmap_path) as session:
         skeletal_mesh = session.skeletal_mesh(asset_path)
         skeleton_path = skeletal_mesh.get("skeletonPath")
@@ -74,7 +74,7 @@ def main() -> None:
     armature_obj = build_armature_from_bones(
         bpy.context,
         skeleton.get("name") or Path(skeleton_path).stem,
-        _bones_from_bridge(skeleton),
+        _bones_from_gargoyle(skeleton),
         skeleton.get("sockets") or [],
         scale_factor=0.01,
     )

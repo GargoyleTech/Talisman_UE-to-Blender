@@ -79,13 +79,68 @@ def _guid_is_null(value) -> bool:
     return str(value or "").replace("-", "") == "0" * 32
 
 
+def _unwrapped_value(value, default=None):
+    """Unwrap CUE4Parse/FModel ``Value`` containers without changing scalars."""
+    while isinstance(value, dict) and "Value" in value:
+        value = value["Value"]
+    return default if value is None else value
+
+
+def _section_time_bounds(properties: dict) -> tuple[float | None, float | None]:
+    """Read UE4 and UE5 section ranges, including Remake's seconds ranges.
+
+    Rebirth serializes a ``TRange<FFrameNumber>`` several ``Value`` wrappers
+    deep.  Remake's UE 4.18 LevelSequence exports use plain seconds instead.
+    Keeping this normalization here makes the rest of the importer agnostic to
+    which generation produced the package.
+    """
+    section_range = properties.get("SectionRange", properties.get("Range"))
+    section_range = _unwrapped_value(section_range)
+    if isinstance(section_range, (int, float)):
+        return 0.0, float(section_range)
+    if not isinstance(section_range, dict):
+        return None, None
+
+    def bound(name: str):
+        value = section_range.get(name)
+        value = _unwrapped_value(value)
+        if isinstance(value, dict):
+            value = _unwrapped_value(value.get("Value"))
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return bound("LowerBound"), bound("UpperBound")
+
+
+def _reference_name(reference) -> str:
+    """Return the asset stem from either gargoyle or FModel object references."""
+    if isinstance(reference, dict):
+        reference = reference.get("ObjectName") or reference.get("ObjectPath") or ""
+    name = str(reference or "")
+    if "'" in name:
+        name = name.split("'", 2)[1]
+    name = name.rsplit("/", 1)[-1]
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _interp_mode(value) -> int:
+    """Normalize UE enum names emitted by UE4 exports and numeric UE5 values."""
+    if isinstance(value, str):
+        value = value.rsplit("_", 1)[-1].casefold()
+        return {"constant": INTERP_CONSTANT, "linear": INTERP_LINEAR}.get(
+            value, INTERP_CUBIC)
+    return value if isinstance(value, int) else INTERP_CONSTANT
+
+
 def _possessed_class_name(possessable: dict) -> str:
-    """Read the class identity from either FModel or bridge object references."""
+    """Read the class identity from either FModel or gargoyle object references."""
     reference = possessable.get("PossessedObjectClass") or {}
     if isinstance(reference, dict):
         reference = reference.get("ObjectName") or reference.get("ObjectPath") or ""
     name = str(reference)
-    # FModel uses Class'Character'; the package bridge uses Object'Character'.
+    # FModel uses Class'Character'; the package gargoyle uses Object'Character'.
     # Qualified references can also contain /Script/Engine.Character.
     if "'" in name:
         name = name.split("'", 2)[1]
@@ -118,6 +173,21 @@ def _extract_default_or_bool_curve(curve_data: dict, tick_num: int, display_rate
     """
     Parse a UE BoolCurve into constant keys, or fall back to DefaultValue.
     """
+    # UE5 RichCurve-style arrays (Rebirth) and UE4 keyed structs (Remake).
+    raw_keys = curve_data.get("Keys", [])
+    if raw_keys:
+        keys = []
+        for entry in raw_keys:
+            try:
+                frame = ue_tick_to_frame(float(entry.get("Time", 0.0)), tick_num, display_rate)
+            except (TypeError, ValueError):
+                continue
+            if frame_lo <= frame < frame_hi:
+                keys.append(dict(frame=frame, value=bool(entry.get("Value", False)),
+                                 interp=INTERP_CONSTANT, arrive=0.0, leave=0.0))
+        if keys:
+            return keys
+
     times = curve_data.get("Times", [])
     values = curve_data.get("Values", [])
     cr = curve_data.get("TickResolution", {})
@@ -169,9 +239,9 @@ def _find_prop_sections(data: list, track_paths: list, prop_names: set,
         sec = item_at_path(data, refs[0]["ObjectPath"])
         if sec is None:
             continue
-        sr    = sec["Properties"].get("SectionRange", {}).get("Value", {})
-        lo_t  = sr.get("LowerBound", {}).get("Value", {}).get("Value", 0)
-        hi_t  = sr.get("UpperBound", {}).get("Value", {}).get("Value", 0)
+        lo_t, hi_t = _section_time_bounds(sec.get("Properties", {}))
+        lo_t = 0 if lo_t is None else lo_t
+        hi_t = lo_t if hi_t is None else hi_t
         out.append((track, sec,
                     ue_tick_to_frame(lo_t, tick_num, display_rate),
                     ue_tick_to_frame(hi_t, tick_num, display_rate)))
@@ -324,6 +394,27 @@ def extract_curve(curve_data: dict, tick_num: int, display_rate: int,
     the very same tick values as the enclosing SectionRange, which is on the
     MovieScene's 24000 clock -- honouring it ran those curves 2.5x fast.
     """
+    # UE 4.18 writes each key as {Time, Value, InterpMode, ...}; UE 5 exports
+    # Times and Values separately.  Both are normalized to the same record.
+    raw_keys = curve_data.get("Keys", [])
+    if raw_keys:
+        keys = []
+        for entry in raw_keys:
+            try:
+                frame = ue_tick_to_frame(float(entry.get("Time", 0.0)), tick_num, display_rate)
+            except (TypeError, ValueError):
+                continue
+            if not (frame_lo <= frame < frame_hi):
+                continue
+            keys.append(dict(
+                frame=frame,
+                value=entry.get("Value", 0.0),
+                interp=_interp_mode(entry.get("InterpMode")),
+                arrive=float(entry.get("ArriveTangent", 0.0)) * display_rate / tick_num,
+                leave=float(entry.get("LeaveTangent", 0.0)) * display_rate / tick_num,
+            ))
+        return keys
+
     times  = curve_data.get("Times",  [])
     values = curve_data.get("Values", [])
     tan_scale = display_rate / tick_num
@@ -336,7 +427,7 @@ def extract_curve(curve_data: dict, tick_num: int, display_rate: int,
         keys.append(dict(
             frame  = frame,
             value  = v_entry["Value"],
-            interp = v_entry.get("InterpMode", INTERP_CONSTANT),
+            interp = _interp_mode(v_entry.get("InterpMode", INTERP_CONSTANT)),
             arrive = tan.get("ArriveTangent", 0.0) * tan_scale,
             leave  = tan.get("LeaveTangent",  0.0) * tan_scale,
         ))
@@ -492,9 +583,9 @@ def get_float_section(data: list, track_path: str, prop_name: str,
     sec = item_at_path(data, refs[0]["ObjectPath"])
     if sec is None:
         return None, -1e18, 1e18
-    sr = sec["Properties"].get("SectionRange", {}).get("Value", {})
-    lo = sr.get("LowerBound", {}).get("Value", {}).get("Value", 0)
-    hi = sr.get("UpperBound", {}).get("Value", {}).get("Value", 0)
+    lo, hi = _section_time_bounds(sec.get("Properties", {}))
+    lo = 0 if lo is None else lo
+    hi = lo if hi is None else hi
     return sec, lo * display_rate / tick_num, hi * display_rate / tick_num
 
 
@@ -522,6 +613,10 @@ def _actor_name_to_cid(actor_name: str, scene_name: str) -> str:
     'EV_GOLDE_4840_PC0000_00'  ->  'PC0000_00'
     Falls back to the original string if the prefix isn't present.
     """
+    # UE4 LevelSequence possessables often append a component suffix, e.g.
+    # ``PC0000_00_Cloud_Standard:Cloud``.  The level actor is the portion
+    # before the colon, which is what imported Remake objects are named after.
+    actor_name = str(actor_name).split(":", 1)[0]
     prefix = scene_name + "_"
     return actor_name[len(prefix):] if actor_name.startswith(prefix) else actor_name
 
@@ -551,7 +646,7 @@ def _parse_binding_refs(data: list, scene_name: str) -> dict:
     some props) have no SubPathString and are handled by _parse_actor_names.
     """
     for item in data:
-        if item["Type"] == "EndCinemaSequence":
+        if item["Type"] in {"EndCinemaSequence", "LevelSequence"}:
             out: dict = {}
             for entry in (item.get("Properties", {})
                               .get("BindingReferences", {})
@@ -583,7 +678,7 @@ def _parse_actor_names(data: list, scene_name: str) -> dict:
 
     # Source 1: BindingReferences (non-empty SubPathString only)
     for item in data:
-        if item["Type"] == "EndCinemaSequence":
+        if item["Type"] in {"EndCinemaSequence", "LevelSequence"}:
             for entry in (item.get("Properties", {})
                               .get("BindingReferences", {})
                               .get("BindingIdToReferences", [])):
@@ -732,7 +827,7 @@ def _find_action_by_name(action_name: str):
     target = action_name.casefold()
     matches = []
     for candidate in bpy.data.actions:
-        source_path = str(candidate.get("ff7r_animation_virtual_path", ""))
+        source_path = str(candidate.get("sqex_animation_virtual_path", ""))
         source_stem = Path(source_path).stem.casefold() if source_path else ""
         suffix = candidate.name.rsplit(" | ", 1)[-1].casefold()
         if source_stem == target or suffix == target:
@@ -754,7 +849,8 @@ def _skeletal_sections_for_binding(
             continue
 
         track_name = track.get("Name", "SkeletalAnimationTrack")
-        refs = track.get("Properties", {}).get("AnimationSections", [])
+        refs = (track.get("Properties", {}).get("AnimationSections")
+                or track.get("Properties", {}).get("Sections", []))
         for sec_ref in refs:
             sec = item_at_path(data, sec_ref["ObjectPath"])
             if sec is None or sec["Type"] != "MovieSceneSkeletalAnimationSection":
@@ -762,15 +858,14 @@ def _skeletal_sections_for_binding(
 
             props  = sec.get("Properties", {})
             params = props.get("Params", {})
-            anim_name = params.get("RefOnDisconnected", "")
+            anim_name = (_reference_name(params.get("RefOnDisconnected"))
+                         or _reference_name(params.get("Animation")))
             if not anim_name:
                 continue
 
-            sr   = props.get("SectionRange", {}).get("Value", {})
-            lo_t = sr.get("LowerBound", {}).get("Value", {}).get("Value")
-            hi_t = sr.get("UpperBound", {}).get("Value", {}).get("Value")
+            lo_t, hi_t = _section_time_bounds(props)
             if lo_t is None:
-                continue
+                lo_t = 0.0
 
             start_fr = ue_tick_to_frame(lo_t, tick_num, display_rate)
             end_fr = ue_tick_to_frame(
@@ -782,6 +877,7 @@ def _skeletal_sections_for_binding(
                 "anim_name": anim_name,
                 "start_frame": start_fr,
                 "end_frame": max(start_fr + 1, end_fr),
+                "has_explicit_end": hi_t is not None,
             })
 
     return sorted(
@@ -800,14 +896,18 @@ def _extract_timing(data: list, target_frame_rate: float) -> Timing:
     """
     bt = _by_type(data)
     ms_props = bt["MovieScene"][0]["Properties"]
-    tick_num = ms_props["TickResolution"]["Numerator"]
+    tick_resolution = ms_props.get("TickResolution", {})
+    # Remake's UE4 LevelSequence stores its ranges and channel keys directly
+    # in seconds. Treating a second as one tick keeps the standard conversion
+    # (seconds * Blender fps) intact.
+    tick_num = tick_resolution.get("Numerator", 1)
     authored_display_rate = ms_props.get("DisplayRate", {}).get("Numerator")
 
-    pb = ms_props.get("PlaybackRange", {}).get("Value", {})
-    start_t = pb.get("LowerBound", {}).get("Value", {}).get("Value", 0)
-    end_t   = pb.get("UpperBound", {}).get("Value", {}).get("Value", 0)
+    start_t, end_t = _section_time_bounds({"SectionRange": ms_props.get("PlaybackRange")})
+    start_t = 0 if start_t is None else start_t
+    end_t = start_t if end_t is None else end_t
 
-    print(f"[UE Import] tick/{tick_num} | authored at {authored_display_rate} fps "
+    print(f"[UE Import] {'seconds' if not tick_resolution else f'tick/{tick_num}'} | authored at {authored_display_rate} fps "
           f"| {(end_t - start_t) / tick_num:.2f}s")
 
     return Timing(
@@ -831,8 +931,8 @@ def _build_cut_frames(cam_data: list, tick_num: int, display_rate: int) -> dict:
     for cut in bt.get("MovieSceneCameraCutSection", []):
         cp       = cut["Properties"]
         cam_guid = cp.get("CameraBindingID", {}).get("Guid", "")
-        lo_tick  = (cp.get("SectionRange", {}).get("Value", {})
-                      .get("LowerBound", {}).get("Value", {}).get("Value", 0))
+        lo_tick, _ = _section_time_bounds(cp)
+        lo_tick = 0 if lo_tick is None else lo_tick
         cam_name = poss_by_guid.get(cam_guid, {}).get("Name", "")
         if cam_name:
             cut_id = cam_name.rsplit("_", 1)[-1]   # "EV_GOLDE_4840_CAM_C0010" -> "C0010"
@@ -913,9 +1013,9 @@ def _import_cameras(data: list, t: Timing, scene) -> None:
         if actor_xform_sec or comp_xform_sec:
             cut = guid_to_cut.get(cam_guid)
             if cut:
-                cp = cut["Properties"]["SectionRange"]["Value"]
-                lo = cp["LowerBound"]["Value"]["Value"] * display_rate / tick_num
-                hi = cp["UpperBound"]["Value"]["Value"] * display_rate / tick_num
+                lo_t, hi_t = _section_time_bounds(cut.get("Properties", {}))
+                lo = ue_tick_to_frame(0 if lo_t is None else lo_t, tick_num, display_rate)
+                hi = ue_tick_to_frame(lo_t if hi_t is None else hi_t, tick_num, display_rate)
             else:
                 lo, hi = -1e18, 1e18
 
@@ -1039,8 +1139,8 @@ def _import_cameras(data: list, t: Timing, scene) -> None:
         for cut in bt.get("MovieSceneCameraCutSection", []):
             cp = cut["Properties"]
             g  = cp.get("CameraBindingID", {}).get("Guid", "")
-            lo = (cp.get("SectionRange", {}).get("Value", {})
-                    .get("LowerBound", {}).get("Value", {}).get("Value", 0))
+            lo, _ = _section_time_bounds(cp)
+            lo = 0 if lo is None else lo
             f  = round(ue_tick_to_frame(lo, tick_num, display_rate))
             m  = scene.timeline_markers.new(name=f"CAM_{f:04d}", frame=f)
             if BIND_CUT_CAMERAS and g in imported_cameras:
@@ -1553,13 +1653,17 @@ def _import_characters_explicit_sections(
     """
     tick_num, display_rate = t.tick_num, t.scene_fps
 
-    uuid_to_cid = _parse_binding_refs(data, scene_name)
+    # UE5 EndCinema exports link level actors through BindingReferences, while
+    # Remake's stock LevelSequence often serializes only MovieScene
+    # Possessables. The unified parser preserves the EndCinema preference and
+    # supplies that UE4 fallback.
+    uuid_to_cid = _parse_actor_names(data, scene_name)
     uuid_to_trks = _parse_obj_bindings(data)
     character_bindings = {
         possessable["Guid"]
         for item in data if item.get("Type") == "MovieScene"
         for possessable in item.get("Properties", {}).get("Possessables", [])
-        if _possessed_class_name(possessable) == "Character"
+        if _possessed_class_name(possessable) in {"Character", "EndCharacter"}
     }
 
     processed = 0
@@ -1619,7 +1723,10 @@ def _import_characters_explicit_sections(
                             if hasattr(nla_strip, "action_frame_end"):
                                 nla_strip.action_frame_end = float(action_end)
                             nla_strip.frame_start = sec["start_frame"]
-                            nla_strip.frame_end   = sec["end_frame"]
+                            nla_strip.frame_end = (
+                                sec["end_frame"] if sec["has_explicit_end"] else
+                                sec["start_frame"] + (float(action_end) - float(action_start))
+                            )
                             if hasattr(nla_strip, "blend_type"):
                                 nla_strip.blend_type = "REPLACE"
                             if hasattr(nla_strip, "extrapolation"):
@@ -1640,15 +1747,14 @@ def _import_characters_explicit_sections(
 
         for tp in uuid_to_trks.get(uuid, []):
             track = item_at_path(data, tp)
-            if track is None or track["Type"] != "EndCinemaVisibilityTrack":
+            if track is None or track["Type"] not in {
+                    "EndCinemaVisibilityTrack", "MovieSceneVisibilityTrack"}:
                 continue
             for sec_ref in track["Properties"].get("Sections", []):
                 sec = item_at_path(data, sec_ref["ObjectPath"])
                 if sec is None or sec["Type"] != "MovieSceneBoolSection":
                     continue
-                sr = sec["Properties"].get("SectionRange", {}).get("Value", {})
-                lo_t = sr.get("LowerBound", {}).get("Value", {}).get("Value")
-                hi_t = sr.get("UpperBound", {}).get("Value", {}).get("Value")
+                lo_t, hi_t = _section_time_bounds(sec.get("Properties", {}))
                 if lo_t is not None:
                     vis_lo = ue_tick_to_frame(lo_t, tick_num, display_rate)
                 if hi_t is not None:
@@ -1662,12 +1768,12 @@ def _import_characters_explicit_sections(
         # False,False,True,True so it only exists once he shoulders it.  The section
         # range spans the whole sequence, so using it pinned every actor visible for
         # the entire clip.  True means visible; hide_viewport wants the inverse.
-        curve_keys = []
-        for time_entry, value in zip((vis_curve or {}).get("Times", []),
-                                     (vis_curve or {}).get("Values", [])):
-            frame = ue_tick_to_frame(time_entry["Value"], tick_num, display_rate)
-            curve_keys.append({"frame": frame, "value": 0.0 if bool(value) else 1.0,
-                               "interp": INTERP_CONSTANT, "arrive": 0.0, "leave": 0.0})
+        curve_keys = [
+            {**key, "value": 0.0 if bool(key["value"]) else 1.0,
+             "interp": INTERP_CONSTANT, "arrive": 0.0, "leave": 0.0}
+            for key in _extract_default_or_bool_curve(
+                vis_curve or {}, tick_num, display_rate)
+        ]
 
         if curve_keys:
             vis_keys = curve_keys

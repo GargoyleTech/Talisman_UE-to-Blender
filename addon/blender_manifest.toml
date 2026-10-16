@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+id = "talisman"
+version = "1.0.0"
+name = "Talisman"
+tagline = "Import Unreal Engine meshes, maps and animations into Blender"
+maintainer = "GargoyleTech"
+website = "https://github.com/GargoyleTech/Talisman_UE-to-Blender"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:Unlicense"]
+platforms = ["windows-x64"]
+
+[permissions]
+files = "Read game files and save imported assets"

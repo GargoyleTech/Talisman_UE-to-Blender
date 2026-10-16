@@ -4,10 +4,15 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>FF7RGameAssetBridge</AssemblyName>
+    <AssemblyName>TalismanGameAssetBridge</AssemblyName>
+    <Product>Talisman</Product>
+    <Description>Unreal Engine asset bridge for the Talisman Blender add-on</Description>
+    <RepositoryUrl>https://github.com/GargoyleTech/Talisman_UE-to-Blender</RepositoryUrl>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="Inspect\**\*.cs" />
+    <Compile Remove="AnimationTests\**\*.cs" />
+    <Compile Remove="TextureTests\**\*.cs" />
     <PackageReference Include="CUE4Parse" Version="1.2.2.202608" />
     <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202608" />
   </ItemGroup>

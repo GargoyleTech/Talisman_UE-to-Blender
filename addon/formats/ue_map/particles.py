@@ -152,35 +152,35 @@ def _create_particle_empty(
     obj.location = loc
     obj.rotation_euler = rot
     obj.scale = scale
-    obj["ff7r_source_json"] = filepath
-    obj["ff7r_particle_component_name"] = entry.get("Name", "")
-    obj["ff7r_particle_component_outer"] = _outer_name(entry)
-    obj["ff7r_particle_component_type"] = entry.get("Type", "")
+    obj["sqex_source_json"] = filepath
+    obj["sqex_particle_component_name"] = entry.get("Name", "")
+    obj["sqex_particle_component_outer"] = _outer_name(entry)
+    obj["sqex_particle_component_type"] = entry.get("Type", "")
 
     asset_ref = props.get("Asset", {})
     asset_name = _asset_name_from_ref(asset_ref)
     if asset_name:
-        obj["ff7r_niagara_system"] = asset_name
+        obj["sqex_niagara_system"] = asset_name
     if isinstance(asset_ref, dict):
         if asset_ref.get("ObjectName"):
-            obj["ff7r_niagara_system_object_name"] = asset_ref.get("ObjectName")
+            obj["sqex_niagara_system_object_name"] = asset_ref.get("ObjectName")
         if asset_ref.get("ObjectPath"):
-            obj["ff7r_niagara_system_object_path"] = asset_ref.get("ObjectPath")
+            obj["sqex_niagara_system_object_path"] = asset_ref.get("ObjectPath")
     if props.get("m_VfxCategory"):
-        obj["ff7r_vfx_category"] = props.get("m_VfxCategory")
+        obj["sqex_vfx_category"] = props.get("m_VfxCategory")
     if props.get("bAbsoluteLocation") is not None:
-        obj["ff7r_b_absolute_location"] = bool(props.get("bAbsoluteLocation"))
+        obj["sqex_b_absolute_location"] = bool(props.get("bAbsoluteLocation"))
     if props.get("bAbsoluteRotation") is not None:
-        obj["ff7r_b_absolute_rotation"] = bool(props.get("bAbsoluteRotation"))
+        obj["sqex_b_absolute_rotation"] = bool(props.get("bAbsoluteRotation"))
 
     if actor_entry is not None:
-        obj["ff7r_particle_actor_type"] = actor_entry.get("Type", "")
-        obj["ff7r_particle_actor_name"] = actor_entry.get("Name", "")
+        obj["sqex_particle_actor_type"] = actor_entry.get("Type", "")
+        obj["sqex_particle_actor_name"] = actor_entry.get("Name", "")
         actor_props = actor_entry.get("Properties", {})
         if isinstance(actor_props, dict):
             tags = actor_props.get("Tags", [])
             if isinstance(tags, list):
-                obj["ff7r_particle_actor_tags"] = ", ".join(str(tag) for tag in tags)
+                obj["sqex_particle_actor_tags"] = ", ".join(str(tag) for tag in tags)
 
     collection.objects.link(obj)
     return obj

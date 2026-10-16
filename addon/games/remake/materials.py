@@ -7,6 +7,12 @@ from typing import Any, Callable
 
 import bpy
 
+from ...core.blender.material_nodes import image_node as _image_node, image_normal_map, make_bsdf, material_for_texture_source, refresh_material_textures
+
+
+def _normal_node(nodes, links, image, *, location):
+    return image_normal_map(nodes, links, image, label="Normal (DirectX)", location=location)
+
 
 _MATERIAL_CACHE: dict[str, bpy.types.Material] = {}
 
@@ -55,54 +61,6 @@ def _texture_parameters(material_data: dict[str, Any]) -> dict[str, str]:
     return textures
 
 
-def _image_node(nodes, image_loader: Callable[[str], bpy.types.Image | None], path: str | None,
-                *, label: str, location: tuple[float, float], colour_space: str):
-    if not path or (image := image_loader(path)) is None:
-        return None
-    try:
-        image.colorspace_settings.name = colour_space
-    except (AttributeError, TypeError, ValueError):
-        pass
-    node = nodes.new("ShaderNodeTexImage")
-    node.name = node.label = label
-    node.location = location
-    node.image = image
-    return node
-
-
-def _normal_node(nodes, links, image, *, location: tuple[float, float]):
-    if image is None:
-        return None
-    normal = nodes.new("ShaderNodeNormalMap")
-    normal.name = normal.label = "Normal (DirectX)"
-    normal.location = location
-    if bpy.app.version >= (5, 2, 0) and hasattr(normal, "convention"):
-        normal.convention = "DIRECTX"
-        links.new(image.outputs["Color"], normal.inputs["Color"])
-        return normal
-
-    # Earlier Blender Normal Map nodes assume OpenGL normals. Convert UE's
-    # DirectX green channel once, before its normal-map decoder.
-    separate = nodes.new("ShaderNodeSeparateColor")
-    separate.name = separate.label = "Normal DirectX channels"
-    separate.location = (location[0] - 430, location[1])
-    invert_green = nodes.new("ShaderNodeMath")
-    invert_green.operation = "SUBTRACT"
-    invert_green.name = invert_green.label = "Invert DirectX green"
-    invert_green.location = (location[0] - 230, location[1] - 100)
-    invert_green.inputs[0].default_value = 1.0
-    combine = nodes.new("ShaderNodeCombineColor")
-    combine.name = combine.label = "Normal OpenGL colour"
-    combine.location = (location[0] - 25, location[1])
-    links.new(image.outputs["Color"], separate.inputs["Color"])
-    links.new(separate.outputs["Red"], combine.inputs["Red"])
-    links.new(separate.outputs["Green"], invert_green.inputs[1])
-    links.new(invert_green.outputs[0], combine.inputs["Green"])
-    links.new(separate.outputs["Blue"], combine.inputs["Blue"])
-    links.new(combine.outputs["Color"], normal.inputs["Color"])
-    return normal
-
-
 def build_material(
         material_name: str,
         material_path: str,
@@ -114,12 +72,12 @@ def build_material(
     Metallic/Roughness/Variant is read as R=metallic, G=roughness; the Variant
     channel is deliberately preserved in the packed image but not interpreted.
     """
-    cache_key = material_path.casefold()
+    cache_key = material_path.casefold() + "::" + getattr(image_loader, "texture_namespace", "")
     cached = _MATERIAL_CACHE.get(cache_key)
     if cached is not None:
         try:
             if cached.name in bpy.data.materials:
-                return cached
+                return refresh_material_textures(cached, image_loader)
         except ReferenceError:
             # Blender invalidates RNA wrappers when File > New removes their
             # datablocks, while this module-level cache outlives that file.
@@ -127,10 +85,10 @@ def build_material(
         _MATERIAL_CACHE.pop(cache_key, None)
 
     textures = _texture_parameters(material_data)
-    material = bpy.data.materials.get(material_name) or bpy.data.materials.new(material_name)
+    material = material_for_texture_source(material_name, material_path, image_loader)
     if bpy.app.version < (5, 0, 0):
         material.use_nodes = True
-    material["ff7r_virtual_path"] = material_path
+    material["sqex_virtual_path"] = material_path
     material["ff7r_remake_material"] = True
     for role, path in textures.items():
         material[f"ff7r_remake_texture_{role}"] = path
@@ -139,9 +97,8 @@ def build_material(
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
     output.location = (900, 0)
-    principled = nodes.new("ShaderNodeBsdfPrincipled")
+    principled = make_bsdf(material.node_tree, links, output)
     principled.location = (650, 0)
-    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
 
     albedo = _image_node(nodes, image_loader, textures.get("color"), label="Albedo",
                          location=(-900, 420), colour_space="sRGB")

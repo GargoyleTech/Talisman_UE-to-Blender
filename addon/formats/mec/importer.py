@@ -1,11 +1,14 @@
 """MassiveEnvironmentComponent .umap importer for the combined FF7R addon."""
 
+from ...language import tooltips
+
 import os
 import json
 import bpy
 
 from ...core.blender import render_settings
-from ...core.blender.reporting import FF7R_LoggedOperator
+from ...core.blender.reporting import SQEX_LoggedOperator, report
+from ...core.package_utils import addon_package_name
 from .parser import (
     BinReader,
     build_import_hash_table,
@@ -14,13 +17,15 @@ from .parser import (
     get_unresolved_texture_hashes,
 )
 from .material import build_texture_index, has_image_loader_override, load_hash_table
+from .material import texture_limits
+from ...ui.textures import TEXTURE_OPTION_NAMES, texture_properties, texture_options, draw_texture_options
 
 
 TextureIndexCache = dict[tuple[str, str], dict[str, str]]
 
 
 def _addon_package_name():
-    return (__package__ or "").split(".", 1)[0]
+    return addon_package_name(__package__)
 
 
 def _get_addon_preferences(context):
@@ -292,11 +297,11 @@ def import_umap_paths(
 #  Import operator
 # ============================================================
 
-class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
+class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_mec_umap"
     bl_label = "FF7R Massive Environment UMAP (.umap)"
     bl_description = (
-        "Import MassiveEnvironmentComponent0 geometry from Unreal Engine .umap files"
+        tooltips.LOOSE_MAP_DESCRIPTION
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -308,30 +313,27 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
     fallback_tex_root: bpy.props.StringProperty(
         name="Texture Root",
         description=(
-            "Local folder corresponding to /Game/ in asset paths.\n"
-            "Used only when Addon Preferences cannot be read."
+            tooltips.LOOSE_MAP_FALLBACK_TEX_ROOT
         ),
         default="",
         subtype='DIR_PATH',
     )
     fallback_tex_ext: bpy.props.StringProperty(
         name="Texture extension",
-        description="File extension for texture files (dds, png, tga, etc.). "
-                    "Used only when Addon Preferences cannot be read.",
+        description=tooltips.LOOSE_MAP_FALLBACK_TEX_EXT,
         default="dds",
     )
 
     import_originals: bpy.props.BoolProperty(
         name="Import originals at origin",
-        description="Create hidden 'Original' objects at the world origin for each mesh type",
+        description=tooltips.LOOSE_MAP_IMPORT_ORIGINALS,
         default=False,
     )
 
     create_map_origin: bpy.props.BoolProperty(
         name="Create map origin",
         description=(
-            "Create an Empty at the average center of the imported groups' bounding boxes "
-            "and parent this map's meshes to it"
+            tooltips.LOOSE_MAP_CREATE_MAP_ORIGIN
         ),
         default=True,
     )
@@ -339,8 +341,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
     offset_opposite_faces: bpy.props.BoolProperty(
         name="Offset opposite overlapping faces",
         description=(
-            "Directly offset vertices on overlapping opposite-facing faces by 0.0005 at 0.01 scale "
-            "to reduce z-fighting; no modifiers or material changes"
+            tooltips.LOOSE_MAP_OFFSET_OPPOSITE_FACES
         ),
         default=True,
     )
@@ -348,26 +349,25 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
     import_sway: bpy.props.BoolProperty(
         name="Import wind sway as shape keys",
         description=(
-            "Bake the DeformContext wind animation into one shape key per frame. "
-            "Only affects groups that carry sway data (roughly a third of them)"
+            tooltips.LOOSE_MAP_IMPORT_SWAY
         ),
         default=True,
     )
 
     lod_mode: bpy.props.EnumProperty(
         name="LoD level",
-        description="Choose how LoD meshes are selected",
+        description=tooltips.LOOSE_MAP_LOD_MODE,
         items=(
-            ("QUALITY", "Quality", "Select LoD by normalized quality: 1 is highest detail, 0 is lowest"),
-            ("LEVEL", "Level", "Select LoD by explicit level offset from highest detail"),
-            ("ALL", "All LoDs", "Import every available LoD level"),
+            ("QUALITY", "Quality", tooltips.LOOSE_MAP_LOD_MODE_QUALITY),
+            ("LEVEL", "Level", tooltips.LOOSE_MAP_LOD_MODE_LEVEL),
+            ("ALL", "All LoDs", tooltips.LOOSE_MAP_LOD_MODE_ALL),
         ),
         default="QUALITY",
     )
 
     lod_quality: bpy.props.FloatProperty(
         name="Quality",
-        description="Normalized LoD quality: 1 is highest detail, 0 is lowest available LoD",
+        description=tooltips.LOOSE_MAP_LOD_QUALITY,
         default=1.0,
         min=0.0,
         max=1.0,
@@ -376,7 +376,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
 
     lod_level: bpy.props.IntProperty(
         name="Level",
-        description="Explicit LoD level offset: 0 is highest detail, negative values step toward lower detail",
+        description=tooltips.LOOSE_MAP_LOD_LEVEL,
         default=0,
         min=-13,
         max=0,
@@ -386,15 +386,16 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
 
     scale_factor: bpy.props.FloatProperty(
         name="Scale",
-        description="Uniform scale factor applied to all positions (e.g. 0.01 for cm to m)",
+        description=tooltips.LOOSE_MAP_SCALE_FACTOR,
         default=0.01,
         min=0.0001, max=100.0,
         soft_min=0.001, soft_max=10.0,
     )
-    
+
     filepath: bpy.props.StringProperty(subtype='FILE_PATH', options={'SKIP_SAVE', 'HIDDEN'})
 
     _persisted_props = (
+        *TEXTURE_OPTION_NAMES,
         "import_originals",
         "create_map_origin",
         "offset_opposite_faces",
@@ -433,6 +434,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
             row.prop(self, "lod_quality", text="", slider=True)
         layout.separator(factor=0.7)
         layout.prop(self, "scale_factor")
+        draw_texture_options(layout, self)
 
         prefs = _get_addon_preferences(context)
         if prefs:
@@ -457,37 +459,41 @@ class FF7R_REBIRTH_OT_import_mec_umap(FF7R_LoggedOperator):
 
         prefs_available = _get_addon_preferences(context) is not None
 
-        processed, skipped, unresolved_count = import_umap_paths(
-            context,
-            paths,
-            lod_mode=self.lod_mode,
-            lod_quality=self.lod_quality,
-            lod_level=self.lod_level,
-            import_originals=self.import_originals,
-            create_map_origin=self.create_map_origin,
-            offset_opposite_faces=self.offset_opposite_faces,
-            import_sway=self.import_sway,
-            scale_factor=self.scale_factor,
-            tex_root=None if prefs_available else self.fallback_tex_root,
-            tex_ext=None if prefs_available else self.fallback_tex_ext,
-        )
+        with texture_limits(self.max_texture_resolution, self.texture_mip_offset):
+            processed, skipped, unresolved_count = import_umap_paths(
+                context,
+                paths,
+                lod_mode=self.lod_mode,
+                lod_quality=self.lod_quality,
+                lod_level=self.lod_level,
+                import_originals=self.import_originals,
+                create_map_origin=self.create_map_origin,
+                offset_opposite_faces=self.offset_opposite_faces,
+                import_sway=self.import_sway,
+                scale_factor=self.scale_factor,
+                tex_root=None if prefs_available else self.fallback_tex_root,
+                tex_ext=None if prefs_available else self.fallback_tex_ext,
+            )
 
         if processed == 0:
-            self.report({'WARNING'}, "No valid MassiveEnvironmentComponent0 found in selected files.")
+            report(self, {'WARNING'}, "No valid MassiveEnvironmentComponent0 found in selected files.")
         else:
             msg = f"Imported {processed} file(s)"
             if skipped:
                 msg += f" ({skipped} skipped)"
-            self.report({'INFO'}, msg)
+            report(self, {'INFO'}, msg)
 
         if unresolved_count:
-            self.report(
+            report(self,
                 {'WARNING'},
                 f"{unresolved_count} unknown texture hash(es) - see console for details",
             )
 
         self._save_last_import_settings(context)
         return {'FINISHED'}
+
+FF7R_REBIRTH_OT_import_mec_umap.__annotations__.update(texture_properties())
+
 
 if hasattr(bpy.types, "FileHandler"):
     class FF7R_REBIRTH_FH_import_mec_umap(bpy.types.FileHandler):

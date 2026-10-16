@@ -1,0 +1,26 @@
+"""English hover tooltips. Edit text here; keep variable names stable."""
+
+# File > Import > Talisman > Remake / Crisis Core / Kingdom Hearts > UMAP.
+# Shared conventional map import dialogs.
+# addon/formats/ue_map/package_importer.py (description)
+MAP_DESCRIPTION = ('Import placed meshes and lights from a {game_label} UMAP')
+# addon/formats/ue_map/package_importer.py (virtual_path)
+MAP_VIRTUAL_PATH = ('Mounted UMAP path for scripted or redo-panel imports')
+# addon/formats/ue_map/package_importer.py (import_models)
+MAP_IMPORT_MODELS = ('Create placed StaticMesh and SkeletalMesh components')
+# addon/formats/ue_map/package_importer.py (import_lights)
+MAP_IMPORT_LIGHTS = ('Create placed point and spot lights')
+# addon/formats/ue_map/package_importer.py (exposure)
+# addon/games/rebirth/importers/packages.py (import_mec_game_packages_exposure)
+MAP_EXPOSURE = ('Exposure in stops applied to imported light intensity; +1 doubles the power')
+# addon/formats/ue_map/package_importer.py (attenuation_radius_mult)
+# addon/games/rebirth/importers/packages.py (import_mec_game_packages_attenuation_radius_mult)
+MAP_ATTENUATION_RADIUS_MULT = ('Multiplier applied to imported Unreal light attenuation radii')
+# addon/formats/ue_map/package_importer.py (import_light_probes)
+MAP_IMPORT_LIGHT_PROBES = ('Create editable Eevee light probes for sphere and box reflection captures. Box capture offsets are stored but left unapplied for manual adjustment')
+# addon/formats/ue_map/package_importer.py (always_cast_shadows)
+MAP_ALWAYS_CAST_SHADOWS = ('Force imported lights to cast shadows')
+MAP_RECURSIVE_IMPORT = ('Also import referenced streaming sublevels recursively, visiting each map once')
+MAP_IMPORT_TEXTURES = ('Load and pack textures referenced by imported models. Supported DDS textures retain their compressed format')
+MAP_IMPORT_POINT_LIGHTS = ('Create placed point lights')
+MAP_IMPORT_SPOT_LIGHTS = ('Create placed spot lights')

@@ -10,6 +10,7 @@ import re
 import bpy
 from mathutils import Vector
 
+from ...core.package_utils import addon_package_name
 
 SKY_CUBE_FACE_COUNT = 6
 SKY_CUBE_FACE_NAMES = (
@@ -46,7 +47,7 @@ class WorldSkyImportResult:
 
 
 def _addon_package_name() -> str:
-    return (__package__ or "").split(".", 1)[0]
+    return addon_package_name(__package__)
 
 
 def _get_addon_preferences():
@@ -619,27 +620,27 @@ def _create_or_update_world(
     if world is None:
         world = bpy.data.worlds.new(world_name)
 
-    world["ff7r_source_json"] = source_json
+    world["sqex_source_json"] = source_json
     if source_asset_path:
-        world["ff7r_source_asset_path"] = source_asset_path
+        world["sqex_source_asset_path"] = source_asset_path
     if switch_labels:
-        world["ff7r_world_sky_switch_labels"] = ", ".join(switch_labels)
+        world["sqex_world_sky_switch_labels"] = ", ".join(switch_labels)
 
     context_a = fog_props.get("ContextA", {}) if isinstance(fog_props, dict) else {}
     if isinstance(context_a, dict):
         albedo = color_from_ue_linear_or_srgb(context_a.get("Albedo", {}))
-        world["ff7r_fog_albedo"] = list(albedo)
+        world["sqex_fog_albedo"] = list(albedo)
         if isinstance(context_a.get("Albedo"), dict) and context_a["Albedo"].get("Hex"):
-            world["ff7r_fog_albedo_hex"] = context_a["Albedo"].get("Hex")
+            world["sqex_fog_albedo_hex"] = context_a["Albedo"].get("Hex")
         for key in ("AlbedoBasis", "DensityBasis", "DensityFalloff"):
             if key in context_a:
-                world[f"ff7r_fog_{key}"] = _float_or_default(context_a.get(key))
+                world[f"sqex_fog_{key}"] = _float_or_default(context_a.get(key))
 
     distant_view = fog_props.get("DistantViewEnvironment", {}) if isinstance(fog_props, dict) else {}
     if isinstance(distant_view, dict):
         for key in ("BuildDataId", "AverageBrightness"):
             if key in distant_view:
-                world[f"ff7r_distant_view_{key}"] = distant_view.get(key)
+                world[f"sqex_distant_view_{key}"] = distant_view.get(key)
 
     world.use_nodes = True
     nodes = world.node_tree.nodes
@@ -701,7 +702,7 @@ def _finite_fog_extent_from_props(fog_props: dict, location_scale: float) -> flo
 
 def _ensure_cube_mesh(mesh_name: str) -> bpy.types.Mesh:
     mesh = bpy.data.meshes.get(mesh_name)
-    if mesh is not None and mesh.get("ff7r_finite_fog_cube_version") == FINITE_FOG_CUBE_VERSION:
+    if mesh is not None and mesh.get("sqex_finite_fog_cube_version") == FINITE_FOG_CUBE_VERSION:
         return mesh
 
     if mesh is None:
@@ -730,7 +731,7 @@ def _ensure_cube_mesh(mesh_name: str) -> bpy.types.Mesh:
     mesh.from_pydata(verts, [], faces)
     mesh.validate()
     mesh.update()
-    mesh["ff7r_finite_fog_cube_version"] = FINITE_FOG_CUBE_VERSION
+    mesh["sqex_finite_fog_cube_version"] = FINITE_FOG_CUBE_VERSION
     return mesh
 
 
@@ -793,18 +794,18 @@ def _ensure_fog_volume_material(
     if volume_socket is not None and volume_output is not None:
         links.new(volume_output, volume_socket)
 
-    mat["ff7r_fog_density_basis"] = density
-    mat["ff7r_fog_albedo"] = list(albedo)
-    mat["ff7r_fog_anisotropy"] = anisotropy
+    mat["sqex_fog_density_basis"] = density
+    mat["sqex_fog_albedo"] = list(albedo)
+    mat["sqex_fog_anisotropy"] = anisotropy
     if isinstance(light, dict) and "Modulator" in light:
-        mat["ff7r_fog_light_modulator"] = _float_or_default(light.get("Modulator", 0.0))
+        mat["sqex_fog_light_modulator"] = _float_or_default(light.get("Modulator", 0.0))
     if isinstance(context_a, dict):
         albedo_prop = context_a.get("Albedo", {})
         if isinstance(albedo_prop, dict) and albedo_prop.get("Hex"):
-            mat["ff7r_fog_albedo_hex"] = str(albedo_prop.get("Hex"))
+            mat["sqex_fog_albedo_hex"] = str(albedo_prop.get("Hex"))
         for key in ("AlbedoBasis", "DensityFalloff"):
             if key in context_a:
-                mat[f"ff7r_fog_{key}"] = _float_or_default(context_a.get(key))
+                mat[f"sqex_fog_{key}"] = _float_or_default(context_a.get(key))
 
     return mat
 
@@ -857,10 +858,10 @@ def create_finite_fog_volume_from_level_data(
     obj.data.materials.append(mat)
     obj.color = mat.diffuse_color
 
-    obj["ff7r_source_json"] = filepath
-    obj["ff7r_fog_volume_extent"] = extent
-    obj["ff7r_fog_volume_extent_units"] = "Blender units"
-    obj["ff7r_note"] = "Bounded volume approximation; Blender World volume is infinite."
+    obj["sqex_source_json"] = filepath
+    obj["sqex_fog_volume_extent"] = extent
+    obj["sqex_fog_volume_extent_units"] = "Blender units"
+    obj["sqex_note"] = "Bounded volume approximation; Blender World volume is infinite."
 
     if fog_collection.objects.get(obj.name) is None:
         try:
@@ -1021,8 +1022,8 @@ def create_reflection_capture_probes(
         # adjustment, rather than silently applying an incompatible transform.
         capture_offset = props.get("CaptureOffset")
         if component_type == "BoxReflectionCaptureComponent":
-            probe_obj["ff7r_reflection_capture_type"] = "box"
-            probe_obj["ff7r_capture_offset_unapplied"] = True
+            probe_obj["sqex_reflection_capture_type"] = "box"
+            probe_obj["sqex_capture_offset_unapplied"] = True
             if probe_data is not None:
                 # Blender's probe object remains a sphere/cubemap probe, but
                 # its influence region can be box-shaped in Eevee.
@@ -1042,17 +1043,17 @@ def create_reflection_capture_probes(
         influence_radius = _float_or_default(props.get("InfluenceRadius", 0.0))
         probe_obj["ue_influence_radius"] = influence_radius
         probe_obj["ue_influence_radius_units"] = "centimeters"
-        probe_obj["ff7r_source_json"] = filepath
+        probe_obj["sqex_source_json"] = filepath
         if outer_name:
-            probe_obj["ff7r_reflection_capture_actor"] = outer_name
+            probe_obj["sqex_reflection_capture_actor"] = outer_name
         if props.get("MapBuildDataId"):
-            probe_obj["ff7r_map_build_data_id"] = props.get("MapBuildDataId")
+            probe_obj["sqex_map_build_data_id"] = props.get("MapBuildDataId")
         if "MaxValueRGBM" in props:
-            probe_obj["ff7r_max_value_rgbm"] = _float_or_default(props.get("MaxValueRGBM"))
+            probe_obj["sqex_max_value_rgbm"] = _float_or_default(props.get("MaxValueRGBM"))
 
         if probe_data is not None:
             probe_data["ue_influence_radius"] = influence_radius
-            probe_data["ff7r_source_json"] = filepath
+            probe_data["sqex_source_json"] = filepath
             _set_probe_radius(probe_data, influence_radius * location_scale)
 
         probes_collection.objects.link(probe_obj)

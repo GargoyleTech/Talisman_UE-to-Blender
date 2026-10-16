@@ -12,16 +12,16 @@ import bpy
 def main() -> None:
     addon_directory = Path(__file__).resolve().parent.parent / "addon"
     spec = importlib.util.spec_from_file_location(
-        "ff7r_rebirth_tools",
+        "talisman",
         addon_directory / "__init__.py",
         submodule_search_locations=[str(addon_directory)],
     )
     addon = importlib.util.module_from_spec(spec)
-    sys.modules["ff7r_rebirth_tools"] = addon
+    sys.modules["talisman"] = addon
     spec.loader.exec_module(addon)
-    from ff7r_rebirth_tools.formats.ue_map import map_import
-    from ff7r_rebirth_tools.games.rebirth.importers import packages as shared_packages
-    from ff7r_rebirth_tools.games.remake.profile import PROFILE as REMAKE_PROFILE
+    from talisman.formats.ue_map import map_import
+    from talisman.games.rebirth.importers import packages as shared_packages
+    from talisman.games.remake.profile import PROFILE as REMAKE_PROFILE
 
     assert shared_packages._game_asset_path_to_virtual_uasset(
         "End/Content/GameContents/Environment/1stAvenue/Model/Wall_40_1stAvenue.1",

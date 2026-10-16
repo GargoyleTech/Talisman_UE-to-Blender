@@ -11,6 +11,7 @@ obj/
 dist/
 
 # Editor/OS cruft
+.local/
 .vs/
 .vscode/
 *.swp
@@ -18,10 +19,21 @@ Thumbs.db
 .DS_Store
 
 docs/
+!docs/
+docs/*
+!docs/BNM_FORMAT_REFERENCE.md
+!docs/GENERIC_UNREAL_SEQUENCES.md
 *.usmap
 bridge/PC0000_00_BodyA_C.dds
 textures/PC0000_00_BodyA_C.dds
 *PC0000_00_BodyA_C.dds
 
 bridge/test*
+!bridge/test_bnm_parser.py
+!bridge/test_rebirth_bnm_import.py
 bridge/Inspect/*
+bridge/*.py
+*.dds
+AGENTS.md
+*.log
+!bridge/*.py

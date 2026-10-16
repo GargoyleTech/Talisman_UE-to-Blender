@@ -12,6 +12,11 @@ from typing import Any, Callable
 
 import bpy
 
+from ...core.blender.material_nodes import (
+    image_node as _image_node, image_normal_map as _normal_map, make_bsdf,
+    material_for_texture_source, refresh_material_textures,
+)
+
 
 _MATERIAL_CACHE: dict[str, bpy.types.Material] = {}
 
@@ -114,81 +119,6 @@ def _parameter_values(material_data: dict[str, Any]):
     return textures, vectors, scalars
 
 
-def _image_node(
-        nodes: bpy.types.Nodes,
-        image_loader: Callable[[str], bpy.types.Image | None],
-        texture_path: str | None,
-        *,
-        label: str,
-        location: tuple[float, float],
-        colour_space: str,
-) -> bpy.types.Node | None:
-    if not texture_path:
-        return None
-    image = image_loader(texture_path)
-    if image is None:
-        return None
-    try:
-        image.colorspace_settings.name = colour_space
-    except (AttributeError, TypeError, ValueError):
-        pass
-    node = nodes.new("ShaderNodeTexImage")
-    node.label = label
-    node.name = label
-    node.location = location
-    node.image = image
-    return node
-
-
-def _normal_map(
-        nodes: bpy.types.Nodes,
-        links: bpy.types.NodeLinks,
-        image: bpy.types.Node | None,
-        *,
-        label: str,
-        location: tuple[float, float],
-        uv_map: str | None = None,
-) -> bpy.types.Node | None:
-    if image is None:
-        return None
-    normal = nodes.new("ShaderNodeNormalMap")
-    normal.label = label
-    normal.name = label
-    normal.location = location
-    if bpy.app.version >= (5, 2, 0) and hasattr(normal, "convention"):
-        # Blender 5.2 exposes the source convention directly on the Normal Map
-        # node, so keep the texture's original DirectX green channel intact.
-        normal.convention = "DIRECTX"
-        links.new(image.outputs["Color"], normal.inputs["Color"])
-    else:
-        # UE's normal maps are DirectX (green is down), while Blender up to 5.1
-        # decodes Normal Map nodes as OpenGL. Flip just green before decoding.
-        separate = nodes.new("ShaderNodeSeparateColor")
-        separate.label = f"{label} DirectX channels"
-        separate.location = (location[0] - 420, location[1])
-        invert_green = nodes.new("ShaderNodeMath")
-        invert_green.operation = "SUBTRACT"
-        invert_green.label = f"{label} invert DirectX green"
-        invert_green.location = (location[0] - 200, location[1] - 110)
-        invert_green.inputs[0].default_value = 1.0
-        combine = nodes.new("ShaderNodeCombineColor")
-        combine.label = f"{label} OpenGL colour"
-        combine.location = (location[0] - 20, location[1])
-        links.new(image.outputs["Color"], separate.inputs["Color"])
-        links.new(separate.outputs["Red"], combine.inputs["Red"])
-        links.new(separate.outputs["Green"], invert_green.inputs[1])
-        links.new(invert_green.outputs[0], combine.inputs["Green"])
-        links.new(separate.outputs["Blue"], combine.inputs["Blue"])
-        links.new(combine.outputs["Color"], normal.inputs["Color"])
-    if uv_map:
-        uv = nodes.new("ShaderNodeUVMap")
-        uv.label = f"{label} UV2"
-        uv.uv_map = uv_map
-        uv.location = (location[0] - 220, location[1] - 180)
-        links.new(uv.outputs["UV"], image.inputs["Vector"])
-    return normal
-
-
 def build_material(
         material_name: str,
         material_path: str,
@@ -196,16 +126,16 @@ def build_material(
         image_loader: Callable[[str], bpy.types.Image | None],
 ) -> bpy.types.Material:
     """Build the documented Crisis Core texture parameter subset in Blender."""
-    cache_key = material_path.casefold()
+    cache_key = material_path.casefold() + "::" + getattr(image_loader, "texture_namespace", "")
     cached = _MATERIAL_CACHE.get(cache_key)
     if cached is not None and cached.name in bpy.data.materials:
-        return cached
+        return refresh_material_textures(cached, image_loader)
 
     textures, vectors, scalars = _parameter_values(material_data)
-    material = bpy.data.materials.get(material_name) or bpy.data.materials.new(material_name)
+    material = material_for_texture_source(material_name, material_path, image_loader)
     if bpy.app.version < (5, 0, 0):
         material.use_nodes = True
-    material["ff7r_virtual_path"] = material_path
+    material["sqex_virtual_path"] = material_path
     material["ff7r_crisis_core_material"] = True
     material["ff7r_texture_albedo"] = textures.get("texturealbedo", "")
     material["ff7r_texture_normal"] = textures.get("texturenormal", "")
@@ -218,9 +148,8 @@ def build_material(
     nodes.clear()
     output = nodes.new("ShaderNodeOutputMaterial")
     output.location = (900, 0)
-    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf = make_bsdf(tree, links, output)
     bsdf.location = (650, 0)
-    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
 
     albedo = _image_node(nodes, image_loader, textures.get("texturealbedo"),
                          label="TextureAlbedo", location=(-900, 420), colour_space="sRGB")
