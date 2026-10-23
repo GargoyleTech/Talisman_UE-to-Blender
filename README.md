@@ -43,6 +43,7 @@ Not required — `addon/bridge/` already has working binaries. If you want to
 audit or modify the bridge, see [`bridge/README.md`](bridge/README.md).
 
 ## [Come find me on Discord if you must...](https://discord.gg/FHFamAN94b)
+[Or browse the wiki](https://github.com/GargoyleTech/Talisman_UE-to-Blender/wiki)
 
 ## License and slopcode disclosure
 
