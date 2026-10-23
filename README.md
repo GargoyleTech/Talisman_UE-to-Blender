@@ -1,4 +1,5 @@
 # Talisman: A Blender addon for interfacing with Unreal Engine formats.
+Y'all be kind, I haven't finished writing documentation for this addon yet, and it's far from battle-tested.
 <img width="2560" height="1392" alt="image" src="https://github.com/user-attachments/assets/74c2ed0f-45e0-410b-be01-e497498c9a2b" />
 
 Solid chance your favorite game could run on UE, but existing tools for working with its formats are yucky yuck when all you want is your beloved treasured worlds and characters in Blender to poke around with. At the minimum you're going to end up with a bunch of loose texture and model files in intermediary formats to get them into Blender. Built on [CUE4Parse](https://github.com/FabianFG/CUE4Parse), the same foundation [FModel](https://github.com/4sval/FModel) is built on, we benefit from the same wide range of compatibility as FModel, but directly within a Blender File->Import dialog! 
