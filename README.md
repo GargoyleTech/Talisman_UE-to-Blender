@@ -1,11 +1,15 @@
 # Talisman: A Blender addon for interfacing with Unreal Engine formats.
+<img width="2560" height="1392" alt="image" src="https://github.com/user-attachments/assets/74c2ed0f-45e0-410b-be01-e497498c9a2b" />
 
 Solid chance your favorite game could run on UE, but existing tools for working with its formats are yucky yuck when all you want is your beloved treasured worlds and characters in Blender to poke around with. At the minimum you're going to end up with a bunch of loose texture and model files in intermediary formats to get them into Blender. Built on [CUE4Parse](https://github.com/FabianFG/CUE4Parse), the same foundation [FModel](https://github.com/4sval/FModel) is built on, we benefit from the same wide range of compatibility as FModel, but directly within a Blender File->Import dialog! 
 
-Do you want skeletons? We got skeletons fuh days, baby. We got state of the art skeleton correction so that you get rigs that were actually meant to work in Blender instead of that sideways Dr. Spaghetti that you get from other UE->Blender pipelines. Meshes, armatures, textures, and animations.
+Do you want skeletons? We got skeletons fuh days, baby. We got state of the art skeleton correction so that you get rigs that were actually meant to work in Blender instead of that sideways Dr. Spaghetti that you get from other UE->Blender pipelines. Meshes, armatures, textures, and animations. Or boom, check it out right here, map importing goodness:
+<img width="966" height="960" alt="image" src="https://github.com/user-attachments/assets/5784d54d-b41e-4b46-b31a-28c68e08af28" />
+We even get the less important stuff like splines.
 
 ## Game specific enhancements !
 This project was originally created with Final Fantasy VII Rebirth in mind, and scope creep sort of took over from there. In development since early 2026, we have some game-specific support for FF/KH games on UE4, and some general support for most builds of UE4. 
+<img width="952" height="1293" alt="image" src="https://github.com/user-attachments/assets/f76a5e82-826e-43fc-a2ed-80d1f6a1a953" />
 
 For the prior mentioned Square Enix titles, proprietary binary formats such as the terrain mesh (Massive Environment) or bone driver (KineDriver) systems are wholly supported.
 
@@ -17,16 +21,10 @@ For the prior mentioned Square Enix titles, proprietary binary formats such as t
 - [`bridge/`](bridge/) — the C# source for `FF7RGameAssetBridge`, the helper
   process that reads package data straight out of a mounted game install.
   See [`bridge/README.md`](bridge/README.md) to rebuild it.
-- [Niagara research](docs/niagara/README.md) — detailed Unreal Engine 4.27 source notes for a future cooked Niagara to Geometry Nodes converter, including serialization, simulation, renderers, and version-specific limitations.
 
 Inside the add-on, reusable infrastructure lives in `core/`, reusable decoded
 formats live in `formats/`, engine/material/import differences live in
 `games/<title>/`, and Blender-facing menus and preferences live in `ui/`.
-
-Rebirth's **Niagara (Mesh resources)** importer now extracts unique mesh/material
-variants through the generic UE material pipeline. Its [resource model and
-backend](addon/formats/niagara/README.md) are separate from the future simulation
-and Geometry Nodes work described in the research notes.
 
 ## What's not here.
 - Oodle DLL used for decompressing Unreal package files. You probably already have a game that ships with an oo2core_7.dll or oo2core_9.dll such as Final Fantasy VII Remake or even some non-Unreal games such as Elden Ring.
@@ -43,8 +41,10 @@ Disable and ideally uninstall any of my older FF7R addons you might have install
 Not required — `addon/bridge/` already has working binaries. If you want to
 audit or modify the bridge, see [`bridge/README.md`](bridge/README.md).
 
+## [Come find me on Discord if you must...](https://discord.gg/FHFamAN94b)
+
 ## License and slopcode disclosure
 
 Original code in this repository is dedicated to the public domain under
 [The Unlicense](LICENSE). Bundled third-party components (CUE4Parse and its
-own dependencies) keep their own licenses — see [NOTICE.md](NOTICE.md). OpenAI Codex was used to aid development because I have very little interest in programming, solely working with code out of spite for the tools I want not already existing.
+own dependencies) keep their own licenses — see [NOTICE.md](NOTICE.md). OpenAI Codex was used to aid development because I have very little interest in programming, solely working with code out of spite for the tools I want to use not already existing.
