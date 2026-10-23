@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 from pathlib import Path
 import traceback
@@ -55,12 +55,12 @@ def _refresh_cutscenes(context, *, force=False) -> list[str]:
 class FF7R_REMAKE_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_remake_cutscene_game_packages"
     bl_label = "Cutscene from Remake Packages"
-    bl_description = tooltips.REMAKE_CUTSCENE_DESCRIPTION
+    bl_description = strings.REMAKE_CUTSCENE_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
     virtual_path: bpy.props.StringProperty(
         name="Cutscene",
-        description=tooltips.REMAKE_CUTSCENE_VIRTUAL_PATH,
+        description=strings.REMAKE_CUTSCENE_VIRTUAL_PATH,
         search=_search_cutscenes,
         search_options={"SUGGESTION"},
     )
@@ -68,12 +68,15 @@ class FF7R_REMAKE_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
     import_lights: bpy.props.BoolProperty(name="Import Lights", default=True)
     import_characters: bpy.props.BoolProperty(
         name="Apply Character Sequencing",
-        description=tooltips.REMAKE_CUTSCENE_IMPORT_CHARACTERS,
+        description=strings.REMAKE_CUTSCENE_IMPORT_CHARACTERS,
         default=True,
     )
     always_cast_shadows: bpy.props.BoolProperty(name="Always Cast Shadows", default=False)
 
+    _persisted_props = ("import_cameras", "import_lights", "import_characters", "always_cast_shadows")
+
     def invoke(self, context, _event):
+        self._load_last_import_settings(context)
         try:
             paths = _refresh_cutscenes(context)
         except Exception as exc:
@@ -147,6 +150,7 @@ class FF7R_REMAKE_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
                f"Imported Remake cutscene '{name}' into '{collection.name}' "
                f"({len(collection.all_objects)} object(s)"
                + (f", {adopted} adopted collection(s)" if adopted else "") + ").")
+        self._save_last_import_settings(context)
         return {"FINISHED"}
 
 

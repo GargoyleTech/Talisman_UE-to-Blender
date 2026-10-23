@@ -13,6 +13,8 @@ def gargoyle_executable_path(addon_root: Path) -> Path:
     candidates = (
         addon_root / "bridge" / "TalismanGameAssetBridge.exe",
         addon_root.parent / "bridge" / "bin" / "Release" / "net10.0"
+        / "win-x64" / "TalismanGameAssetBridge.exe",
+        addon_root.parent / "bridge" / "bin" / "Release" / "net10.0"
         / "TalismanGameAssetBridge.exe",
     )
     for candidate in candidates:

@@ -7,7 +7,7 @@ incoming animation. No handlers or custom driver functions run during playback.
 
 from __future__ import annotations
 
-from ...language import tooltips
+from ...language import strings
 
 import json
 import math
@@ -286,11 +286,11 @@ def generate_lip_rig(context, armature):
                         previous.unassign(bone)
                     collection.assign(bone)
             control = armature.pose.bones[jaw.CONTROL]
-            jaw._property(control, PROPERTIES[0], 1.0, tooltips.MOUTH_LIP_CONTROLS_INFLUENCE)
+            jaw._property(control, PROPERTIES[0], 1.0, strings.MOUTH_LIP_CONTROLS_INFLUENCE)
             manifest["properties"].append(PROPERTIES[0])
             control[PROPERTIES[1]] = True
             manifest["properties"].append(PROPERTIES[1])
-            control.id_properties_ui(PROPERTIES[1]).update(description=tooltips.MOUTH_SHOW_LIP_GUIDES)
+            control.id_properties_ui(PROPERTIES[1]).update(description=strings.MOUTH_SHOW_LIP_GUIDES)
             _widget(context, armature, width, lateral, up, manifest)
             for name in LOWER:
                 c = jaw._add_jaw_constraint(armature, name, "corner_follow" if name in (LEFT, RIGHT) else "lip_follow", manifest)

@@ -194,7 +194,7 @@ def _extract_default_or_bool_curve(curve_data: dict, tick_num: int, display_rate
     curve_tick_num = cr.get("Numerator", tick_num)
     keys = []
     for t_entry, v_entry in zip(times, values):
-        frame = ue_tick_to_frame(t_entry["Value"], curve_tick_num, display_rate)
+        frame = ue_tick_to_frame(_unwrapped_value(t_entry, 0), curve_tick_num, display_rate)
         if not (frame_lo <= frame < frame_hi):
             continue
         value = v_entry.get("Value") if isinstance(v_entry, dict) else v_entry
@@ -494,7 +494,7 @@ def _write_keys(strip, slot, data_path: str, array_index: int, keys: list) -> No
     if not keys:
         return
     action = strip.id_data
-    channelbag = anim_utils.action_ensure_channelbag_for_slot(action, slot)
+    channelbag = strip.channelbag(slot, ensure=True)
     curve = channelbag.fcurves.find(data_path, index=array_index)
     if curve is None:
         curve = channelbag.fcurves.new(data_path, index=array_index)
@@ -511,7 +511,7 @@ def _write_keys(strip, slot, data_path: str, array_index: int, keys: list) -> No
 def _apply_interp(strip, slot, data_path: str, array_index: int, keys: list) -> None:
     keys = _constant_curve_keys(keys)
     action = strip.id_data
-    cb = anim_utils.action_ensure_channelbag_for_slot(action, slot)
+    cb = strip.channelbag(slot, ensure=True)
     fc = cb.fcurves.find(data_path, index=array_index)
     if fc is None:
         return
@@ -537,7 +537,7 @@ def _force_interp(strip, slot, data_path: str, array_index: int,
                   interp: str, handle_type: str | None = None) -> None:
     """Override all keyframes on one curve with a specific Blender interpolation."""
     action = strip.id_data
-    cb = anim_utils.action_ensure_channelbag_for_slot(action, slot)
+    cb = strip.channelbag(slot, ensure=True)
     fc = cb.fcurves.find(data_path, index=array_index)
     if fc is None:
         return
@@ -729,7 +729,7 @@ def _set_constant_interp(obj, data_path: str, array_index: int = 0) -> None:
     slot = getattr(ad, "action_slot", None)
     if slot is not None:
         try:
-            cb = anim_utils.action_ensure_channelbag_for_slot(ad.action, slot)
+            cb = anim_utils.action_get_channelbag_for_slot(ad.action, slot)
             fc = cb.fcurves.find(data_path, index=array_index)
         except Exception:
             pass
@@ -1154,7 +1154,76 @@ def _import_cameras(data: list, t: Timing, scene) -> None:
 # LIGHT IMPORT
 # -----------------------------------------------------------------------------
 
-def _import_lights(data: list, t: Timing, scene, scene_name: str) -> None:
+def _configure_animated_light(light_obj, data, component_tracks, timing,
+                              template_props=None, image_loader=None):
+    """Use the same authoring controls for map lights and EndCinema tracks."""
+    supported = {
+        'Intensity', 'Brightness', 'LightColor', 'AttenuationRadius',
+        'LightFalloffExponent', 'bUseInverseSquaredFalloff', 'SourceRadius',
+        'SoftSourceRadius', 'SourceLength', 'SourceWidth', 'SourceHeight',
+        'BarnDoorAngle', 'BarnDoorLength', 'InnerConeAngle', 'OuterConeAngle',
+        'InnerFullConeAngle', 'OuterFullConeAngle', 'Temperature',
+        'ColorTemperature', 'bUseTemperature', 'CastShadows',
+        lights.VOLUMETRIC_SCATTERING_PROP,
+    }
+    channels = {}
+    for path in component_tracks:
+        track = item_at_path(data, path) or {}
+        props = track.get('Properties', {})
+        binding = props.get('PropertyBinding', {})
+        name = str(binding.get('PropertyName') or binding.get('PropertyPath', '')).rsplit('.', 1)[-1]
+        if name not in supported or (name == 'CastShadows' and ALWAYS_CAST_LIGHT_SHADOWS):
+            continue
+        for reference in props.get('Sections', []):
+            section = item_at_path(data, reference.get('ObjectPath', '')) or {}
+            properties = section.get('Properties', {})
+            lo, hi = _section_time_bounds(properties)
+            lo = ue_tick_to_frame(lo, timing.tick_num, timing.scene_fps) if lo is not None else -1e18
+            hi = ue_tick_to_frame(hi, timing.tick_num, timing.scene_fps) if hi is not None else 1e18
+            if name == 'LightColor':
+                curves = [properties.get(channel, {}) for channel in ('RedCurve', 'GreenCurve', 'BlueCurve')]
+            else:
+                curves = [properties.get('BoolCurve' if track.get('Type') == 'MovieSceneBoolTrack' else 'FloatCurve', {})]
+            extract = _extract_default_or_bool_curve if track.get('Type') == 'MovieSceneBoolTrack' else _extract_default_or_curve
+            for axis, curve in enumerate(curves):
+                keys = extract(curve, timing.tick_num, timing.scene_fps, lo, hi)
+                channels.setdefault((name, axis), {}).update({key['frame']: key for key in keys})
+
+    initial = {'_ue_light_profile': 'FF7', **(template_props or {})}
+    for (name, axis), frames in channels.items():
+        if not frames:
+            continue
+        value = frames[min(frames)]['value']
+        if name == 'LightColor':
+            # MovieSceneColorTrack is FLinearColor, unlike component FColor.
+            initial.setdefault('LinearLightColor', {})['RGB'[axis]] = value
+        else:
+            initial['Intensity' if name == 'Brightness' else name] = value
+    lights.apply_common_static_light_properties(light_obj.data, initial,
+                                                always_cast_shadows=ALWAYS_CAST_LIGHT_SHADOWS)
+    lights.apply_ue_light_object_properties(light_obj)
+    from .light_rig import ensure_source_helpers
+    ensure_source_helpers(light_obj, animated_length=('SourceLength', 0) in channels,
+                          animated_soft_radius=('SoftSourceRadius', 0) in channels)
+    lights.apply_source_texture(light_obj, image_loader)
+    lights.apply_component_visibility(light_obj, initial)
+    actions = {}
+    for (name, axis), frames in channels.items():
+        resolved = lights.animation_property(light_obj, name)
+        if not frames or resolved is None:
+            continue
+        owner, path, factor = resolved
+        if owner not in actions:
+            actions[owner] = _setup_action(owner, owner.id_type, light_obj.name + '_light_controls')
+        _, slot, strip = actions[owner]
+        keys = [{**frames[frame], 'value': frames[frame]['value'] * factor,
+                 'arrive': frames[frame]['arrive'] * factor,
+                 'leave': frames[frame]['leave'] * factor} for frame in sorted(frames)]
+        _write_keys(strip, slot, path, axis, keys)
+        _apply_interp(strip, slot, path, axis, keys)
+
+
+def _import_lights(data: list, t: Timing, scene, scene_name: str, image_loader=None) -> None:
     """Phase 1: create/find spawnable lights and key properties. Phase 2: time-ranged Child Of constraints."""
     tick_num, display_rate = t.tick_num, t.scene_fps
     ms_props = next(
@@ -1215,193 +1284,28 @@ def _import_lights(data: list, t: Timing, scene, scene_name: str) -> None:
             rz = props.get("Rotation[2]",    {}).get("DefaultValue", 0.0)
             light_obj.location      = ue_loc_to_bl(tx, ty, tz)
             light_obj.rotation_euler = ue_rot_to_bl_euler(rx, ry, rz)
+            if light_type == 'POINT':
+                # Point lights have no forward axis, but SourceLength follows UE Z.
+                light_obj.rotation_euler = (light_obj.rotation_euler.to_matrix().to_4x4()
+                                            @ _CAM_FWD_FIX.inverted()).to_euler('XYZ')
             break
 
         component_tracks: list = []
         for child in children_of.get(spawn_guid, []):
             cls = str(child.get("PossessedObjectClass", ""))
-            if "SpotLightComponent" in cls or "PointLightComponent" in cls:
+            if any(kind in cls for kind in ('SpotLightComponent', 'PointLightComponent', 'RectLightComponent')):
                 component_tracks = tracks_for.get(child["Guid"], [])
                 break
 
-        # Sequencer exports hold component values in property tracks rather
-        # than a static component JSON object.  Recover their initial values
-        # and feed the same UE attenuation graph used by map imports.  Power
-        # and color remain on ``bl_light`` because they are animated below.
-        attenuation_props: dict = {}
-        for prop_name in (
-            "AttenuationRadius",
-            "SourceRadius",
-            "LightFalloffExponent",
-        ):
-            for _track, sec, lo, hi in _find_prop_sections(
-                    data, component_tracks, {prop_name}, tick_num, display_rate):
-                curve = sec.get("Properties", {}).get("FloatCurve")
-                if not curve:
-                    continue
-                keys = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-                if keys:
-                    attenuation_props[prop_name] = keys[0]["value"]
-                    break
-
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"bUseInverseSquaredFalloff"}, tick_num, display_rate,
-                track_types={"MovieSceneBoolTrack"}):
-            curve = sec.get("Properties", {}).get("BoolCurve", {})
-            keys = _extract_default_or_bool_curve(curve, tick_num, display_rate, lo, hi)
-            if keys:
-                attenuation_props["bUseInverseSquaredFalloff"] = keys[0]["value"]
-                break
-
-        if attenuation_props.get("AttenuationRadius", 0.0) > 0.0:
-            lights.apply_ue_attenuation_properties(bl_light, attenuation_props)
-            lights.apply_ue_light_object_properties(light_obj)
-
-        light_action = light_slot = light_strip = None
-
-        def _ensure_light_action():
-            nonlocal light_action, light_slot, light_strip
-            if light_strip is None:
-                light_action, light_slot, light_strip = _setup_action(
-                    bl_light, "LIGHT", light_name + "_light")
-
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"Intensity", "Brightness"}, tick_num, display_rate):
-            curve = sec["Properties"].get("FloatCurve")
-            if not curve:
-                continue
-            keys = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-            if not keys:
-                continue
-            bl_keys = [{**k, "value": k["value"] * 0.01} for k in keys]
-            _ensure_light_action()
-            _write_keys(light_strip, light_slot, "energy", 0, bl_keys)
-            _apply_interp(light_strip, light_slot, "energy", 0, bl_keys)
-
-        light_color_curves = None
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"LightColor"}, tick_num, display_rate,
-                track_types={"MovieSceneColorTrack"}):
-            props = sec.get("Properties", {})
-            light_color_curves = (
-                _extract_default_or_curve(props.get("RedCurve",   {}), tick_num, display_rate, lo, hi),
-                _extract_default_or_curve(props.get("GreenCurve", {}), tick_num, display_rate, lo, hi),
-                _extract_default_or_curve(props.get("BlueCurve",  {}), tick_num, display_rate, lo, hi),
-            )
-            break
-
-        temperature_curve = None
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"Temperature"}, tick_num, display_rate,
-                track_types={"MovieSceneFloatTrack"}):
-            curve = sec["Properties"].get("FloatCurve")
-            if not curve:
-                continue
-            temperature_curve = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-            if temperature_curve:
-                break
-
-        if light_color_curves:
-            rk, gk, bk = light_color_curves if light_color_curves else ([], [], [])
-            all_f = sorted(
-                {k["frame"] for ks in (rk, gk, bk) for k in ks}
-            )
-            if all_f:
-                rgb_keys: list = [[], [], []]
-                for frame in all_f:
-                    imode = interp_at(rk, frame) if rk else INTERP_CONSTANT
-                    for i, v in enumerate((
-                            val_at(rk, frame, 1.0),
-                            val_at(gk, frame, 1.0),
-                            val_at(bk, frame, 1.0),
-                    )):
-                        rgb_keys[i].append({"frame": frame, "value": v,
-                                            "interp": imode, "arrive": 0.0, "leave": 0.0})
-                _ensure_light_action()
-                for i in range(3):
-                    _write_keys(light_strip, light_slot, "color", i, rgb_keys[i])
-                    _apply_interp(light_strip, light_slot, "color", i, rgb_keys[i])
-
-        if temperature_curve:
-            bl_light.use_temperature = True
-            _ensure_light_action()
-            _write_keys(light_strip, light_slot, "temperature", 0, temperature_curve)
-            _apply_interp(light_strip, light_slot, "temperature", 0, temperature_curve)
-
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"SourceRadius"}, tick_num, display_rate,
-                track_types={"MovieSceneFloatTrack"}):
-            curve = sec["Properties"].get("FloatCurve")
-            if not curve:
-                continue
-            keys = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-            if not keys:
-                continue
-            bl_keys = [{**k, "value": k["value"] * 0.01} for k in keys]
-            _ensure_light_action()
-            _write_keys(light_strip, light_slot, "shadow_soft_size", 0, bl_keys)
-            _apply_interp(light_strip, light_slot, "shadow_soft_size", 0, bl_keys)
-
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {"CastShadows"}, tick_num, display_rate,
-                track_types={"MovieSceneBoolTrack"}):
-            curve = sec["Properties"].get("BoolCurve", {})
-            keys = _extract_default_or_bool_curve(curve, tick_num, display_rate, lo, hi)
-            if not keys:
-                continue
-            if ALWAYS_CAST_LIGHT_SHADOWS:
-                continue
-            _ensure_light_action()
-            _write_keys(light_strip, light_slot, "use_shadow", 0, keys)
-            _apply_interp(light_strip, light_slot, "use_shadow", 0, keys)
-
-        for _track, sec, lo, hi in _find_prop_sections(
-                data, component_tracks, {lights.VOLUMETRIC_SCATTERING_PROP}, tick_num, display_rate,
-                track_types={"MovieSceneFloatTrack"}):
-            curve = sec["Properties"].get("FloatCurve")
-            if not curve:
-                continue
-            keys = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-            if not keys:
-                continue
-            bl_light[lights.VOLUMETRIC_SCATTERING_PROP] = keys[0]["value"]
-            _ensure_light_action()
-            data_path = f'["{lights.VOLUMETRIC_SCATTERING_PROP}"]'
-            _write_keys(light_strip, light_slot, data_path, -1, keys)
-            _apply_interp(light_strip, light_slot, data_path, -1, keys)
-
-        if light_type == "SPOT":
-            outer_deg = lights.DEFAULT_SPOT_FULL_CONE_ANGLE_DEG
-            inner_deg = lights.DEFAULT_SPOT_FULL_CONE_ANGLE_DEG
-            bl_light.spot_size = math.radians(outer_deg)
-            bl_light.spot_blend = 0.0
-
-            for _track, sec, lo, hi in _find_prop_sections(
-                    data, component_tracks,
-                    {"OuterFullConeAngle", "InnerFullConeAngle"}, tick_num, display_rate):
-                prop = (_track.get("Properties", {})
-                              .get("PropertyBinding", {})
-                              .get("PropertyName"))
-                curve = sec["Properties"].get("FloatCurve")
-                if not curve:
-                    continue
-                keys = _extract_default_or_curve(curve, tick_num, display_rate, lo, hi)
-                if not keys:
-                    continue
-
-                if prop == "OuterFullConeAngle":
-                    outer_deg = keys[0]["value"]
-                    bl_keys = [{**k, "value": math.radians(k["value"])} for k in keys]
-                    _ensure_light_action()
-                    _write_keys(light_strip, light_slot, "spot_size", 0, bl_keys)
-                    _apply_interp(light_strip, light_slot, "spot_size", 0, bl_keys)
-
-                elif prop == "InnerFullConeAngle":
-                    inner_deg = keys[0]["value"]
-
-            if outer_deg > 0:
-                blend = max(0.0, min(1.0, 1.0 - inner_deg / outer_deg))
-                bl_light.spot_blend = blend
+        template_ref = spawnable.get("ObjectTemplate", {})
+        template = item_at_path(data, template_ref.get("ObjectPath", "")) or {}
+        template_props = dict(template.get("Properties", {}))
+        for field in ("LightComponent", "PointLightComponent", "SpotLightComponent", "RectLightComponent"):
+            reference = template_props.get(field)
+            if isinstance(reference, dict):
+                component = item_at_path(data, reference.get("ObjectPath", "")) or {}
+                template_props.update(component.get("Properties", {}))
+        _configure_animated_light(light_obj, data, component_tracks, t, template_props, image_loader)
 
     for spawn_guid, light_obj in imported_lights.items():
         for tp in tracks_for.get(spawn_guid, []):
@@ -1505,6 +1409,7 @@ def import_ue_cutscene_data(
     import_characters: bool | None = None,
     camera_prefix: str | None = None,
     target_collection=None,
+    light_texture_loader=None,
 ) -> None:
     """Import already-decoded EndCinemaSequence exports from any source."""
     global IMPORT_LIGHTS, ALWAYS_CAST_LIGHT_SHADOWS, IMPORT_CAMERAS, CLEAR_EXISTING_CAMERAS
@@ -1559,7 +1464,7 @@ def import_ue_cutscene_data(
 
     if light_data and IMPORT_LIGHTS:
         print("[UE Import] -- Lights -------------------------------------------")
-        _import_lights(light_data, t, scene, scene_name)
+        _import_lights(light_data, t, scene, scene_name, light_texture_loader)
 
     _set_scene_frame(scene, scene_start)
     print("[UE Import] -- Done ---------------------------------------------")
@@ -1796,8 +1701,7 @@ def _import_characters_explicit_sections(
         if uuid in character_bindings and obj.type == "ARMATURE":
             # Rebirth Character clips already place the Trans root in world
             # space. Applying their actor track again doubles that placement.
-            # Reset evaluated values left behind by the previous object action
-            # as well, so reimport repairs scenes made with the old importer.
+            # Reset evaluated values left behind by the previous object action as well.
             obj.location = (0.0, 0.0, 0.0)
             obj.rotation_euler = (0.0, 0.0, 0.0)
             obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)

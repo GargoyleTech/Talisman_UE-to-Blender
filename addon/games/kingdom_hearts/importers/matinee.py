@@ -10,7 +10,7 @@ decoder infrastructure.
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 import math
 import re
@@ -624,6 +624,7 @@ def make_matinee_importer(
             report(self, {"WARNING"}, f"No {game_label} Matinee cutscene maps were found.")
             return {"CANCELLED"}
         self.start_frame = context.scene.frame_current
+        self._load_last_import_settings(context)
         package_browser.activate(context, browser, indexed, dialog_operator=self.bl_idname)
         return context.window_manager.invoke_props_dialog(self, width=1000)
 
@@ -687,13 +688,15 @@ def make_matinee_importer(
         )
         action_note = f"; {actions} full-body action(s) created" if actions else ""
         report(self, {"INFO"}, f"Imported {len(selected)} {game_label} Matinee cutscene(s): {created} actor/camera object(s){pawn_note}{action_note}")
+        self._save_last_import_settings(context)
         return {"FINISHED"}
 
     attributes = {
         "bl_idname": bl_idname,
         "bl_label": f"Cutscene from {game_label} Packages",
-        "bl_description": tooltips.KINGDOM_HEARTS_MATINEE_IMPORT.format(game_label=game_label),
+        "bl_description": strings.KINGDOM_HEARTS_MATINEE_IMPORT.format(game_label=game_label),
         "bl_options": {"REGISTER", "UNDO"},
+        "_persisted_props": ("scale_factor", "import_existing_rig_animations"),
         "__annotations__": {
             "virtual_path": bpy.props.StringProperty(
                 name="Cutscene Map", search=search, search_options={"SUGGESTION"},
@@ -701,11 +704,11 @@ def make_matinee_importer(
             "start_frame": bpy.props.IntProperty(name="Start Frame", default=1),
             "scale_factor": bpy.props.FloatProperty(
                 name="Scale", default=0.01, min=0.0001, max=100.0,
-                description=tooltips.SHARED_SCALE_FACTOR,
+                description=strings.SHARED_SCALE_FACTOR,
             ),
             "import_existing_rig_animations": bpy.props.BoolProperty(
                 name="Load Full-Body Matinee Actions", default=True,
-                description=tooltips.KINGDOM_HEARTS_MATINEE_EXISTING_RIG_ANIMATIONS,
+                description=strings.KINGDOM_HEARTS_MATINEE_EXISTING_RIG_ANIMATIONS,
             ),
         },
         "invoke": invoke,

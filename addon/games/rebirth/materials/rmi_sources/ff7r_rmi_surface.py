@@ -7,13 +7,18 @@ Switches and supported parameters are Material custom properties with normal
 single-property drivers.  Texture slots remain in the material tree because
 node groups share their images between every group instance.
 
+Layout and the hologram routes follow hologramtest.blend; the Phantom tone,
+depth fade and output selection follow the approved edits in phantomtest.blend.
+All nodes, groups, coordinates and the linked texture documentation text are
+generated here; neither reference file is a runtime input.
+
 Run with Blender's ``--python ff7r_rmi_surface.py`` option, or from the Text
 Editor.  See the sibling profile scripts and ``RMI_SURFACE_INTEGRATION.md`` for
 the dispatch and ground-truth-switch provenance.
 """
 
 if __package__:
-    from .....language import tooltips
+    from .....language import strings
 else:
     # Preserve running the packaged builder directly in Blender's Text Editor.
     import sys as _sys
@@ -21,7 +26,7 @@ else:
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[4]))
     try:
-        from language import tooltips
+        from language import strings
     finally:
         _sys.path.pop(0)
 
@@ -289,6 +294,41 @@ def _expand_panels(node):
 MAT_NAME = "FF7R_RMI_Surface_Master"
 PROFILE_NAME = "surface"
 PROFILE_REVISION = 2
+HOLOGRAM_ALPHA_NODES = ("HologramNativeAlpha", "HologramNativeCoverage",
+                       "HologramClipThreshold", "HologramVisibility",
+                       "HologramCutout", "HologramCompositeOverride")
+HOLOGRAM_CYCLES_NODES = ("Cycles Hologram", "HologramCyclesCompositeOverride",
+                        "Mix Shader (Cycles)", "Material Output (Cycles)")
+PHANTOM_NODES = ("ToneGradient UV", "PhantomOverride", "external_tint",
+                 "External emissive tint", "Phantom Camera Data", "Phantom Fade Distance",
+                 "Alpha = smooth depth fade", "RGB depth fade = alpha^8",
+                 "Final linear RGB", "PhantomOpaque", "Math.004", "FRAME_Base Docs")
+REQUIRED_MASTER_NODES = ("HologramOverride", "Mix Shader", "FRAME_AlphaCompositeColored",
+                         "TEX_ToneGradient", "USE_ToneGradient",
+                         *HOLOGRAM_ALPHA_NODES, *HOLOGRAM_CYCLES_NODES, *PHANTOM_NODES)
+REQUIRED_MASTER_LINKS = (
+    ("HologramCompositeOverride", "Shader", "Mix Shader", "Shader"),
+    ("Mix Shader (Cycles)", "Shader", "Material Output (Cycles)", "Surface"),
+    ("PhantomOverride", "Result", "Emission", "Color"),
+)
+_PHANTOM_LAYOUT = {
+    "FRAME_Base Docs": (-508, 3500, 1716, 754),
+    "FRAME_ToneGradient": (3520, 2200, 740, 640),
+    "TEX_ToneGradient": (3800, 2100, 240),
+    "USE_ToneGradient": (4080, 2100, 140),
+    "PROPS_FRAME_ToneGradient": (3550, 2160, 140),
+    "ToneGradient UV": (3550, 1810, 200),
+    "external_tint": (1450, -570, 202.125),
+    "External emissive tint": (4400, 2100, 160),
+    "Phantom Camera Data": (4210, 1560, 160),
+    "Phantom Fade Distance": (4210, 1800, 140),
+    "Alpha = smooth depth fade": (4440, 1800, 160),
+    "RGB depth fade = alpha^8": (4680, 1800, 160),
+    "Final linear RGB": (4910, 2100, 161.711),
+    "PhantomOverride": (5689, 1500, 219.057),
+    "PhantomOpaque": (5448, 600, 140),
+    "Math.004": (6166, -1350, 140),
+}
 
 # ---------------------------------------------------------------------------
 # Literals hoisted out of the compiled shaders.  PLAN 0.2: the material JSONs
@@ -461,12 +501,84 @@ def _rebuild_group(name, builder):
     return g
 
 
+def _bypass_normalize(tree, name, source_name, target_name, target_input):
+    """Retire only a recognized one-consumer normalization, preserving edits."""
+    node = tree.nodes.get(name)
+    target = tree.nodes.get(target_name)
+    if (node is None or target is None or node.bl_idname != "ShaderNodeVectorMath"
+            or node.operation != "NORMALIZE" or len(node.inputs[0].links) != 1
+            or len(node.outputs[0].links) != 1):
+        return
+    source = node.inputs[0].links[0].from_socket
+    link = node.outputs[0].links[0]
+    if source.node.name != source_name or link.to_socket != target.inputs[target_input]:
+        return
+    tree.links.new(source, link.to_socket)
+    tree.nodes.remove(node)
+
+
 def _grp(tree, gname, node_name, loc, label="", parent=None):
     n = _new(tree, "ShaderNodeGroup", node_name, loc, label or gname, parent)
     n.node_tree = bpy.data.node_groups.get(gname)
     if n.node_tree is None:
         log("missing group %r for %s" % (gname, node_name))
     return n
+
+
+def _external_emissive_attribute(tree, parent=None):
+    node = tree.nodes.get("external_tint")
+    if node is not None:
+        if (node.bl_idname != "ShaderNodeAttribute" or node.attribute_type != "OBJECT"
+                or node.attribute_name != "ExternalEmissiveContext"):
+            return None
+        return node
+    node = _new(tree, "ShaderNodeAttribute", "external_tint", (1450, -570),
+                'object["ExternalEmissiveContext"] -- per-instance, UNCLAMPED', parent)
+    node.attribute_type = "OBJECT"
+    node.attribute_name = "ExternalEmissiveContext"
+    node.width = 202.125
+    return node
+
+
+def _wire_emissive_context(tree, group=None):
+    """Supply the new shared input without replacing existing artist links."""
+    attribute = None
+    for node in list(tree.nodes):
+        if (node.bl_idname != "ShaderNodeGroup" or node.node_tree is None
+                or (group is not None and node.node_tree != group)
+                or (group is None and node.node_tree.name != "FF7R Emissive")):
+            continue
+        socket = node.inputs.get("ExternalEmissiveContext")
+        if socket is None or socket.is_linked:
+            continue
+        attribute = _external_emissive_attribute(tree, node.parent)
+        if attribute is not None:
+            tree.links.new(attribute.outputs["Color"], socket)
+    return attribute
+
+
+def _upgrade_emissive_context(group):
+    """Append the socket in place; keep existing socket identities and users."""
+    tint = group.nodes.get("external")
+    gi = next((n for n in group.nodes if n.bl_idname == "NodeGroupInput"), None)
+    if tint is None or gi is None:
+        return group
+    added = not any(i.item_type == "SOCKET" and i.in_out == "INPUT"
+                    and i.name == "ExternalEmissiveContext" for i in group.interface.items_tree)
+    if added:
+        _sock(group, "ExternalEmissiveContext", "INPUT", "NodeSocketColor", (0.5, 0.5, 0.5, 1.0))
+    target = _in(tint, "B")
+    rewired = len(target.links) == 1 and target.links[0].from_node.name == "external_tint"
+    if rewired:
+        group.links.new(gi.outputs["ExternalEmissiveContext"], target)
+    if added or rewired:
+        # This group is also used by eye materials. Upgrade every existing
+        # instance before its internal attribute is replaced by the new input.
+        trees = [m.node_tree for m in bpy.data.materials if m.node_tree]
+        trees.extend(g for g in bpy.data.node_groups if g != group)
+        for tree in trees:
+            _wire_emissive_context(tree, group)
+    return group
 
 
 def _hide_unused_system_outputs(tree):
@@ -527,11 +639,13 @@ def _fix_conventions(tree):
         _MISSING_CONVENTION.remove(node)
 
 
-def _decode_tangent_normal(tree, name, loc, label="", parent=None):
+def _decode_tangent_normal(tree, name, loc, label="", parent=None, *, normalize=True):
     """Create the non-destructive part of a normal-map decode in *tree*.
 
     The returned pair is ``(signed, normal)``: connect a texture colour to
-    ``signed`` and use ``normal`` downstream.  The vector deliberately stays
+    ``signed`` and use ``normal`` downstream. Set normalize=False only where
+    the consumer normalizes after a linear scale, as Detail Layer does.
+    The vector deliberately stays
     in the authored DirectX convention.  On Blender 5.2+, the one final
     Normal Map node performs the Y inversion through ``convention='DIRECTX'``;
     this avoids mutating the texture colours merely to satisfy Blender's
@@ -542,6 +656,9 @@ def _decode_tangent_normal(tree, name, loc, label="", parent=None):
     _prop(signed, "operation", "MULTIPLY_ADD")
     _sv(signed, 1, (2.0, 2.0, 2.0))
     _sv(signed, 2, (-1.0, -1.0, -1.0))
+    if not normalize:
+        # Detail Layer normalizes after its linear XY strength scale.
+        return signed, signed
     normal = _new(tree, "ShaderNodeVectorMath", name + " Normalize",
                   (loc[0] + 190, loc[1]), "normalise tangent vector", parent)
     _prop(normal, "operation", "NORMALIZE")
@@ -551,11 +668,10 @@ def _decode_tangent_normal(tree, name, loc, label="", parent=None):
 
 # ------------------------------------------------------- custom properties ---
 
-# Defaults used by the original 47-switch implementation. The current-build
-# parent materials establish a 126-flag universe. Every flag is exposed below,
-# but flags with identical presence vectors across all 104 ground-truth variants
-# share ONE checkbox (the checkbox name is the complete "A_ + B_" list). This
-# prevents the UI from claiming separability no carrier or decompilation proves.
+# Parent materials establish a 126-flag universe. Every flag is exposed
+# below, but flags with identical presence vectors across all 104 ground-truth
+# variants share ONE checkbox (the complete "A_ + B_" list). This prevents the
+# UI from claiming separability no carrier or decompilation proves.
 _SWITCH_DEFAULTS = dict([
     ("Color_", 1.0), ("Normal_", 1.0), ("Roughness_", 1.0), ("Occlusion_", 1.0),
     ("WideOcclusion_", 1.0), ("Metallic_", 0.0), ("Standard_", 1.0),
@@ -699,8 +815,7 @@ def _switch_control_name(members):
     if len(full) <= max_control_length:
         return SWITCH_PROPERTY_PREFIX + full
     # The complete member list remains in the UI description and node label.
-    # Keeping the key below Blender's ID-property limit matters more than
-    # repeating it there, especially now that every switch has a prefix.
+    # Keep the key below Blender's ID-property limit, including its switch prefix.
     short = "%s + ... (%d flags)" % (members[0], len(members))
     return SWITCH_PROPERTY_PREFIX + short[:max_control_length]
 
@@ -720,72 +835,72 @@ CONTROL_FOR_SWITCH = {member: control for control, members, _default
 # meaningless as a switch of 0.37.  Drivers read ints fine.
 ENUM_PROPS = [
     ("Shading Model", 0, 0, 6,
-     tooltips.MATERIALS_SHADING_MODEL),
+     strings.MATERIALS_SHADING_MODEL),
     ("Coverage Mode", 0, 0, 2,
-     tooltips.MATERIALS_COVERAGE_MODE),
+     strings.MATERIALS_COVERAGE_MODE),
     ("Detail Blend", 0, 0, 2,
-     tooltips.MATERIALS_DETAIL_BLEND),
+     strings.MATERIALS_DETAIL_BLEND),
     ("Vertex Expression Source", 0, 0, 2,
-     tooltips.MATERIALS_VERTEX_EXPRESSION_SOURCE),
+     strings.MATERIALS_VERTEX_EXPRESSION_SOURCE),
 ]
 
 FLOAT_PROPS = [
     # name,                     default,             min,  max,  description
-    ("Object Fade", 1.0, 0.0, 1.0, tooltips.MATERIALS_OBJECT_FADE),
+    ("Object Fade", 1.0, 0.0, 1.0, strings.MATERIALS_OBJECT_FADE),
     ("Opacity Clip", OPACITY_CLIP, 0.0, 1.0,
-     tooltips.MATERIALS_OPACITY_CLIP),
+     strings.MATERIALS_OPACITY_CLIP),
     ("GBufferA.a", 0.645420, 0.0, 1.0,
-     tooltips.MATERIALS_GBUFFERA_A),
+     strings.MATERIALS_GBUFFERA_A),
     # --- eye (ff7r_eye_material_v2.py) ---
-    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, tooltips.MATERIALS_EYE_CORNEA_SLOPE),
-    ("Eye Eta", ETA, 0.0, 2.0, tooltips.MATERIALS_EYE_ETA),
-    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_CONST),
-    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_FALLOFF),
-    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_SCALE),
-    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_INNER),
-    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_OUTER),
-    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_OFFSET),
-    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_SOFTNESS),
-    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, tooltips.MATERIALS_EYE_LIMBAL_APERTURE),
-    ("Eye Limbal Amount", 1.0, 0.0, 1.0, tooltips.MATERIALS_EYE_LIMBAL_AMOUNT),
+    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, strings.MATERIALS_EYE_CORNEA_SLOPE),
+    ("Eye Eta", ETA, 0.0, 2.0, strings.MATERIALS_EYE_ETA),
+    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_CONST),
+    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_FALLOFF),
+    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_SCALE),
+    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, strings.MATERIALS_EYE_MASK_INNER),
+    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, strings.MATERIALS_EYE_MASK_OUTER),
+    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, strings.MATERIALS_EYE_LIMBAL_OFFSET),
+    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, strings.MATERIALS_EYE_LIMBAL_SOFTNESS),
+    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, strings.MATERIALS_EYE_LIMBAL_APERTURE),
+    ("Eye Limbal Amount", 1.0, 0.0, 1.0, strings.MATERIALS_EYE_LIMBAL_AMOUNT),
     ("Eye Iris AO Factor", 1, 0.0, 1.0,
-     tooltips.MATERIALS_EYE_IRIS_AO_FACTOR),
-    ("Pupil Dilation", 1.0, 0.05, 4.0, tooltips.MATERIALS_PUPIL_DILATION),
+     strings.MATERIALS_EYE_IRIS_AO_FACTOR),
+    ("Pupil Dilation", 1.0, 0.05, 4.0, strings.MATERIALS_PUPIL_DILATION),
     # --- hair (ff7r_hair_material.py -- measured) ---
     ("Hair Min VdotT", MIN_VDOTT, 0.001, 0.5,
-     tooltips.MATERIALS_HAIR_MIN_VDOTT),
+     strings.MATERIALS_HAIR_MIN_VDOTT),
     ("Hair Dither Sign", 1.0, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_DITHER_SIGN),
+     strings.MATERIALS_HAIR_DITHER_SIGN),
     ("Hair Roughness Curvature", ROUGHNESS_CURVATURE, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_ROUGHNESS_CURVATURE),
+     strings.MATERIALS_HAIR_ROUGHNESS_CURVATURE),
     ("Hair Anisotropic", HAIR_ANISOTROPIC, -1.0, 1.0,
-     tooltips.MATERIALS_HAIR_ANISOTROPIC),
+     strings.MATERIALS_HAIR_ANISOTROPIC),
     ("Hair Flow Influence", FLOW_INFLUENCE, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_FLOW_INFLUENCE),
+     strings.MATERIALS_HAIR_FLOW_INFLUENCE),
     ("Hair Specular F0", HAIR_SPECULAR_F0, 0.0, 0.16,
-     tooltips.MATERIALS_HAIR_SPECULAR_F0),
+     strings.MATERIALS_HAIR_SPECULAR_F0),
     # --- shared normal-map calibration ---
     ("Normal Map Strength", NORMAL_MAP_STRENGTH, 0.0, 2.0,
-     tooltips.MATERIALS_NORMAL_MAP_STRENGTH),
+     strings.MATERIALS_NORMAL_MAP_STRENGTH),
     # --- detail layer ---
     ("Detail Normal Strength", 0.5, 0.0, 1.0,
-     tooltips.MATERIALS_DETAIL_NORMAL_STRENGTH),
+     strings.MATERIALS_DETAIL_NORMAL_STRENGTH),
     # --- shading model parameters ---
-    ("Subsurface Scale", 0.05, 0.0, 1.0, tooltips.MATERIALS_SUBSURFACE_SCALE),
-    ("Sheen Roughness", 0.3, 0.0, 1.0, tooltips.MATERIALS_SHEEN_ROUGHNESS),
+    ("Subsurface Scale", 0.05, 0.0, 1.0, strings.MATERIALS_SUBSURFACE_SCALE),
+    ("Sheen Roughness", 0.3, 0.0, 1.0, strings.MATERIALS_SHEEN_ROUGHNESS),
     # --- constant roles (PLAN 0.4: never a texture anywhere in the game) ---
-    ("Isotropy", 0.0, 0.0, 1.0, tooltips.MATERIALS_ISOTROPY),
-    ("Sheen", 1.0, 0.0, 1.0, tooltips.MATERIALS_SHEEN),
-    ("Wetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_WETNESS),
-    ("DetailWetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAIL_WETNESS),
-    ("Visibility", 1.0, 0.0, 1.0, tooltips.MATERIALS_VISIBILITY),
-    ("FilmStructure", 0.4, 0.0, 1.0, tooltips.MATERIALS_FILM_STRUCTURE),
-    ("ExtraColor", 0.0, 0.0, 1.0, tooltips.MATERIALS_EXTRA_COLOR),
+    ("Isotropy", 0.0, 0.0, 1.0, strings.MATERIALS_ISOTROPY),
+    ("Sheen", 1.0, 0.0, 1.0, strings.MATERIALS_SHEEN),
+    ("Wetness", 0.0, 0.0, 1.0, strings.MATERIALS_WETNESS),
+    ("DetailWetness", 0.0, 0.0, 1.0, strings.MATERIALS_DETAIL_WETNESS),
+    ("Visibility", 1.0, 0.0, 1.0, strings.MATERIALS_VISIBILITY),
+    ("FilmStructure", 0.4, 0.0, 1.0, strings.MATERIALS_FILM_STRUCTURE),
+    ("ExtraColor", 0.0, 0.0, 1.0, strings.MATERIALS_EXTRA_COLOR),
     ("OxygenSaturation", 0.078, 0.0, 1.0,
-     tooltips.MATERIALS_OXYGENSATURATION),
-    ("DetailMetallic", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAILMETALLIC),
-    ("Thickness", 0.2, 0.0, 1.0, tooltips.MATERIALS_THICKNESS),
-    ("FilmThickness", 0.5, 0.0, 1.0, tooltips.MATERIALS_FILMTHICKNESS),
+     strings.MATERIALS_OXYGENSATURATION),
+    ("DetailMetallic", 0.0, 0.0, 1.0, strings.MATERIALS_DETAILMETALLIC),
+    ("Thickness", 0.2, 0.0, 1.0, strings.MATERIALS_THICKNESS),
+    ("FilmThickness", 0.5, 0.0, 1.0, strings.MATERIALS_FILMTHICKNESS),
 ]
 
 _PROFILE_EXCLUDED_FLOAT_PROPS = {
@@ -809,12 +924,11 @@ _PROFILE_REMOVED_SWITCH_GROUPS = (
 
 
 def _remove_unprofiled_properties(mat):
-    """Remove legacy ubershader controls when rebuilding the surface master.
+    """Remove incompatible ubershader controls when rebuilding the surface master.
 
-    ``FF7R_RMI_Surface_Master`` existed before the profile split.  Reusing its
-    datablock preserves a user's fake-user/template setup, but custom ID
-    properties survive a node-tree clear, so retire the old eye/hair controls
-    explicitly instead of leaving a dead UI behind.
+    Reusing the master's datablock preserves a user's fake-user/template setup.
+    Custom ID properties survive a node-tree clear, so remove eye/hair controls
+    explicitly to avoid leaving an inactive UI behind.
     """
     for name in _PROFILE_EXCLUDED_FLOAT_PROPS:
         if name in mat:
@@ -829,17 +943,7 @@ def _remove_unprofiled_properties(mat):
 
 
 def _ensure_props(mat):
-    """Switches are real booleans, selectors real ints, parameters floats.
-
-    Re-running over a material written by an older version of this script
-    rewrites any switch still stored as a float, so the type upgrade is not
-    stranded behind the "already present" check."""
-    # Retire coordinate-routing flags emitted by earlier builds. They do not
-    # control any Blender material path: the UV nodes use the mesh's actual
-    # layers, so retaining these ID properties only creates dead UI controls.
-    for name in ENGINE_ONLY_SWITCHES:
-        if name in mat:
-            del mat[name]
+    """Initialize boolean switches, integer selectors, and float parameters."""
     renamed_switch_properties = {}
     for name, members, default in SWITCH_CONTROLS:
         # Upgrade the old one-property-per-flag and unprefixed grouped layouts
@@ -849,14 +953,13 @@ def _ensure_props(mat):
         legacy_names.add(_legacy_switch_control_name(members))
         legacy = [bool(mat[old_name]) for old_name in legacy_names
                   if old_name in mat]
-        if name not in mat or not isinstance(mat[name], bool):
-            mat[name] = bool(mat[name]) if name in mat else (
-                any(legacy) if legacy else bool(default))
+        if name not in mat:
+            mat[name] = any(legacy) if legacy else bool(default)
         try:
             mat.id_properties_ui(name).update(
                 default=bool(default),
-                description=(tooltips.MATERIALS_STATIC_SWITCH if len(members) == 1
-                             else tooltips.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX +
+                description=(strings.MATERIALS_STATIC_SWITCH if len(members) == 1
+                             else strings.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX +
                              " + ".join(members)))
         except Exception:
             pass
@@ -877,8 +980,8 @@ def _ensure_props(mat):
                 if old_name is not None:
                     target.data_path = '["%s"]' % renamed_switch_properties[old_name]
     for name, default, mn, mx, desc in ENUM_PROPS:
-        if name not in mat or isinstance(mat[name], (bool, float)):
-            mat[name] = int(mat[name]) if name in mat else int(default)
+        if name not in mat:
+            mat[name] = int(default)
         try:
             mat.id_properties_ui(name).update(
                 min=mn, max=mx, soft_min=mn, soft_max=mx,
@@ -886,7 +989,7 @@ def _ensure_props(mat):
         except Exception:
             pass
     for name, default, mn, mx, desc in FLOAT_PROPS:
-        if name not in mat or isinstance(mat[name], (bool, int)):
+        if name not in mat:
             mat[name] = float(default)
         try:
             mat.id_properties_ui(name).update(
@@ -924,6 +1027,259 @@ def _drive(socket, mat, prop):
     return fc
 
 
+def configure_surface_render_settings(mat):
+    """Choose a static renderer preset from the imported variant, not live edits.
+
+    Blended with overlap off occludes deeper layers even THROUGH cutout holes.
+    Blended with overlap on lets rear triangles overwrite dark occupied hits.
+    Dithered correctly resolves both cases; the binary shader mask, rather
+    than the overlap flag alone, prevents additive brightness accumulation.
+    Other additive compositor families need Blended in Eevee instead.
+    """
+    flags = ("Hologram_", "Ghost_", "Phantom_", "Opacity_", "BrokenFlowEmissive0_")
+    if "_RMI_Variant_Switches" in mat:
+        switches = set(mat["_RMI_Variant_Switches"])
+    else:
+        # Standalone masters have no imported variant metadata.
+        switches = {flag for flag in flags if mat.get(CONTROL_FOR_SWITCH[flag], False)}
+    if "Hologram_" in switches:
+        method, overlap = "DITHERED", False
+    elif any(flag in switches for flag in flags[1:]):
+        method, overlap = "BLENDED", True
+    else:
+        return
+    mat.surface_render_method = method
+    animation = mat.animation_data
+    curve = next((c for c in getattr(animation, "drivers", ())
+                  if c.data_path == "use_transparency_overlap"), None)
+    if curve is None:
+        mat.use_transparency_overlap = overlap
+
+
+def grp_hologram_cycles_composite():
+    """First covered hit emits and marks the ray; later hits are transparent.
+
+    IOR 1 / roughness 0 preserves the ray direction but increments Transmission
+    Depth. Transparent holes do not increment it. This counter is global to the
+    path, NOT per object: prior glass and independent overlapping holograms are
+    known limitations. A per-instance checkbox retains the opaque cutout mode.
+    """
+    def _b(g):
+        g.description = ("Experimental Cycles additive hologram: first covered hit only. "
+                         "Prior glass/overlapping holograms share the transmission counter.")
+        _sock(g, "Shader", "OUTPUT", "NodeSocketShader")
+        _sock(g, "Emission", "INPUT", "NodeSocketShader")
+        _sock(g, "Cutout", "INPUT", "NodeSocketShader")
+        _sock(g, "Coverage", "INPUT", "NodeSocketFloat", 1.0, 0.0, 1.0)
+        enabled = _sock(g, "First-hit Additive", "INPUT", "NodeSocketBool", True)
+        enabled.description = ("Cycles only: add the first covered hologram hit over the scene. "
+                               "Disable for opaque emissive cutout. Prior glass can suppress glow; "
+                               "separate holograms share one ray counter. Not additive RGBA alpha.")
+        gi = _new(g, "NodeGroupInput", "Group Input", (-1000, 300))
+        go = _new(g, "NodeGroupOutput", "Group Output", (700, 300))
+        path = _new(g, "ShaderNodeLightPath", "Hologram Ray State", (-1000, -100))
+        first = _new(g, "ShaderNodeMath", "No Prior Transmission", (-760, -100),
+                     "Transmission Depth < 0.5")
+        first.operation = "LESS_THAN"
+        first.inputs[1].default_value = 0.5
+        occupied = _new(g, "ShaderNodeMath", "First Covered Hit", (-540, 40),
+                        "first transmission × coverage")
+        occupied.operation = "MULTIPLY"
+        marker = _new(g, "ShaderNodeBsdfRefraction", "IOR1 Ray Marker", (-760, 450),
+                      "No bending; mark a transmission bounce")
+        _sv(marker, "Color", (1.0, 1.0, 1.0, 1.0))
+        _sv(marker, "Roughness", 0.0)
+        _sv(marker, "IOR", 1.0)
+        add = _new(g, "ShaderNodeAddShader", "Emission Plus Marker", (-500, 390))
+        transparent = _new(g, "ShaderNodeBsdfTransparent", "Passthrough", (-520, -200))
+        _sv(transparent, "Color", (1.0, 1.0, 1.0, 1.0))
+        hit = _new(g, "ShaderNodeMixShader", "First Hit Only", (-260, 300),
+                   "holes / later layers remain transparent")
+        shadow = _new(g, "ShaderNodeMixShader", "Shadow Passthrough", (0, 300),
+                      "do not cast glass-like opaque shadows")
+        mode = _new(g, "ShaderNodeMixShader", "Cutout Or Additive", (350, 300))
+        _link(g, path, "Transmission Depth", first, 0)
+        _link(g, first, 0, occupied, 0)
+        _link(g, gi, "Coverage", occupied, 1)
+        _link(g, gi, "Emission", add, 0)
+        _link(g, marker, 0, add, 1)
+        _link(g, occupied, 0, hit, 0)
+        _link(g, transparent, 0, hit, 1)
+        _link(g, add, 0, hit, 2)
+        _link(g, path, "Is Shadow Ray", shadow, 0)
+        _link(g, hit, 0, shadow, 1)
+        _link(g, transparent, 0, shadow, 2)
+        _link(g, gi, "First-hit Additive", mode, 0)
+        _link(g, gi, "Cutout", mode, 1)
+        _link(g, shadow, 0, mode, 2)
+        _link(g, mode, 0, go, "Shader")
+    return _rebuild_group("FF7R Hologram Cycles Composite", _b)
+
+
+def _refresh_hologram_cycles(mat):
+    """Add an engine-targeted output; never take over a custom Cycles output."""
+    tree = mat.node_tree
+    nodes = tree.nodes
+    own_output = nodes.get("Material Output (Cycles)")
+    if any(n.bl_idname == "ShaderNodeOutputMaterial" and n.target == "CYCLES"
+           and n != own_output for n in nodes):
+        return False
+    present = [nodes.get(name) is not None for name in HOLOGRAM_CYCLES_NODES]
+    if any(present):
+        expected = ("ShaderNodeGroup", "ShaderNodeMixShader",
+                    "ShaderNodeMixShader", "ShaderNodeOutputMaterial")
+        return (all(present)
+                and all(nodes[name].bl_idname == kind
+                        for name, kind in zip(HOLOGRAM_CYCLES_NODES, expected))
+                and own_output.target == "CYCLES"
+                and tree.get_output_node("CYCLES") == own_output
+                and any(l.from_node == nodes["Mix Shader (Cycles)"]
+                        for l in own_output.inputs["Surface"].links))
+    if tree.get_output_node("CYCLES") != nodes["Material Output"]:
+        return False
+    # Use existing sources, including bundle fields or trimmed zero controls.
+    gate = nodes["HologramCompositeOverride"].inputs[0]
+    composite = nodes["Mix Shader"].inputs[0]
+    if not gate.is_linked or not composite.is_linked:
+        return False
+    grp_hologram_cycles_composite()
+    parent = nodes.get("FRAME_Out")
+    group = _grp(tree, "FF7R Hologram Cycles Composite", "Cycles Hologram", (0, 0),
+                 "Cycles / experimental first-hit additive", parent)
+    select = _new(tree, "ShaderNodeMixShader", "HologramCyclesCompositeOverride", (0, 0),
+                  "Additive / Cycles hologram", parent)
+    mix = _new(tree, "ShaderNodeMixShader", "Mix Shader (Cycles)", (0, 0),
+               "Cycles / standard or compositor", parent)
+    output = _new(tree, "ShaderNodeOutputMaterial", "Material Output (Cycles)", (0, 0),
+                  "Cycles only", parent)
+    output.target = "CYCLES"
+    tree.links.new(gate.links[0].from_socket, select.inputs[0])
+    tree.links.new(composite.links[0].from_socket, mix.inputs[0])
+    _link(tree, nodes["Emission"], 0, group, "Emission")
+    _link(tree, nodes["HologramCutout"], 0, group, "Cutout")
+    _link(tree, nodes["HologramVisibility"], 0, group, "Coverage")
+    _link(tree, nodes["Add Shader"], 0, select, 1)
+    _link(tree, group, "Shader", select, 2)
+    _link(tree, nodes["Principled BSDF"], 0, mix, 1)
+    _link(tree, select, 0, mix, 2)
+    _link(tree, mix, 0, output, "Surface")
+    # A local output upgrade must not discard artist-added displacement or
+    # volume connections on the original output, even though the stock graph
+    # does not use them.
+    for source in nodes["Material Output"].inputs:
+        target = output.inputs.get(source.name)
+        if source.name == "Surface" or target is None:
+            continue
+        if source.is_linked:
+            tree.links.new(source.links[0].from_socket, target)
+        elif hasattr(source, "default_value"):
+            target.default_value = source.default_value
+    ox, oy = nodes["Add Shader"].location_absolute
+    px, py = parent.location_absolute if parent else (0, 0)
+    for name, (dx, dy, width) in _HOLOGRAM_CYCLES_LAYOUT.items():
+        nodes[name].location = (ox + dx - px, oy + dy - py)
+        nodes[name].width = width
+    return True
+
+
+def refresh_hologram_alpha(mat):
+    """Locally upgrade an intact surface compositor, without rebuilding it.
+
+    Returns False for unfamiliar/custom output wiring. Existing texture nodes,
+    color inputs, controls, shared groups, and node locations are untouched.
+    Used by standalone build(), variant trimming, and cached package imports.
+    """
+    tree = getattr(mat, "node_tree", None)
+    if tree is None:
+        return False
+    nodes = tree.nodes
+
+    def linked(source, output, target, socket):
+        if nodes.get(source) is None or nodes.get(target) is None:
+            return False
+        return any(l.from_node == nodes[source] and l.from_socket == nodes[source].outputs[output]
+                   for l in _in(nodes[target], socket).links)
+
+    expected = {"Emission": "ShaderNodeEmission", "Transparent BSDF": "ShaderNodeBsdfTransparent",
+                "Add Shader": "ShaderNodeAddShader", "Mix Shader": "ShaderNodeMixShader",
+                "Material Output": "ShaderNodeOutputMaterial", "HologramOverride": "ShaderNodeMix",
+                "AlphaWithoutBackfaces": "ShaderNodeMath", "Coverage": "ShaderNodeGroup"}
+    if not all(nodes.get(n) is not None and nodes[n].bl_idname == kind
+               for n, kind in expected.items()):
+        return False
+    if not all(linked(*edge) for edge in (
+            ("Mix Shader", 0, "Material Output", "Surface"),
+            ("Principled BSDF", 0, "Mix Shader", 1),
+            ("Emission", 0, "Add Shader", 0),
+            ("Transparent BSDF", 0, "Add Shader", 1),
+            )) or not any(linked(name, 2, "Emission", "Color")
+                          for name in ("HologramOverride", "PhantomOverride")):
+        return False
+    if tree.get_output_node("EEVEE") != nodes["Material Output"]:
+        return False
+    own_cycles = nodes.get("Material Output (Cycles)")
+    if any(n.bl_idname == "ShaderNodeOutputMaterial" and n.target == "CYCLES"
+           and n != own_cycles for n in nodes):
+        return False
+    existing = [nodes.get(name) is not None for name in HOLOGRAM_ALPHA_NODES]
+    if any(existing):
+        if not all(existing) or not linked("HologramCompositeOverride", 0, "Mix Shader", 2):
+            return False
+        return _refresh_hologram_cycles(mat) and refresh_phantom_surface(mat)
+    if not linked("Add Shader", 0, "Mix Shader", 2):
+        return False
+    coverage = nodes["Coverage"]
+    hologram = nodes["HologramOverride"]
+    # Copy the graph's live inputs, including bundle routing and retired
+    # zero-valued controls. Do not re-add properties trimmed from a variant.
+    sources = [coverage.inputs[s] for s in ("Mode", "Enable", "Clip")]
+    sources.append(_in(hologram, "Factor"))
+    if not all(socket.is_linked for socket in sources):
+        return False
+    parent = nodes.get("FRAME_AlphaCompositeColored")
+    native = _new(tree, "ShaderNodeMath", "HologramNativeAlpha", (0, 0),
+                  "Native Alpha mode?", parent)
+    native.operation = "LESS_THAN"
+    native.inputs[1].default_value = 0.5
+    gate = _new(tree, "ShaderNodeMath", "HologramNativeCoverage", (0, 0),
+                "Native Alpha AND Coverage_", parent)
+    gate.operation = "MULTIPLY"
+    threshold = _new(tree, "ShaderNodeMix", "HologramClipThreshold", (0, 0),
+                     "Native: Opacity Clip / binary: 0.5", parent)
+    threshold.data_type = "FLOAT"
+    _sv(threshold, "A", 0.5)
+    visible = _new(tree, "ShaderNodeMath", "HologramVisibility", (0, 0),
+                   "Occupied hologram pixel", parent)
+    visible.operation = "GREATER_THAN"
+    cutout = _new(tree, "ShaderNodeMixShader", "HologramCutout", (0, 0),
+                  "Transparent holes / opaque emission", parent)
+    select = _new(tree, "ShaderNodeMixShader", "HologramCompositeOverride", (0, 0),
+                  "Additive / hologram cutout", parent)
+    for source, target in zip(sources, (native.inputs[0], gate.inputs[1],
+                                        _in(threshold, "B"), select.inputs[0])):
+        tree.links.new(source.links[0].from_socket, target)
+    _link(tree, native, 0, gate, 0)
+    _link(tree, gate, 0, threshold, "Factor")
+    _link(tree, nodes["AlphaWithoutBackfaces"], 0, visible, 0)
+    _link(tree, threshold, "Result", visible, 1)
+    _link(tree, visible, 0, cutout, 0)
+    _link(tree, nodes["Transparent BSDF"], 0, cutout, 1)
+    _link(tree, nodes["Emission"], 0, cutout, 2)
+    _link(tree, nodes["Add Shader"], 0, select, 1)
+    _link(tree, cutout, 0, select, 2)
+    _link(tree, select, 0, nodes["Mix Shader"], 2)
+    # Position only the added nodes during migration. Full builds apply the
+    # same table later, together with the existing authored layout.
+    ox, oy = nodes["Add Shader"].location_absolute
+    for name, (dx, dy, width) in _HOLOGRAM_ALPHA_LAYOUT.items():
+        node = nodes[name]
+        px, py = parent.location_absolute if parent else (0, 0)
+        node.location = (ox + dx - px, oy + dy - py)
+        node.width = width
+    configure_surface_render_settings(mat)
+    return _refresh_hologram_cycles(mat) and refresh_phantom_surface(mat)
+
+
 def _bundle_material_properties(tree, property_sources, property_types,
                                 props_frame):
     """Route driven material values through one bundle and one separator/frame.
@@ -932,9 +1288,8 @@ def _bundle_material_properties(tree, property_sources, property_types,
     is ``socket.hide = True``; after rewiring, every Separate Bundle therefore
     exposes only the outputs actually consumed inside its parent frame.
 
-    Shading Model is intentionally absent: in Blender 5.2 it is a Constant Menu,
-    not a driven material-property value, and Menu enum definitions do not
-    survive independently declared bundle signatures.
+    Shading Model stays on its direct selector connection. This also keeps
+    the bundle signature independent of any future native menu support.
     """
     if not HAS_BUNDLES:
         return {}
@@ -950,12 +1305,16 @@ def _bundle_material_properties(tree, property_sources, property_types,
             if frame is not None and frame != props_frame:
                 routes.append((prop_name, link, frame))
 
-    bundled_names = [name for name in property_sources if name != "Shading Model"]
-    # Blender 5.x only: no 4.5 dump position exists for these, so the bundle
-    # sits one column right of the float parameters, and each Separate Bundle
-    # just above the frame that consumes it.
+    # Visual sorting must not change the persisted bundle field identities.
+    # Keep the established switch/enum/float table order for every signature.
+    bundled_names = [name for name, _members, _default in SWITCH_CONTROLS]
+    bundled_names.extend(prop[0] for prop in ENUM_PROPS if prop[0] != "Shading Model")
+    bundled_names.extend(prop[0] for prop in FLOAT_PROPS)
+    bundled_names = [name for name in bundled_names if name in property_sources]
+    # The bundle sits beside the two property columns; each frame gets its
+    # own separator with only the locally consumed fields visible.
     combine = _new(tree, "NodeCombineBundle", "MaterialPropertiesBundle",
-                   (FLOAT_COLUMN[0] + 400, FLOAT_COLUMN[1]),
+                   (NUMERIC_COLUMN[0] + 400, NUMERIC_COLUMN[1]),
                    "All material custom properties", props_frame)
     combine.define_signature = True
     combine_socket_names = {}
@@ -1009,12 +1368,9 @@ def _bundle_material_properties(tree, property_sources, property_types,
 
 
 # ------------------------------------------------------------- node layout --
-# Every position below is an ABSOLUTE canvas coordinate, transcribed from the
-# arranged graph in Blender 4.5 -- 4.x draws the widest nodes, so a layout that
-# reads cleanly there reads cleanly on 5.x too.  Absolute is what build() can
-# use directly: while it runs, every frame is still at the origin, and Blender
-# rebases each frame around its children on the first redraw, leaving them at
-# FRAME_PAD from the frame's own corner.
+# Frames start at the origin, so build() initially uses absolute node positions.
+# The final _SURFACE_NODE_LAYOUT / _SURFACE_GROUP_LAYOUT tables below apply the
+# authored arrangement without relying on a redraw or moving frame children.
 FRAME_ORIGIN = {
     "Props": (-2182, 2965), "Coords": (-757, 3434),
     "Base": (-138, 2630), "Coverage": (-141, 270), "Detail": (-137, -450),
@@ -1022,6 +1378,7 @@ FRAME_ORIGIN = {
     "Hair": (797, 2502), "Transition": (814, -2266), "Eye": (802, 2173),
     "Shade": (1767, 1177), "EyePath": (1952, 2484), "HairPath": (1903, 1554),
     "Out": (4375, 2301),
+    "ToneGradient": (-560, -2400),
 }
 FRAME_PAD = (30, -39)       # offset a shrunk frame leaves its first child at
 
@@ -1049,13 +1406,12 @@ OUT_POS_MENU = {            # 5.2 Menu Switch build, arranged in 5.2
 BUNDLE_SEPARATOR_DY = 300
 BUNDLE_SEPARATOR_POS = {"Out": (4364, 1234)}
 
-# Driven property columns, in the Props frame.
-PROP_ROW_PITCH = 150
-SWITCH_COLUMNS = ((-2151, 2925), (-1759, 2324))   # x, first y, per column
-SWITCH_COLUMN_LEN = 40      # switches per column; a longer list runs the last
-                            # column past its neighbour rather than losing rows
-ENUM_COLUMN = (-1751, 2925)
-FLOAT_COLUMN = (-1351, 2925)
+# Exactly two alphabetically stacked control columns. Integer selectors stay
+# integer properties but share the numeric column with the float controls.
+PROP_ROW_PITCH = 72
+PROP_NODE_WIDTH = 287
+SWITCH_COLUMN = (-2904, 1616)
+NUMERIC_COLUMN = (-2508, 1616)
 
 # Coordinate frame, and the texture slots inside each TEXTURES frame.
 UV_COLUMN = (-727, 3394)
@@ -1071,12 +1427,10 @@ def _out_pos(name):
 
 # --------------------------------------------------------- menu abstraction --
 
-# Ladder geometry.  A Mix node draws its data-type and blend-mode dropdowns
-# whether or not the ladder uses them, so one rung measures roughly 140 x 220 --
-# the original 200px row pitch and 200px column pitch were both SMALLER than the
-# nodes they were spacing, which is why every ladder overlapped itself as well
-# as the next menu down.  Keep MENU_ROW_PITCH above ~230 and the column offsets
-# more than ~180 apart or the overlap comes straight back.
+# A Mix node draws its data-type and blend-mode dropdowns even when the
+# ladder does not use them, so each rung measures roughly 140 x 220.
+# Keep MENU_ROW_PITCH above ~230 and column offsets more than ~180 apart
+# to prevent rungs from overlapping each other or the next menu.
 MENU_ROW_PITCH = 280
 MENU_COL_VAL = 320
 MENU_COL_EQ = 620
@@ -1465,8 +1819,6 @@ def util_rnm():
                     "flat -> detail")
         _prop(dmix, "data_type", "VECTOR")
         _sv(dmix, "A", (0.0, 0.0, 1.0))
-        dnorm = _new(g, "ShaderNodeVectorMath", "detail_normalize", (-660, -220))
-        _prop(dnorm, "operation", "NORMALIZE")
         t = _new(g, "ShaderNodeVectorMath", "t", (-660, 220),
                  "t = base + (0,0,1)")
         _prop(t, "operation", "ADD")
@@ -1495,9 +1847,8 @@ def util_rnm():
         _prop(norm, "operation", "NORMALIZE")
         _link(g, gi, "Strength", dmix, "Factor")
         _link(g, gi, "Detail", dmix, "B")
-        _link(g, dmix, "Result", dnorm, 0)
         _link(g, gi, "Base", t, 0)
-        _link(g, dnorm, 0, dsep, 0)
+        _link(g, dmix, "Result", dsep, 0)
         _link(g, dsep, "X", nx, 0)
         _link(g, dsep, "Y", ny, 0)
         _link(g, nx, 0, u, "X")
@@ -1514,7 +1865,9 @@ def util_rnm():
         _link(g, utz, 0, sub, 1)
         _link(g, sub, 0, norm, 0)
         _link(g, norm, 0, go, "Normal")
-    return _rebuild_group("FF7R Util/RNM", _b)
+    group = _rebuild_group("FF7R Util/RNM", _b)
+    _bypass_normalize(group, "detail_normalize", "detail_strength", "detail_xyz", 0)
+    return group
 
 
 def util_ao_combine():
@@ -1608,8 +1961,8 @@ def util_f0():
         F0 = clamp(x < 0.666667 ? x*0.06 : x*0.36 - 0.2, 0, 0.16)
         level = F0 / 0.08              (Blender: level 0.5 <-> F0 0.04)
 
-    The /0.08 divisor is the measured one from the hair script, which arrived at
-    0.046520 -> 0.5815.  An earlier draft of this file used /0.16 and was wrong."""
+    The /0.08 divisor matches the hair script's measured calibration:
+    0.046520 -> 0.5815."""
     def _b(g):
         _sock(g, "Specular IOR Level", "OUTPUT", "NodeSocketFloat")
         _sock(g, "F0", "OUTPUT", "NodeSocketFloat")
@@ -1708,10 +2061,9 @@ def grp_detail_layer():
     """Character detail (slerp) and MEC/environment detail (exact RNM core).
 
     The RNM option is transcribed from the retained Granite shader and is no
-    longer a stub. `build()` forces this option when Isotropy_ is enabled and
-    enables the layer from the actual detail-role switches, because current
-    RMI_Surface_Standard_Overlay_Isotropy_Detail variants do not carry Detail_.
-    Chained remains an artist-friendly preview option, not game shader math."""
+    longer a stub. `build()` selects RNM when Isotropy_ is enabled, while the
+    ordinary surface's Enable follows Detail_ directly as authored. Chained
+    remains an artist-friendly preview option, not game shader math."""
     def _b(g):
         _sock(g, "Base Color", "OUTPUT", "NodeSocketColor")
         _sock(g, "Normal", "OUTPUT", "NodeSocketVector")
@@ -1856,9 +2208,9 @@ def grp_segment_layers():
 
 def grp_layer_blend():
     """Layered_ / ShadingLayer_ -- Overlay the layer colour through its mask,
-    while roughness and metallic retain scalar mixes (PLAN tier 2). Corrects
-    an earlier wrong assumption: Fabric_ and Standard_ are NOT mutually
-    exclusive; Chocobo Body carries both."""
+    while roughness and metallic retain scalar mixes (PLAN tier 2).
+    Fabric_ and Standard_ are not mutually exclusive; Chocobo Body carries both.
+    """
     def _b(g):
         _sock(g, "Base Color", "OUTPUT", "NodeSocketColor")
         _sock(g, "Roughness", "OUTPUT", "NodeSocketFloat")
@@ -1958,8 +2310,7 @@ def grp_emissive():
     outside what a material JSON can show. Unclamped matters: it is what lets
     this drive HDR/bloom intensity per-instance without a separate material per
     state or per colour. Still PLAN tier 3 for the exact formula (plain
-    multiply is the working model, not shader-confirmed byte-for-byte) -- but
-    the per-object, not per-material, locality is now confirmed, not guessed.
+    multiply is the working model, not shader-confirmed byte-for-byte).
 
     Blender mechanism, and why it is NOT a driver: every other control in this
     file is a MATERIAL custom property read through an AVERAGE driver (see
@@ -1983,6 +2334,7 @@ def grp_emissive():
         _sock(g, "Emissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
         _sock(g, "ExtraEmissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
         _sock(g, "ExternalEmissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
+        _sock(g, "ExternalEmissiveContext", "INPUT", "NodeSocketColor", (0.5, 0.5, 0.5, 1.0))
         gi = _new(g, "NodeGroupInput", "Group Input", (-800, 0))
         go = _new(g, "NodeGroupOutput", "Group Output", (800, 0))
         e0 = _new(g, "ShaderNodeMix", "gate0", (-560, 200), "Emissive_ gate")
@@ -2015,12 +2367,304 @@ def grp_emissive():
         _link(g, e1, "Result", add, "B")
         _link(g, gi, "ExternalEmissive_", tint, "Factor")
         _link(g, add, "Result", tint, "A")
-        _link(g, objtint, "Color", tint, "B")
+        _link(g, gi, "ExternalEmissiveContext", tint, "B")
         _link(g, gi, "Emissive_", st, 0)
         _link(g, gi, "ExtraEmissive_", st, 1)
         _link(g, tint, "Result", go, "Emission")
         _link(g, st, 0, go, "Strength")
-    return _rebuild_group("FF7R Emissive", _b)
+    return _upgrade_emissive_context(_rebuild_group("FF7R Emissive", _b))
+
+
+def grp_hologram_highlight():
+    """Color-only hologram response authored in hologramtest.blend.
+
+    Keep the normal fallback and independent gain: this group is reusable
+    outside the surface master. Transparency belongs to the material output
+    branch, not to this group. There are no scene-color/depth dependencies.
+    """
+    def _b(g):
+        g.description = ("Source hologram highlight response as Color; no "
+                         "transparency, fog, AOVs or shader closure.")
+        definitions = [
+            ("Normal", "NodeSocketVector", (0.0, 0.0, 0.0), None, None,
+             "World-space normal. Zero/unconnected uses Geometry Normal; "
+             "connect Normal Map Normal, not texture RGB."),
+            ("Tint", "NodeSocketColor", (1.0, 1.0, 1.0, 1.0), None, None,
+             "External emissive color; source default is white. Alpha is ignored."),
+            ("Strength", "NodeSocketFloat", 1.0, 0.0, 1000.0,
+             "Independent output gain; does not change the highlight shape."),
+            ("Roughness", "NodeSocketFloat", 0.5, 0.0, 1.0,
+             "Effective source roughness, after any texture/detail merge."),
+            ("Occlusion", "NodeSocketFloat", 1.0, 0.0, 1.0,
+             "Effective source occlusion, after any AO/detail merge. One is neutral."),
+            ("Vertex Weight", "NodeSocketFloat", 1.0, 0.0, 1.0,
+             "Optional captured t0 volume Red response. Leave at one to bypass."),
+            ("Up Direction", "NodeSocketVector", (0.0, 0.0, 1.0), None, None,
+             "Unit world-space vector corresponding to UE up; default Blender Z."),
+        ]
+        for name, stype, default, lo, hi, description in definitions:
+            _sock(g, name, "INPUT", stype, default, lo, hi).description = description
+        _sock(g, "Color", "OUTPUT", "NodeSocketColor").description = \
+            "Highlight RGB only; Alpha=1."
+        _sock(g, "Intensity", "OUTPUT", "NodeSocketFloat").description = \
+            "Untinted surface intensity times Strength."
+        gi = _new(g, "NodeGroupInput", "Group Input", (-1500, 100))
+        go = _new(g, "NodeGroupOutput", "Group Output", (3850, 100))
+        gi.width = 260
+        go.width = 230
+
+        def node(name, operation, loc, *, vector=False, defaults=()):
+            n = _new(g, "ShaderNodeVectorMath" if vector else "ShaderNodeMath",
+                     name, loc, name)
+            n.operation = operation
+            n.width = 230
+            for index, value in defaults:
+                _sv(n, index, value)
+            return n
+
+        geometry = _new(g, "ShaderNodeNewGeometry",
+                        "Geometry shading normal + view direction", (-1100, 900),
+                        "Geometry shading normal + view direction")
+        geometry.width = 230
+        length = node("Override normal length", "LENGTH", (-1100, 620), vector=True)
+        nonzero = node("Nonzero Normal selects override", "GREATER_THAN", (-770, 900),
+                       defaults=((1, 0.0),))
+        normal = _new(g, "ShaderNodeMix", "Automatic Normal / supplied world Normal",
+                      (-440, 900), "Automatic Normal / supplied world Normal")
+        normal.data_type = "VECTOR"
+        normal.width = 230
+        nv = node("World N dot view", "DOT_PRODUCT", (-110, 900), vector=True)
+        u0 = node("u = saturate(N dot V) / max 0", "MAXIMUM", (220, 900), defaults=((1, 0.0),))
+        u = node("u = saturate(N dot V) / min 1", "MINIMUM", (550, 900), defaults=((1, 1.0),))
+        front = node("Head-on highlight / u^5", "POWER", (880, 900), defaults=((1, 5.0),))
+        inverse = node("1 - u", "SUBTRACT", (880, 620), defaults=((0, 1.0),))
+        edge = node("Edge highlight / (1-u)^5", "POWER", (1210, 900), defaults=((1, 5.0),))
+        lobes = node("Original two-lobe highlight", "ADD", (1540, 900))
+        nu = node("World N dot UE up", "DOT_PRODUCT", (-110, 620), vector=True)
+        half_up = node("Upward normal * 0.5", "MULTIPLY", (220, 620), defaults=((1, 0.5),))
+        up = node("Source upward-normal weight", "ADD", (550, 620), defaults=((1, 0.5),))
+        rough = node("-16 * roughness", "MULTIPLY", (-1100, 340), defaults=((1, -16.0),))
+        rough_bias = node("-1 - 16 * roughness", "ADD", (-770, 340), defaults=((1, -1.0),))
+        exponent = node("AO exponent / 2^(-1-16r)", "POWER", (-440, 620), defaults=((0, 2.0),))
+        ao_u = node("AO + u", "ADD", (880, 340))
+        power = node("(AO + u)^exponent", "POWER", (1210, 620))
+        ao_bias = node("AO - 1", "SUBTRACT", (880, 60), defaults=((1, 1.0),))
+        response = node("Source roughness / AO response", "ADD", (1540, 620))
+        response0 = node("Clamp AO response / max 0", "MAXIMUM", (1870, 900), defaults=((1, 0.0),))
+        response1 = node("Clamp AO response / min 1", "MINIMUM", (2200, 900), defaults=((1, 1.0),))
+        highlight = node("Highlight * upward-normal weight", "MULTIPLY", (1870, 620))
+        weighted = node("Source t0 volume weight", "MULTIPLY", (2200, 620))
+        intensity = node("_569 surface highlight intensity", "MULTIPLY", (2530, 900))
+        tint = node("Tint * source intensity", "SCALE", (2860, 900), vector=True)
+        positive = node("Source max(0, tinted intensity)", "MAXIMUM", (3190, 900),
+                        vector=True, defaults=((1, (0.0, 0.0, 0.0)),))
+        color = node("Color / independent gain, no HDR clamp", "SCALE", (3520, 900), vector=True)
+        color.width = 255
+        gained = node("Untinted Intensity * Strength", "MULTIPLY", (3520, 620))
+        for src, out, dst, inp in [
+                (gi, "Normal", length, 0), (length, 1, nonzero, 0),
+                (nonzero, 0, normal, 0), (geometry, "Normal", normal, 4),
+                (gi, "Normal", normal, 5),
+                (normal, 1, nv, 0), (geometry, "Incoming", nv, 1), (nv, 1, u0, 0),
+                (u0, 0, u, 0), (u, 0, front, 0), (u, 0, inverse, 1),
+                (inverse, 0, edge, 0), (front, 0, lobes, 0), (edge, 0, lobes, 1),
+                (normal, 1, nu, 0), (gi, "Up Direction", nu, 1),
+                (nu, 1, half_up, 0), (half_up, 0, up, 0),
+                (gi, "Roughness", rough, 0), (rough, 0, rough_bias, 0),
+                (rough_bias, 0, exponent, 1), (gi, "Occlusion", ao_u, 0),
+                (u, 0, ao_u, 1), (ao_u, 0, power, 0), (exponent, 0, power, 1),
+                (gi, "Occlusion", ao_bias, 0), (ao_bias, 0, response, 0),
+                (power, 0, response, 1), (response, 0, response0, 0),
+                (response0, 0, response1, 0), (lobes, 0, highlight, 0),
+                (up, 0, highlight, 1), (highlight, 0, weighted, 0),
+                (gi, "Vertex Weight", weighted, 1), (weighted, 0, intensity, 0),
+                (response1, 0, intensity, 1), (gi, "Tint", tint, 0),
+                (intensity, 0, tint, 3), (tint, 0, positive, 0),
+                (positive, 0, color, 0), (gi, "Strength", color, 3),
+                (intensity, 0, gained, 0), (gi, "Strength", gained, 1),
+                (color, 0, go, "Color"), (gained, 0, go, "Intensity")]:
+            _link(g, src, out, dst, inp)
+    group = _rebuild_group("FF7R Hologram Highlight / Color Only", _b)
+    _bypass_normalize(group, "View toward camera / normalize Incoming",
+                      "Geometry shading normal + view direction", "World N dot view", 1)
+    return group
+
+
+def grp_phantom_tone_gradient():
+    """The authored Phantom lookup coordinate, including its muted camera pair."""
+    def _b(g):
+        _sock(g, "Value", "OUTPUT", "NodeSocketFloat", 0.0)
+        _sock(g, "Normal", "INPUT", "NodeSocketVector", (0.0, 0.0, 0.0))
+        _sock(g, "Roughness", "INPUT", "NodeSocketFloat", 0.0)
+        _sock(g, "WideOcclusion", "INPUT", "NodeSocketFloat", 0.0)
+        gi = _new(g, "NodeGroupInput", "Group Input", (-1100, 0))
+        go = _new(g, "NodeGroupOutput", "Group Output", (1780, 100))
+
+        def math(name, op, loc, defaults=(), clamp=False, vector=False):
+            n = _new(g, "ShaderNodeVectorMath" if vector else "ShaderNodeMath", name, loc, name)
+            n.operation = op
+            if not vector:
+                n.use_clamp = clamp
+            for index, value in defaults:
+                _sv(n, index, value)
+            return n
+
+        camera = _new(g, "ShaderNodeCameraData", "Actual camera", (-1100, 550), "Actual camera")
+        world = _new(g, "ShaderNodeVectorTransform", "View vector to world", (-880, 550), "View vector to world")
+        world.vector_type, world.convert_from, world.convert_to = "VECTOR", "CAMERA", "WORLD"
+        camera.mute = world.mute = True  # Authored F02, independent of variant muting.
+        _sv(world, 0, (0.5, 0.5, 0.5))
+        dot = math("N dot camera-to-surface", "DOT_PRODUCT", (-660, 430), vector=True)
+        d = math("d = saturate(N dot V)", "MULTIPLY", (-440, 430), ((1, -1.0),), True)
+        inverse = math("1 - d", "SUBTRACT", (-220, 620), ((0, 1.0),))
+        edge = math("(1 - d)^5", "POWER", (0, 620), ((1, 5.0),))
+        front = math("d^5", "POWER", (0, 430), ((1, 5.0),))
+        angle = math("d^5 + (1 - d)^5", "ADD", (220, 530))
+        z = _new(g, "ShaderNodeSeparateXYZ", "World normal Z", (-880, 80), "World normal Z")
+        up = math("0.5 * N.z + 0.5", "MULTIPLY_ADD", (-440, 80), ((1, 0.5), (2, 0.5)))
+        rough = math("-1 - 16 * roughness", "MULTIPLY_ADD", (-660, -180), ((1, -16.0), (2, -1.0)))
+        exponent = math("e = 2^(-1 - 16r)", "POWER", (-220, -180), ((0, 2.0),))
+        ao_d = math("occlusion + d", "ADD", (0, -100))
+        response_power = math("(occlusion + d)^e", "POWER", (220, -100))
+        bias = math("occlusion - 1", "SUBTRACT", (220, -340), ((1, 1.0),))
+        response = math("saturate(o - 1 + (o + d)^e)", "ADD", (660, -100), clamp=True)
+        weighted = math("Angle * world-up", "MULTIPLY", (660, 430))
+        result = math("Tone factor (saturated)", "MULTIPLY", (1100, 100), clamp=True)
+        for src, output, dst, socket in (
+                (camera, "View Vector", world, 0), (world, 0, dot, 1), (gi, "Normal", dot, 0),
+                (dot, "Value", d, 0), (d, 0, inverse, 1), (inverse, 0, edge, 0),
+                (d, 0, front, 0), (edge, 0, angle, 0), (front, 0, angle, 1),
+                (gi, "Normal", z, 0), (z, "Z", up, 0), (gi, "Roughness", rough, 0),
+                (rough, 0, exponent, 1), (gi, "WideOcclusion", ao_d, 0), (d, 0, ao_d, 1),
+                (ao_d, 0, response_power, 0), (exponent, 0, response_power, 1),
+                (gi, "WideOcclusion", bias, 0), (response_power, 0, response, 0),
+                (bias, 0, response, 1), (angle, 0, weighted, 0), (up, 0, weighted, 1),
+                (weighted, 0, result, 0), (response, 0, result, 1), (result, 0, go, "Value")):
+            _link(g, src, output, dst, socket)
+    return _rebuild_group("FF7R Phantom Tone Gradient UV", _b)
+
+
+SURFACE_TEXTURE_DOC_NAME = "FF7R surface doc image texture"
+SURFACE_TEXTURE_DOC_TEXT = (
+    "Below every texture is abled to be toggled off by switches. Muted texture nodes use "
+    "the RGB value on the mix node's B slot, which the script sets based on slots that "
+    "use RGB values instead of textures in the original Unreal Engine material.")
+
+
+def _ensure_texture_documentation(tree):
+    frame = tree.nodes.get("FRAME_Base Docs")
+    if frame is None:
+        frame = _frame(tree, "FRAME_Base Docs", "Textures")
+        frame.location = (-508, 3500)
+        frame.width, frame.height, frame.label_size = 1716, 754, 57
+    if frame.bl_idname != "NodeFrame":
+        return
+    if frame.text is None:
+        text = bpy.data.texts.get(SURFACE_TEXTURE_DOC_NAME)
+        if text is None:
+            text = bpy.data.texts.new(SURFACE_TEXTURE_DOC_NAME)
+        if not text.as_string():
+            text.write(SURFACE_TEXTURE_DOC_TEXT)
+        frame.text = text
+
+
+def refresh_phantom_surface(mat):
+    """Upgrade the recognized stock color path, preserving existing edits/mutes."""
+    tree = mat.node_tree
+    nodes = tree.nodes
+    graph_names = [name for name in PHANTOM_NODES if name not in {"FRAME_Base Docs", "external_tint"}]
+    if any(nodes.get(name) for name in graph_names):
+        if not all(nodes.get(name) for name in graph_names):
+            return False  # Do not overwrite a partial or artist-authored path.
+        grp_emissive()
+        util_rnm()
+        grp_hologram_highlight()
+        _ensure_texture_documentation(tree)
+        _bypass_normalize(tree, "N_Detail Normalize", "N_Detail", "DetailLayer", "Detail Normal")
+        # A legacy Cycles output may have just been restored by its own upgrader.
+        factor = nodes["Mix Shader (Cycles)"].inputs[0]
+        if factor.is_linked and factor.links[0].from_node == nodes["Math.003"]:
+            tree.links.new(nodes["Math.004"].outputs[0], factor)
+        return True
+    required = ("TEX_ToneGradient", "USE_ToneGradient", "HologramOverride", "Principled BSDF",
+                "Emission", "Transparent BSDF", "Math.002", "Math.003", "Mix Shader (Cycles)",
+                "SW_Phantom_", "LayerBlend", "N_SharedWorld", "USE_WideOcclusion", "Emissive")
+    if not all(nodes.get(name) for name in required):
+        return False
+    for target, socket in ((nodes["Principled BSDF"], "Base Color"), (nodes["Emission"], "Color")):
+        if not any(link.from_node == nodes["HologramOverride"] for link in target.inputs[socket].links):
+            return False
+    gate_input = nodes["Math.003"].inputs[1]
+    if not gate_input.is_linked:
+        return False
+    old_nodes = set(nodes.keys())
+    grp_emissive()
+    util_rnm()
+    grp_hologram_highlight()
+    phantom_gate = gate_input.links[0].from_socket
+    output_props = nodes.get("PROPS_FRAME_Out")
+    phantom = (output_props.outputs.get(CONTROL_FOR_SWITCH["Phantom_"])
+               if output_props else nodes["SW_Phantom_"].outputs[0])
+    _wire_emissive_context(tree)
+    tint = _external_emissive_attribute(tree, nodes.get("FRAME_Emissive"))
+    if tint is None:
+        return False
+    grp_phantom_tone_gradient()
+    tone = _grp(tree, "FF7R Phantom Tone Gradient UV", "ToneGradient UV", (3550, 1810),
+                "ToneGradient UV", nodes.get("FRAME_ToneGradient"))
+    _link(tree, nodes["N_SharedWorld"], "Vector", tone, "Normal")
+    _link(tree, nodes["LayerBlend"], "Roughness", tone, "Roughness")
+    _link(tree, nodes["USE_WideOcclusion"], "Result", tone, "WideOcclusion")
+    texture = nodes["TEX_ToneGradient"]
+    if texture.bl_idname == "ShaderNodeTexImage":
+        texture.interpolation = "Linear"
+        _link(tree, tone, "Value", texture, "Vector")
+    parent = nodes.get("FRAME_Out")
+    multiply = _new(tree, "ShaderNodeVectorMath", "External emissive tint", (4400, 2100), "External emissive tint", parent)
+    multiply.operation = "MULTIPLY"
+    camera = _new(tree, "ShaderNodeCameraData", "Phantom Camera Data", (4210, 1560), "View Z Depth", parent)
+    distance = _new(tree, "ShaderNodeValue", "Phantom Fade Distance", (4210, 1800), "Fade Distance", parent)
+    distance.outputs[0].default_value = 5.0
+    fade = _new(tree, "ShaderNodeMapRange", "Alpha = smooth depth fade", (4440, 1800), "Alpha = smooth depth fade", parent)
+    fade.data_type, fade.interpolation_type, fade.clamp = "FLOAT", "SMOOTHSTEP", True
+    for key, value in (("From Min", 0.0), ("To Min", 0.0), ("To Max", 1.0)):
+        _sv(fade, key, value)
+    power = _new(tree, "ShaderNodeMath", "RGB depth fade = alpha^8", (4680, 1800), "RGB depth fade = alpha^8", parent)
+    power.operation = "POWER"
+    _sv(power, 1, 8.0)
+    rgb = _new(tree, "ShaderNodeVectorMath", "Final linear RGB", (4910, 2100), "Final linear RGB", parent)
+    rgb.operation = "SCALE"
+    override = _new(tree, "ShaderNodeMix", "PhantomOverride", (5689, 1500), "Phantom_ overrides base colour", parent)
+    override.data_type = "RGBA"
+    override.clamp_factor, override.clamp_result = True, False
+    opaque = _new(tree, "ShaderNodeMix", "PhantomOpaque", (5448, 600), "Opaque?", parent)
+    opaque.data_type = "FLOAT"
+    _sv(opaque, "B", 0.0)
+    gate = _new(tree, "ShaderNodeMath", "Math.004", (6166, -1350), "Cycles compositor incl. Phantom_", nodes.get("FRAME_AlphaCompositeColored"))
+    gate.operation = "MAXIMUM"
+    for src, output, dst, socket in (
+            (nodes["USE_ToneGradient"], "Result", multiply, 0), (tint, "Color", multiply, 1),
+            (camera, "View Z Depth", fade, "Value"), (distance, 0, fade, "From Max"),
+            (fade, "Result", power, 0), (multiply, 0, rgb, 0), (power, 0, rgb, "Scale"),
+            (nodes["HologramOverride"], "Result", override, "A"), (rgb, 0, override, "B"),
+            (override, "Result", nodes["Principled BSDF"], "Base Color"),
+            (override, "Result", nodes["Emission"], "Color"), (power, 0, opaque, "A"),
+            (opaque, "Result", nodes["Transparent BSDF"], "Color"),
+            (nodes["Math.002"], 0, nodes["Math.003"], 1), (nodes["Math.003"], 0, gate, 0),
+            (gate, 0, nodes["Mix Shader (Cycles)"], 0)):
+        _link(tree, src, output, dst, socket)
+    tree.links.new(phantom, _in(override, "Factor"))
+    tree.links.new(phantom, _in(opaque, "Factor"))
+    tree.links.new(phantom_gate, gate.inputs[1])
+    _bypass_normalize(tree, "N_Detail Normalize", "N_Detail", "DetailLayer", "Detail Normal")
+    _ensure_texture_documentation(tree)
+    added_layout = {name: value for name, value in _PHANTOM_LAYOUT.items()
+                    if name not in old_nodes and nodes.get(name) is not None}
+    if "ToneGradient UV" in added_layout:
+        x, y = texture.location_absolute
+        added_layout["ToneGradient UV"] = (x - 240, y - 40, 200)
+    _apply_node_layout(tree, added_layout)
+    return True
 
 
 def grp_blood():
@@ -2116,6 +2760,8 @@ ROLES = [
     ("Segment",    "LayeredColor",             "col", "sRGB",      (0.5, 0.5, 0.5, 1.0)),
     ("Emissive",   "Emissive",                 "col", "sRGB",      (0.0, 0.0, 0.0, 1.0)),
     ("Emissive",   "ExtraEmissive",            "col", "sRGB",      (0.0, 0.0, 0.0, 1.0)),
+    # Linear HDR lookup used by the authored Phantom color path.
+    ("ToneGradient", "ToneGradient",            "col", "Non-Color", (1.0, 1.0, 1.0, 1.0)),
     # BC1 full-RGB direction: all three channels are authored, Z included.
     ("Hair",       "WideBentNormal",           "nrm", "Non-Color", (0.5, 0.5, 1.0, 1.0)),
     ("Transition", "PositiveTransitionNormal", "nrm", "Non-Color", (0.5, 0.5, 1.0, 1.0)),
@@ -2135,7 +2781,8 @@ ROLES = [
 # occlusion) use TEXCOORD_1.xy, the third packed coordinate. Detail itself is
 # the placement mask, sampled on the second UV set; the hair flow map is also
 # on UV1.
-ROLE_UV = {"WideBentNormal": 1, "DetailCoverage": 2, "DetailColor": 2, "DetailNormal": 2,
+ROLE_UV = {"WideBentNormal": 1, "WideOcclusion": 1,
+           "DetailCoverage": 2, "DetailColor": 2, "DetailNormal": 2,
            "DetailRoughness": 2, "Detail": 1, "DetailOcclusion": 2}
 
 SWITCH_FOR_ROLE = {
@@ -2150,6 +2797,7 @@ SWITCH_FOR_ROLE = {
     "SegmentLayer1": "SegmentLayer1_", "ShadingLayer": "ShadingLayer_",
     "LayeredColor": "LayeredColor_", "Emissive": "Emissive_",
     "ExtraEmissive": "ExtraEmissive_", "WideBentNormal": "WideBentNormal_",
+    "ToneGradient": "ToneGradient_",
     "PositiveTransitionNormal": "PositiveTransitionNormal_",
     "IrisColor": "IrisColor_", "IrisNormal": "IrisNormal_",
     "IrisOcclusion": "IrisOcclusion_", "IrisEmissive": "IrisEmissive_",
@@ -2176,7 +2824,7 @@ OUT_OF_SCOPE = {
         ["Transparency_", "Transmittance_", "Opacity_", "Thin_", "Thick_",
          "ReflectanceGlass_", "ReflectanceWater_", "ReflectanceCrystal_",
          "PhaseGGlass_", "PhaseGWater_", "PhaseGCrystal_", "Muddiness_"],
-    "late compositing pass (reads resolved SceneColor/Depth)":
+    "scene-color/depth compositing not reconstructed (surface approximations exist)":
         ["Hologram_", "Unlit_", "Phantom_", "Ghost_", "HologramEye_"],
     "captured permutation/base pass exists, but its feature math is not traced":
         ["Gradient*_", "BrokenFlow*_", "WideFlow*_", "CoverageIdentifier*_",
@@ -2202,12 +2850,16 @@ def _tex_slot(t, mat, role, kind, cs, default, frame, x, y, uvnodes,
     # Cubic softens Blender's harsh close-range normal-map filtering.
     _prop(img, "interpolation", "Cubic" if kind == "nrm" else "Linear")
     _prop(img, "extension", "REPEAT")
+    if role == "ToneGradient":
+        _prop(img, "interpolation", "Linear")
+        _prop(img, "extension", "EXTEND")
     dt = "RGBA" if kind in ("col", "nrm") else "FLOAT"
     sw = SWITCH_FOR_ROLE.get(role)
     byp = _new(t, "ShaderNodeMix", "USE_" + role, (x + SLOT_USE_DX, y),
                "%s   neutral / texture   [%s]" % (role, sw or "always"), frame)
     _prop(byp, "data_type", dt)
     _sv(byp, "A", default)
+    _sv(byp, "B", default)
     _sv(byp, "Factor", 0.0)
     _link(t, img, "Color", byp, "B")
     if sw:
@@ -2267,11 +2919,9 @@ def _resolve_uv_names(n=4):
 def grp_surface_shading_model():
     """Shading-model parameters for variants that are neither Eye_ nor Hair_.
 
-    The generic master previously carried alternate eye and strand routes in
-    its model selector.  Those variants now receive their own masters, so this
-    group intentionally has no Eye/Hair outputs or inputs.  The seven selector
-    values are retained to keep the material's persisted Shading Model enum
-    compatible with the variant table and with older Blend files.
+    Eye and Hair variants use dedicated masters, so this group has no Eye/Hair
+    outputs or inputs. The seven selector values keep the persisted Shading Model
+    enum compatible with the variant table and older Blend files.
     """
     def _b(g):
         outs = ["Subsurface Weight", "Sheen Weight", "Anisotropic",
@@ -2329,12 +2979,486 @@ def grp_surface_shading_model():
     return _rebuild_group("FF7R Surface Shading Model", _b)
 
 
-def build():
+# Saved absolute coordinates from Rebirth RMI Surface in hologramtest.blend.
+# This is data, not a runtime dependency on that file. Property controls
+# use the two sorted columns above. Frames are fitted again by Blender.
+_HOLOGRAM_ALPHA_LAYOUT = {
+    'HologramNativeAlpha': (-800, -1100, 180),
+    'HologramNativeCoverage': (-580, -1100, 200),
+    'HologramClipThreshold': (-340, -1100, 220),
+    'HologramVisibility': (-80, -1100, 220),
+    'HologramCutout': (180, -180, 240),
+    'HologramCompositeOverride': (460, 0, 240),
+}
+_HOLOGRAM_CYCLES_LAYOUT = {
+    'Cycles Hologram': (180, -1300, 300),
+    'HologramCyclesCompositeOverride': (540, -1300, 240),
+    'Mix Shader (Cycles)': (840, -1000, 250),
+    'Material Output (Cycles)': (1150, -1000, 200),
+}
+_SURFACE_NODE_LAYOUT = {
+    'FRAME_Coords': (-1023.353, 1167.741, 279.647, 517.094),
+    'FRAME_Base': (-504.529, 2629.977, 858.941, 2137.094),
+    'FRAME_Coverage': (-541.588, 269.859, 833.529, 640.976),
+    'FRAME_Detail': (-590.294, -450.141, 813.412, 1780.271),
+    'FRAME_SkinCloth': (721.588, -1098.141, 551.882, 979.8),
+    'FRAME_Segment': (523.588, 1916.329, 698, 1425.565),
+    'FRAME_Emissive': (525.706, -279.671, 754.118, 663.212),
+    'FRAME_Transition': (607.235, 439.271, 664.118, 286.271),
+    'FRAME_Shade': (1491.353, 1178.329, 1910.681, 1996.271),
+    'FRAME_Out': (5114.647, 1039.624, 1677.412, 1749.565),
+    'UV0': (-992.749, 1128.265, 160),
+    'UV1': (-988.749, 1017.296, 160),
+    'UV2': (-990.749, 904.326, 160),
+    'UV3': (-933.661, 782.352, 160),
+    'TEX_Color': (-240.088, 2591, 240),
+    'USE_Color': (51.912, 2591, 140),
+    'TEX_Normal': (-240.088, 2211, 240),
+    'USE_Normal': (51.912, 2211, 140),
+    'TEX_Roughness': (-240.088, 1831, 240),
+    'USE_Roughness': (51.912, 1831, 140),
+    'TEX_Metallic': (-167.765, 1451, 240),
+    'USE_Metallic': (124.235, 1451, 140),
+    'TEX_Occlusion': (-108, 1071, 240),
+    'USE_Occlusion': (184, 1071, 140),
+    'TEX_WideOcclusion': (-240.912, 823.906, 240),
+    'USE_WideOcclusion': (51.912, 691, 140),
+    'TEX_Coverage': (-170.765, 231, 240),
+    'USE_Coverage': (121.235, 231, 140),
+    'TEX_DetailCoverage': (-170.765, -149, 240),
+    'USE_DetailCoverage': (121.235, -149, 140),
+    'TEX_Detail': (-239.088, -489, 240),
+    'USE_Detail': (52.912, -489, 140),
+    'TEX_DetailNormal': (-239.088, -869, 240),
+    'USE_DetailNormal': (52.912, -869, 140),
+    'TEX_DetailRoughness': (-239.088, -1249, 240),
+    'USE_DetailRoughness': (52.912, -1249, 140),
+    'TEX_DetailColor': (-239.088, -1629, 240),
+    'USE_DetailColor': (52.912, -1629, 140),
+    'TEX_DetailOcclusion': (-239.088, -2009, 240),
+    'USE_DetailOcclusion': (52.912, -2009, 140),
+    'TEX_Pores': (811.305, -1476.271, 240),
+    'USE_Pores': (1103.305, -1476.271, 140),
+    'TEX_Diffusion': (751.54, -1856.271, 240),
+    'USE_Diffusion': (1043.54, -1856.271, 140),
+    'TEX_SegmentLayer0': (759.279, 1877.689, 240),
+    'USE_SegmentLayer0': (1051.279, 1877.689, 140),
+    'TEX_SegmentLayer1': (759.279, 1497.689, 240),
+    'USE_SegmentLayer1': (1051.279, 1497.689, 140),
+    'TEX_ShadingLayer': (759.279, 1117.689, 240),
+    'USE_ShadingLayer': (1051.279, 1117.689, 140),
+    'TEX_LayeredColor': (759.279, 737.689, 240),
+    'USE_LayeredColor': (1051.279, 737.689, 140),
+    'TEX_Emissive': (817.554, -318.669, 240),
+    'USE_Emissive': (1109.554, -318.669, 140),
+    'TEX_ExtraEmissive': (817.554, -698.669, 240),
+    'USE_ExtraEmissive': (1109.554, -698.669, 140),
+    'TEX_PositiveTransitionNormal': (809.061, 400.342, 240),
+    'USE_PositiveTransitionNormal': (1101.061, 400.342, 140),
+    'N_Base': (1530.599, 1003.74, 321.621),
+    'N_Base Normalize': (1892.743, 1006.232, 167.378),
+    'N_Detail': (1521.069, 720.864, 321.621),
+    'N_Detail Normalize': (1881.956, 728.594, 173.368),
+    'N_Transition': (1554.473, 440.14, 321.621),
+    'N_Transition Normalize': (1889.809, 444.815, 183.241),
+    'DetailLayer': (2219.632, 918.124, 221.278),
+    'TransitionNormal': (2545.709, 693.16, 174.146),
+    'N_SharedWorld': (2767.763, 680, 213.995),
+    'SegmentLayers': (2563.235, 1139.172, 185.345),
+    'LayerBlend': (2792.323, 1010.149, 213.995),
+    'CoverageWithDetail': (2137.082, 374.589, 186.201),
+    'Coverage': (2340.865, 422.566, 140),
+    'DetailCoverageShadowRay': (2150.669, 147.846, 140),
+    'DetailCoverageShadowGate': (2333.752, 220.822, 140),
+    'AlphaWithoutDetailCoverageShadow': (2533.713, 414.353, 236.998),
+    'BackfaceCulling': (2620.724, 253.48, 140),
+    'AlphaWithoutBackfaces': (2807.4, 424.219, 213.995),
+    'Blood': (2806.29, -694.816, 213.995),
+    'Film': (2813.129, 222.005, 213.995),
+    'F0': (2809.129, 13.005, 213.995),
+    'Emissive': (2808.129, -121.991, 213.995),
+    'ShadingModel': (2807.27, -338.172, 213.995),
+    'RNMWhenIsotropy': (1938.897, -29.262, 140),
+    'EffectiveDetailBlend': (2125.305, -27.527, 215.789),
+    'BloodOverride': (5467.075, 1000.533, 199.096),
+    'Principled BSDF': (6040.235, 500, 240),
+    'Material Output': (6621.528, 491.212, 140),
+    'EmissionStrength': (5157.344, -35.457, 220.701),
+    'EmissiveCameraOnlyAttribute': (5157.804, -192.327, 216.596),
+    'EmissiveCameraRay': (5168.386, -335.567, 140),
+    'EmissionCameraRayStrength': (5392.906, -246.72, 201.18),
+    'EmissionCameraOnly': (5609.516, -129.542, 163.939),
+    'MetallicGate': (5416.273, 230.841, 140),
+    'MetallicModelGate': (5601.511, 296.331, 140),
+    'PROPS_FRAME_Out': (5144.455, 158.98, 243.951),
+    'PROPS_FRAME_Base': (-474.491, 1785.665, 140),
+    'PROPS_FRAME_Coverage': (-511.123, -92.265, 140),
+    'PROPS_FRAME_Shade': (1559.057, -29.565, 291.58),
+    'PROPS_FRAME_Detail': (-560.297, -1195.169, 140),
+    'PROPS_FRAME_Segment': (554.193, 1235.705, 140),
+    'PROPS_FRAME_SkinCloth': (751.54, -1137.271, 140),
+    'PROPS_FRAME_Emissive': (555.887, -578.195, 140),
+    'PROPS_FRAME_Transition': (637.673, 353.582, 140),
+    'FF7R / Hologram Highlight / Color Only': (3135.241, 1004.081, 236.681),
+    'Reroute': (-1079.142, -813.359, 9.5),
+    'Reroute.001': (389.456, 2691.53, 9.5),
+    'Reroute.002': (1952.577, 2290.234, 9.5),
+    'Reroute.003': (4887.708, 2540.139, 9.5),
+    'Reroute.004': (371.508, 1132.744, 9.5),
+    'Reroute.005': (-460.354, 450.79, 9.5),
+    'Reroute.006': (364.605, 288.503, 9.5),
+    'Reroute.007': (-449.159, -1119.204, 9.5),
+    'Reroute.008': (-688.59, -635.818, 9.5),
+    'Reroute.009': (-403.169, 1181.465, 9.5),
+    'Emission': (5876.457, -493.882, 140),
+    'Add Shader': (6056.926, -534.737, 230.118),
+    'Transparent BSDF': (5875.943, -605.513, 140),
+    'HologramOverride': (5689.607, 992.838, 219.057),
+    'Mix Shader': (6320.117, 487.554, 236.637),
+    'PROPS_FRAME_AlphaCompositeColored': (5246.356, -1049.108, 350.645),
+    'Math': (5643.577, -927.415, 140),
+    'Math.001': (5807.497, -1029.024, 140),
+    'Math.002': (5983.768, -1145.425, 140),
+    'Math.003': (6157.313, -1236.16, 140),
+    'FRAME_AlphaCompositeColored': (5216.294, -891.494, 1110.941, 518.329),
+}
+
+_SURFACE_GROUP_LAYOUT = {
+    'FF7R Detail Layer': {
+        'Group Input': (-1100, 0, 140),
+        'Group Output': (1400, 0, 140),
+        'gate': (-860, -520, 140),
+        'detail_normal_xyz': (-1000, 300, 140),
+        'detail_normal_x': (-860, 380, 140),
+        'detail_normal_y': (-860, 220, 140),
+        'detail_normal_scaled': (-720, 300, 140),
+        'detail_normal_renormalize': (-720, 140, 140),
+        'overlay': (-560, 460, 140),
+        'slerp': (-560, 140, 140),
+        'rnm': (-560, -20, 140),
+        'rough': (-560, -180, 140),
+        'ao': (-560, -360, 140),
+        'chained': (-560, -60, 140),
+        'chain_n': (-380, -60, 140),
+        'DetailBlend_frame': (129.706, 178.8, 800.706, 880.271),
+        'DetailBlend_val0': (160, 140, 140),
+        'DetailBlend_val1': (160, -140, 140),
+        'DetailBlend_eq1': (460, -30, 140),
+        'DetailBlend_mix1': (760, -140, 140),
+        'DetailBlend_val2': (160, -420, 140),
+        'DetailBlend_eq2': (460, -310, 140),
+        'DetailBlend_mix2': (760, -420, 140),
+    },
+    'FF7R Transition Normal': {
+        'Group Input': (-900, 0, 140),
+        'Group Output': (900, 0, 140),
+        'vertex_expression': (-700, -240, 140),
+        'object_prop': (-700, -460, 140),
+        'VExprSource_frame': (-149.824, -100.729, 799.647, 794.506),
+        'VExprSource_val0': (-120, -140, 140),
+        'VExprSource_val1': (-120, -420, 140),
+        'VExprSource_eq1': (180, -310, 140),
+        'VExprSource_mix1': (480, -420, 140),
+        'VExprSource_val2': (-120, -700, 140),
+        'VExprSource_eq2': (180, -590, 140),
+        'VExprSource_mix2': (480, -700, 140),
+        'gate': (400, -140, 140),
+        'slerp': (588.552, 133.523, 223.246),
+    },
+    'FF7R Emissive': {
+        'Group Input': (-800, 0, 140),
+        'Group Output': (800, 0, 140),
+        'gate0': (-560, 200, 300.452),
+        'gate1': (-560, -80, 300.452),
+        'sum': (-149.655, 63.792, 300.452),
+        'external_tint': (-565.054, -321.929, 300.452),
+        'external': (252.061, 60, 300.452),
+        'strength': (252.061, -260, 300.452),
+    },
+    'FF7R Surface Shading Model': {
+        'Group Input': (-2034.907, -172.501, 140),
+        'Group Output': (1200, -185.399, 140),
+        'SurfaceSM_SubsurfaceWeight_frame': (-662.294, 3687.741, 799.647, 1299.565),
+        'SurfaceSM_SubsurfaceWeight_val0': (-632.629, 3648.586, 140),
+        'SurfaceSM_SubsurfaceWeight_val1': (-632.629, 3471.517, 140),
+        'SurfaceSM_SubsurfaceWeight_eq1': (-332.629, 3541.08, 140),
+        'SurfaceSM_SubsurfaceWeight_mix1': (-32.629, 3471.517, 140),
+        'SurfaceSM_SubsurfaceWeight_val2': (-632.629, 3294.449, 140),
+        'SurfaceSM_SubsurfaceWeight_eq2': (-332.629, 3364.012, 140),
+        'SurfaceSM_SubsurfaceWeight_mix2': (-32.629, 3294.449, 140),
+        'SurfaceSM_SubsurfaceWeight_val3': (-632.629, 3117.381, 140),
+        'SurfaceSM_SubsurfaceWeight_eq3': (-332.629, 3186.944, 140),
+        'SurfaceSM_SubsurfaceWeight_mix3': (-32.629, 3117.381, 140),
+        'SurfaceSM_SubsurfaceWeight_val4': (-632.629, 2940.313, 140),
+        'SurfaceSM_SubsurfaceWeight_eq4': (-332.629, 3009.875, 140),
+        'SurfaceSM_SubsurfaceWeight_mix4': (-32.629, 2940.313, 140),
+        'SurfaceSM_SubsurfaceWeight_val5': (-632.629, 2763.245, 140),
+        'SurfaceSM_SubsurfaceWeight_eq5': (-332.629, 2832.807, 140),
+        'SurfaceSM_SubsurfaceWeight_mix5': (-32.629, 2763.245, 140),
+        'SurfaceSM_SubsurfaceWeight_val6': (-632.629, 2586.177, 140),
+        'SurfaceSM_SubsurfaceWeight_eq6': (-332.629, 2655.74, 140),
+        'SurfaceSM_SubsurfaceWeight_mix6': (-32.629, 2586.177, 140),
+        'SurfaceSM_SheenWeight_frame': (-672.882, 2315.506, 800.706, 1299.565),
+        'SurfaceSM_SheenWeight_val0': (-642.742, 2276.758, 140),
+        'SurfaceSM_SheenWeight_val1': (-642.742, 2099.69, 140),
+        'SurfaceSM_SheenWeight_eq1': (-342.742, 2169.252, 140),
+        'SurfaceSM_SheenWeight_mix1': (-42.742, 2099.69, 140),
+        'SurfaceSM_SheenWeight_val2': (-642.742, 1922.621, 140),
+        'SurfaceSM_SheenWeight_eq2': (-342.742, 1992.184, 140),
+        'SurfaceSM_SheenWeight_mix2': (-42.742, 1922.621, 140),
+        'SurfaceSM_SheenWeight_val3': (-642.742, 1745.553, 140),
+        'SurfaceSM_SheenWeight_eq3': (-342.742, 1815.116, 140),
+        'SurfaceSM_SheenWeight_mix3': (-42.742, 1745.553, 140),
+        'SurfaceSM_SheenWeight_val4': (-642.742, 1568.485, 140),
+        'SurfaceSM_SheenWeight_eq4': (-342.742, 1638.048, 140),
+        'SurfaceSM_SheenWeight_mix4': (-42.742, 1568.485, 140),
+        'SurfaceSM_SheenWeight_val5': (-642.742, 1391.417, 140),
+        'SurfaceSM_SheenWeight_eq5': (-342.742, 1460.979, 140),
+        'SurfaceSM_SheenWeight_mix5': (-42.742, 1391.417, 140),
+        'SurfaceSM_SheenWeight_val6': (-642.742, 1214.349, 140),
+        'SurfaceSM_SheenWeight_eq6': (-342.742, 1283.911, 140),
+        'SurfaceSM_SheenWeight_mix6': (-42.742, 1214.349, 140),
+        'SurfaceSM_Anisotropic_frame': (-660.177, 965.506, 800.706, 1297.447),
+        'SurfaceSM_Anisotropic_val0': (-630, 926.187, 140),
+        'SurfaceSM_Anisotropic_val1': (-630, 749.119, 140),
+        'SurfaceSM_Anisotropic_eq1': (-330, 818.681, 140),
+        'SurfaceSM_Anisotropic_mix1': (-30, 749.119, 140),
+        'SurfaceSM_Anisotropic_val2': (-630, 572.05, 140),
+        'SurfaceSM_Anisotropic_eq2': (-330, 641.613, 140),
+        'SurfaceSM_Anisotropic_mix2': (-30, 572.05, 140),
+        'SurfaceSM_Anisotropic_val3': (-630, 394.982, 140),
+        'SurfaceSM_Anisotropic_eq3': (-330, 464.545, 140),
+        'SurfaceSM_Anisotropic_mix3': (-30, 394.982, 140),
+        'SurfaceSM_Anisotropic_val4': (-630, 217.914, 140),
+        'SurfaceSM_Anisotropic_eq4': (-330, 287.477, 140),
+        'SurfaceSM_Anisotropic_mix4': (-30, 217.914, 140),
+        'SurfaceSM_Anisotropic_val5': (-630, 40.846, 140),
+        'SurfaceSM_Anisotropic_eq5': (-330, 110.409, 140),
+        'SurfaceSM_Anisotropic_mix5': (-30, 40.846, 140),
+        'SurfaceSM_Anisotropic_val6': (-630, -136.222, 140),
+        'SurfaceSM_Anisotropic_eq6': (-330, -66.66, 140),
+        'SurfaceSM_Anisotropic_mix6': (-30, -136.222, 140),
+        'SurfaceSM_CoatWeight_frame': (-660.177, -414.141, 800.706, 1296.388),
+        'SurfaceSM_CoatWeight_val0': (-630, -452.962, 140),
+        'SurfaceSM_CoatWeight_val1': (-630, -630.03, 140),
+        'SurfaceSM_CoatWeight_eq1': (-330, -560.468, 140),
+        'SurfaceSM_CoatWeight_mix1': (-30, -630.03, 140),
+        'SurfaceSM_CoatWeight_val2': (-630, -807.098, 140),
+        'SurfaceSM_CoatWeight_eq2': (-330, -737.536, 140),
+        'SurfaceSM_CoatWeight_mix2': (-30, -807.098, 140),
+        'SurfaceSM_CoatWeight_val3': (-630, -984.166, 140),
+        'SurfaceSM_CoatWeight_eq3': (-330, -914.604, 140),
+        'SurfaceSM_CoatWeight_mix3': (-30, -984.166, 140),
+        'SurfaceSM_CoatWeight_val4': (-630, -1161.234, 140),
+        'SurfaceSM_CoatWeight_eq4': (-330, -1091.672, 140),
+        'SurfaceSM_CoatWeight_mix4': (-30, -1161.234, 140),
+        'SurfaceSM_CoatWeight_val5': (-630, -1338.303, 140),
+        'SurfaceSM_CoatWeight_eq5': (-330, -1268.74, 140),
+        'SurfaceSM_CoatWeight_mix5': (-30, -1338.303, 140),
+        'SurfaceSM_CoatWeight_val6': (-630, -1515.371, 140),
+        'SurfaceSM_CoatWeight_eq6': (-330, -1445.808, 140),
+        'SurfaceSM_CoatWeight_mix6': (-30, -1515.371, 140),
+        'SurfaceSM_MetallicScale_frame': (-660.177, -1776.847, 800.706, 1297.447),
+        'SurfaceSM_MetallicScale_val0': (-630, -1816.027, 140),
+        'SurfaceSM_MetallicScale_val1': (-630, -1993.095, 140),
+        'SurfaceSM_MetallicScale_eq1': (-330, -1923.532, 140),
+        'SurfaceSM_MetallicScale_mix1': (-30, -1993.095, 140),
+        'SurfaceSM_MetallicScale_val2': (-630, -2170.163, 140),
+        'SurfaceSM_MetallicScale_eq2': (-330, -2100.601, 140),
+        'SurfaceSM_MetallicScale_mix2': (-30, -2170.163, 140),
+        'SurfaceSM_MetallicScale_val3': (-630, -2347.231, 140),
+        'SurfaceSM_MetallicScale_eq3': (-330, -2277.669, 140),
+        'SurfaceSM_MetallicScale_mix3': (-30, -2347.231, 140),
+        'SurfaceSM_MetallicScale_val4': (-630, -2524.3, 140),
+        'SurfaceSM_MetallicScale_eq4': (-330, -2454.737, 140),
+        'SurfaceSM_MetallicScale_mix4': (-30, -2524.3, 140),
+        'SurfaceSM_MetallicScale_val5': (-630, -2701.367, 140),
+        'SurfaceSM_MetallicScale_eq5': (-330, -2631.805, 140),
+        'SurfaceSM_MetallicScale_mix5': (-30, -2701.367, 140),
+        'SurfaceSM_MetallicScale_val6': (-630, -2878.436, 140),
+        'SurfaceSM_MetallicScale_eq6': (-330, -2808.873, 140),
+        'SurfaceSM_MetallicScale_mix6': (-30, -2878.436, 140),
+        'SurfaceSM_EmissionBoost_frame': (-660.177, -3146.141, 800.706, 1296.388),
+        'SurfaceSM_EmissionBoost_val0': (-630, -3184.868, 140),
+        'SurfaceSM_EmissionBoost_val1': (-630, -3361.936, 140),
+        'SurfaceSM_EmissionBoost_eq1': (-330, -3292.373, 140),
+        'SurfaceSM_EmissionBoost_mix1': (-30, -3361.936, 140),
+        'SurfaceSM_EmissionBoost_val2': (-630, -3539.004, 140),
+        'SurfaceSM_EmissionBoost_eq2': (-330, -3469.441, 140),
+        'SurfaceSM_EmissionBoost_mix2': (-30, -3539.004, 140),
+        'SurfaceSM_EmissionBoost_val3': (-630, -3716.072, 140),
+        'SurfaceSM_EmissionBoost_eq3': (-330, -3646.51, 140),
+        'SurfaceSM_EmissionBoost_mix3': (-30, -3716.072, 140),
+        'SurfaceSM_EmissionBoost_val4': (-630, -3893.14, 140),
+        'SurfaceSM_EmissionBoost_eq4': (-330, -3823.578, 140),
+        'SurfaceSM_EmissionBoost_mix4': (-30, -3893.14, 140),
+        'SurfaceSM_EmissionBoost_val5': (-630, -4070.208, 140),
+        'SurfaceSM_EmissionBoost_eq5': (-330, -4000.646, 140),
+        'SurfaceSM_EmissionBoost_mix5': (-30, -4070.208, 140),
+        'SurfaceSM_EmissionBoost_val6': (-630, -4247.276, 140),
+        'SurfaceSM_EmissionBoost_eq6': (-330, -4177.714, 140),
+        'SurfaceSM_EmissionBoost_mix6': (-30, -4247.276, 140),
+        'SurfaceSM_DiffuseRoughness_frame': (-660.177, -4495.083, 800.706, 1296.388),
+        'SurfaceSM_DiffuseRoughness_val0': (-630, -4533.9, 140),
+        'SurfaceSM_DiffuseRoughness_val1': (-630, -4710.967, 140),
+        'SurfaceSM_DiffuseRoughness_eq1': (-330, -4641.405, 140),
+        'SurfaceSM_DiffuseRoughness_mix1': (-30, -4710.967, 140),
+        'SurfaceSM_DiffuseRoughness_val2': (-630, -4888.036, 140),
+        'SurfaceSM_DiffuseRoughness_eq2': (-330, -4818.473, 140),
+        'SurfaceSM_DiffuseRoughness_mix2': (-30, -4888.036, 140),
+        'SurfaceSM_DiffuseRoughness_val3': (-630, -5065.104, 140),
+        'SurfaceSM_DiffuseRoughness_eq3': (-330, -4995.541, 140),
+        'SurfaceSM_DiffuseRoughness_mix3': (-30, -5065.104, 140),
+        'SurfaceSM_DiffuseRoughness_val4': (-630, -5242.171, 140),
+        'SurfaceSM_DiffuseRoughness_eq4': (-330, -5172.61, 140),
+        'SurfaceSM_DiffuseRoughness_mix4': (-30, -5242.171, 140),
+        'SurfaceSM_DiffuseRoughness_val5': (-630, -5419.24, 140),
+        'SurfaceSM_DiffuseRoughness_eq5': (-330, -5349.677, 140),
+        'SurfaceSM_DiffuseRoughness_mix5': (-30, -5419.24, 140),
+        'SurfaceSM_DiffuseRoughness_val6': (-630, -5596.308, 140),
+        'SurfaceSM_DiffuseRoughness_eq6': (-330, -5526.746, 140),
+        'SurfaceSM_DiffuseRoughness_mix6': (-30, -5596.308, 140),
+        'SurfaceSM_ThinWall_frame': (-655.941, -5817.553, 799.647, 1296.388),
+        'SurfaceSM_ThinWall_val0': (-626.237, -5856.579, 140),
+        'SurfaceSM_ThinWall_val1': (-626.237, -6033.646, 140),
+        'SurfaceSM_ThinWall_eq1': (-326.237, -5964.085, 140),
+        'SurfaceSM_ThinWall_mix1': (-26.237, -6033.646, 140),
+        'SurfaceSM_ThinWall_val2': (-626.237, -6210.715, 140),
+        'SurfaceSM_ThinWall_eq2': (-326.237, -6141.153, 140),
+        'SurfaceSM_ThinWall_mix2': (-26.237, -6210.715, 140),
+        'SurfaceSM_ThinWall_val3': (-626.237, -6387.783, 140),
+        'SurfaceSM_ThinWall_eq3': (-326.237, -6318.221, 140),
+        'SurfaceSM_ThinWall_mix3': (-26.237, -6387.783, 140),
+        'SurfaceSM_ThinWall_val4': (-626.237, -6564.852, 140),
+        'SurfaceSM_ThinWall_eq4': (-326.237, -6495.289, 140),
+        'SurfaceSM_ThinWall_mix4': (-26.237, -6564.852, 140),
+        'SurfaceSM_ThinWall_val5': (-626.237, -6741.92, 140),
+        'SurfaceSM_ThinWall_eq5': (-326.237, -6672.357, 140),
+        'SurfaceSM_ThinWall_mix5': (-26.237, -6741.92, 140),
+        'SurfaceSM_ThinWall_val6': (-626.237, -6918.987, 140),
+        'SurfaceSM_ThinWall_eq6': (-326.237, -6849.426, 140),
+        'SurfaceSM_ThinWall_mix6': (-26.237, -6918.987, 140),
+        'radius_scale': (-1126.14, -343.321, 140),
+        'sss_radius': (-856.14, -343.321, 140),
+    },
+}
+
+
+def _apply_node_layout(tree, layout):
+    """Apply absolute positions without accidentally translating frame children."""
+    positions = {}
+
+    def absolute(node):
+        if node.name not in positions:
+            x, y = node.location
+            if node.parent is not None:
+                px, py = absolute(node.parent)
+                x, y = x + px, y + py
+            positions[node.name] = (x, y)
+        return positions[node.name]
+
+    for node in tree.nodes:
+        absolute(node)
+    for name, spec in layout.items():
+        if tree.nodes.get(name) is not None:
+            positions[name] = spec[:2]
+    for node in tree.nodes:
+        x, y = positions[node.name]
+        px, py = positions[node.parent.name] if node.parent else (0, 0)
+        node.location = (x - px, y - py)
+        spec = layout.get(node.name)
+        if spec is not None:
+            node.width = spec[2]
+            if node.bl_idname == "NodeFrame" and len(spec) > 3:
+                node.height = spec[3]
+
+
+def _apply_surface_layout(tree):
+    """Presentation only: never rebuild shared interfaces or alter their values."""
+    _apply_node_layout(tree, _SURFACE_NODE_LAYOUT)
+    _apply_node_layout(tree, _PHANTOM_LAYOUT)
+    for name, layout in _SURFACE_GROUP_LAYOUT.items():
+        group = bpy.data.node_groups.get(name)
+        if group is not None:
+            _apply_node_layout(group, layout)
+    for name in ("N_Base", "N_Detail", "N_Transition"):
+        tree.nodes[name].hide = True
+    for name, color in (
+            ("DetailLayer", (0.3607843, 0.4549020, 0.3647059)),
+            ("LayerBlend", (0.3607843, 0.4549020, 0.3647059)),
+            ("ShadingModel", (0.3590772, 0.4550588, 0.3659819))):
+        tree.nodes[name].use_custom_color = True
+        tree.nodes[name].color = color
+    for socket in tree.nodes["EmissiveCameraOnlyAttribute"].outputs:
+        socket.hide = socket.name != "Fac"
+    output_props = tree.nodes.get("PROPS_FRAME_Out")
+    if output_props is not None:
+        for socket in output_props.outputs:
+            if socket.name == "sw Hologram_":
+                socket.hide = False
+            elif socket.bl_idname == "NodeSocketVirtual":
+                socket.hide = True
+    tree.nodes["TEX_WideOcclusion"].show_texture = True
+
+
+def _route_surface_signals(tree, frames, uv, slots, separators):
+    """Labeled UV, color and property buses matching the authored material."""
+    def route(name, label, source, output, destinations, parent=None):
+        node = _new(tree, "NodeReroute", name, (0, 0), label, parent)
+        node.width = 9.5
+        _link(tree, source, output, node, 0)
+        for destination, socket in destinations:
+            for link in list(destination.inputs[socket].links):
+                tree.links.remove(link)
+            _link(tree, node, 0, destination, socket)
+        return node
+
+    def textures(*roles):
+        return [(slots[role][0], "Vector") for role in roles]
+
+    route("Reroute.009", "UV0 / base textures", uv[0], 0,
+          textures("Color", "Metallic", "Normal", "Occlusion", "Roughness"),
+          frames["Base"])
+    coverage_uv = route("Reroute.005", "UV0 / coverage and secondary textures", uv[0], 0,
+                        textures("Coverage"))
+    secondary_uv = route("Reroute.006", "UV0 / skin, emission and transition", coverage_uv, 0,
+                         textures("Diffusion", "Emissive", "ExtraEmissive", "Pores", "PositiveTransitionNormal"))
+    route("Reroute.004", "UV0 / segment and layer textures", secondary_uv, 0,
+          textures("LayeredColor", "SegmentLayer0", "SegmentLayer1", "ShadingLayer"))
+    route("Reroute.007", "UV2 / detail textures", uv[2], 0,
+          textures("DetailColor", "DetailNormal", "DetailOcclusion", "DetailRoughness"),
+          frames["Detail"])
+    route("Reroute.008", "UV1 / detail mask", uv[1], 0, textures("Detail"))
+    route("Reroute.002", "Base color / detail layer", slots["Color"][1], "Result",
+          [(tree.nodes["DetailLayer"], "Base Color")])
+    combine = tree.nodes.get("MaterialPropertiesBundle")
+    if combine is None:
+        return  # Older Blender builds keep direct property links.
+    # The authored graph reads Hologram_ beside the compositor selector and
+    # routes that same field up to the color override in the output frame.
+    composite_props = separators[frames["AlphaCompositeColored"].name]
+    factor = _in(tree.nodes["HologramOverride"], "Factor")
+    for link in list(factor.links):
+        tree.links.remove(link)
+    tree.links.new(composite_props.outputs[CONTROL_FOR_SWITCH["Hologram_"]], factor)
+    route("Reroute", "Material properties / lower bus", combine, "Bundle",
+          [(separators[frames[key].name], "Bundle") for key in
+           ("Coverage", "Detail", "Emissive", "Shade", "SkinCloth", "Transition", "AlphaCompositeColored")])
+    upper = route("Reroute.001", "Material properties / upper bus", combine, "Bundle",
+                  [(separators[frames["Segment"].name], "Bundle")])
+    route("Reroute.003", "Material properties / output", upper, 0,
+          [(separators[frames["Out"].name], "Bundle")])
+
+
+def build(*, uv_names=None):
     """Build the ordinary RMI_Surface profile without Eye_ or Hair_ paths."""
-    uv_names, uv_notes = _resolve_uv_names(4)
+    if uv_names is None:
+        uv_names, uv_notes = _resolve_uv_names(4)
+    else:
+        uv_names, uv_notes = list(uv_names[:4]), []
     _UV_NOTES.extend(uv_notes)
 
-    tangent_to_world = util_tangent_to_world()
+    tangent_to_world = util_tangent_to_world(uv_names[0])
     util_slerp()
     util_rnm()
     util_detail_normal_additive()
@@ -2350,6 +3474,7 @@ def build():
     grp_blood()
     grp_film()
     grp_surface_shading_model()
+    grp_hologram_highlight()
 
     mat = bpy.data.materials.get(MAT_NAME) or bpy.data.materials.new(MAT_NAME)
     if mat.node_tree is None and bpy.app.version < (5, 0, 0):
@@ -2371,44 +3496,42 @@ def build():
             ("SkinCloth", "TEXTURES   Skin / Cloth"),
             ("Segment", "TEXTURES   Segment / Layer blend"),
             ("Emissive", "TEXTURES   Emissive"),
+            ("ToneGradient", "TEXTURES   ToneGradient"),
             ("Transition", "TEXTURES   Transition normal"),
-            ("Shade", "SHADING   Surface"), ("Out", "OUTPUT")]:
+            ("Shade", "SHADING   Surface"), ("Out", "OUTPUT"),
+            ("AlphaCompositeColored", "AlphaCompositeColored enable")]:
         frames[key] = _frame(tree, "FRAME_" + key, label)
+    frames["AlphaCompositeColored"].label_size = 20
 
     props, property_sources, property_types = {}, {}, {}
-    for index, (name, members, _default) in enumerate(SWITCH_CONTROLS):
-        column = min(index // SWITCH_COLUMN_LEN, len(SWITCH_COLUMNS) - 1)
-        x, y = SWITCH_COLUMNS[column]
+    for index, (name, members, _default) in enumerate(
+            sorted(SWITCH_CONTROLS, key=lambda item: item[0].casefold())):
         node = _new(tree, "ShaderNodeValue", "SW_" + members[0],
-                    (x, y - (index - column * SWITCH_COLUMN_LEN) * PROP_ROW_PITCH),
+                    (SWITCH_COLUMN[0], SWITCH_COLUMN[1] - index * PROP_ROW_PITCH),
                     " + ".join(members), frames["Props"])
+        node.width = PROP_NODE_WIDTH
         _drive(node.outputs[0], mat, name)
         property_sources[name] = node
         property_types[name] = "BOOLEAN"
         for member in members:
             props[member] = node
-    for index, (name, _default, _min, _max, _description) in enumerate(ENUM_PROPS):
+    numeric = [("E_", prop) for prop in ENUM_PROPS]
+    numeric.extend(("P_", prop) for prop in FLOAT_PROPS)
+    for index, (prefix, (name, _default, _min, _max, _description)) in enumerate(
+            sorted(numeric, key=lambda item: item[1][0].casefold())):
+        loc = (NUMERIC_COLUMN[0], NUMERIC_COLUMN[1] - index * PROP_ROW_PITCH)
         if name == "Shading Model" and HAS_MANUAL_MENU_SWITCH:
             node = _new(tree, MENU_INPUT_IDNAME, "E_Shading_Model",
-                        (ENUM_COLUMN[0], ENUM_COLUMN[1] - index * PROP_ROW_PITCH),
-                        name, frames["Props"])
+                        loc, name, frames["Props"])
         else:
-            node = _new(tree, "ShaderNodeValue", "E_" + name.replace(" ", "_"),
-                        (ENUM_COLUMN[0], ENUM_COLUMN[1] - index * PROP_ROW_PITCH),
-                        name, frames["Props"])
+            node = _new(tree, "ShaderNodeValue", prefix + name.replace(" ", "_"),
+                        loc, name, frames["Props"])
             _drive(node.outputs[0], mat, name)
+        node.width = PROP_NODE_WIDTH
         props[name] = node
         property_sources[name] = node
         property_types[name] = ("MENU" if name == "Shading Model" and
                                 HAS_MANUAL_MENU_SWITCH else "FLOAT")
-    for index, (name, _default, _min, _max, _description) in enumerate(FLOAT_PROPS):
-        node = _new(tree, "ShaderNodeValue", "P_" + name.replace(" ", "_"),
-                    (FLOAT_COLUMN[0], FLOAT_COLUMN[1] - index * PROP_ROW_PITCH),
-                    name, frames["Props"])
-        _drive(node.outputs[0], mat, name)
-        props[name] = node
-        property_sources[name] = node
-        property_types[name] = "FLOAT"
 
     uv = {}
     for index in range(4):
@@ -2433,7 +3556,8 @@ def build():
     normal_in, normal = _decode_tangent_normal(
         tree, "N_Base", (1803, 1138), "Normal -> DirectX tangent vector", frames["Shade"])
     detail_in, detail_normal = _decode_tangent_normal(
-        tree, "N_Detail", (1795, 167), "DetailNormal -> DirectX tangent vector", frames["Shade"])
+        tree, "N_Detail", (1795, 167), "DetailNormal -> DirectX tangent vector", frames["Shade"],
+        normalize=False)
     transition_in, transition_normal = _decode_tangent_normal(
         tree, "N_Transition", (2013, 342),
         "PositiveTransitionNormal -> DirectX tangent vector", frames["Shade"])
@@ -2483,17 +3607,9 @@ def build():
     _link(tree, slot("DetailOcclusion"), "Result", detail, "Detail AO")
     _link(tree, slot("Detail"), "Result", detail, "Detail Mask")
 
-    detail_flags = ["Detail_", "DetailColor_", "DetailMetallic_", "DetailNormal_",
-                    "DetailRoughness_", "DetailOcclusion_"]
-    detail_enable = props[detail_flags[0]]
-    for index, flag in enumerate(detail_flags[1:]):
-        node = _new(tree, "ShaderNodeMath", "DetailEnable%d" % index,
-                    (1987, 995 - index * 165), "OR detail-role switches", frames["Shade"])
-        _prop(node, "operation", "MAXIMUM")
-        _link(tree, detail_enable, 0, node, 0)
-        _link(tree, props[flag], 0, node, 1)
-        detail_enable = node
-    _link(tree, detail_enable, 0, detail, "Enable")
+    # Match the authored material: role switches select their textures, while
+    # Detail_ alone enables the layer's combined color/normal/roughness/AO.
+    _link(tree, props["Detail_"], 0, detail, "Enable")
     rnm_index = _new(tree, "ShaderNodeMath", "RNMWhenIsotropy", (1805, -34),
                      "Isotropy_ * 2", frames["Shade"])
     _prop(rnm_index, "operation", "MULTIPLY")
@@ -2566,6 +3682,22 @@ def build():
     _link(tree, layers, "Base Color", blood_mix, "A")
     _link(tree, blood, "Base Color", blood_mix, "B")
     _link(tree, props["Blood_"], 0, blood_mix, "Factor")
+    hologram = _grp(tree, "FF7R Hologram Highlight / Color Only",
+                    "FF7R / Hologram Highlight / Color Only", (3135, 1004),
+                    "", frames["Shade"])
+    hologram.label = ""
+    # The reusable group's interface defaults to white; this surface master
+    # uses the cyan tint authored on the reference material's group instance.
+    _sv(hologram, "Tint", (0.0, 1.0, 1.0, 1.0))
+    _link(tree, world_normal, "Vector", hologram, "Normal")
+    _link(tree, layers, "Roughness", hologram, "Roughness")
+    _link(tree, detail, "AO", hologram, "Occlusion")
+    hologram_mix = _new(tree, "ShaderNodeMix", "HologramOverride", (5690, 993),
+                        "Hologram_ overrides base colour", frames["Out"])
+    hologram_mix.data_type = "RGBA"
+    _link(tree, props["Hologram_"], 0, hologram_mix, "Factor")
+    _link(tree, blood_mix, "Result", hologram_mix, "A")
+    _link(tree, hologram, "Color", hologram_mix, "B")
     bsdf = _new(tree, "ShaderNodeBsdfPrincipled", "Principled BSDF", (6100, 500),
                 "RMI_Surface", frames["Out"])
     _expand_panels(bsdf)
@@ -2573,7 +3705,7 @@ def build():
     _sv(bsdf, "Coat IOR", 1.15)
     _sv(bsdf, "Subsurface Anisotropy", -0.5)
     out = _new(tree, "ShaderNodeOutputMaterial", "Material Output", (6500, 500), "", frames["Out"])
-    _link(tree, blood_mix, "Result", bsdf, "Base Color")
+    _link(tree, hologram_mix, "Result", bsdf, "Base Color")
     _link(tree, world_normal, "Vector", bsdf, "Normal")
     _link(tree, layers, "Roughness", bsdf, "Roughness")
     _link(tree, alpha, 0, bsdf, "Alpha")
@@ -2623,11 +3755,42 @@ def build():
     _link(tree, metallic, 0, model_metallic, 0)
     _link(tree, model, "Metallic Scale", model_metallic, 1)
     _link(tree, model_metallic, 0, bsdf, "Metallic")
-    _link(tree, bsdf, 0, out, "Surface")
+    composite_enable = None
+    for index, flag in enumerate(("BrokenFlowEmissive0_", "Ghost_", "Hologram_",
+                                  "Opacity_", "Phantom_")):
+        if composite_enable is None:
+            composite_enable = props[flag]
+            continue
+        gate = _new(tree, "ShaderNodeMath", "Math" if index == 1 else "Math.%03d" % (index - 1),
+                    (5644 + (index - 1) * 174, -927 - (index - 1) * 103),
+                    "", frames["AlphaCompositeColored"])
+        gate.operation = "MAXIMUM"
+        _link(tree, composite_enable, 0, gate, 0)
+        _link(tree, props[flag], 0, gate, 1)
+        composite_enable = gate
+    glow = _new(tree, "ShaderNodeEmission", "Emission", (5876, -494), "", frames["Out"])
+    _sv(glow, "Strength", 1.0)
+    transparent = _new(tree, "ShaderNodeBsdfTransparent", "Transparent BSDF",
+                       (5876, -606), "", frames["Out"])
+    _sv(transparent, "Color", (1.0, 1.0, 1.0, 1.0))
+    add = _new(tree, "ShaderNodeAddShader", "Add Shader", (6057, -535),
+               "Add (intangible path)", frames["Out"])
+    output_mix = _new(tree, "ShaderNodeMixShader", "Mix Shader", (6320, 488),
+                      "Standard or AlphaCompositeColored", frames["Out"])
+    _link(tree, hologram_mix, "Result", glow, "Color")
+    _link(tree, glow, 0, add, 0)
+    _link(tree, transparent, 0, add, 1)
+    _link(tree, bsdf, 0, output_mix, 1)
+    _link(tree, add, 0, output_mix, 2)
+    _link(tree, composite_enable, 0, output_mix, 0)
+    _link(tree, output_mix, 0, out, "Surface")
 
-    _bundle_material_properties(tree, property_sources, property_types, frames["Props"])
+    refresh_hologram_alpha(mat)
+    separators = _bundle_material_properties(tree, property_sources, property_types, frames["Props"])
+    _route_surface_signals(tree, frames, uv, slots, separators)
     _fix_conventions(tree)
     _hide_unused_system_outputs(tree)
+    _apply_surface_layout(tree)
     for name, image in preserved.items():
         node = tree.nodes.get(name)
         if node is not None:

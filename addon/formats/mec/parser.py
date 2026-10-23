@@ -98,8 +98,10 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Vector, Quaternion
 
-from .material import setup_material_nodes, resolve_hash, texture_material_namespace, load_image
+from .material import setup_material_nodes, resolve_hash, texture_material_namespace, material_image_loader
 from ...core.blender.material_nodes import refresh_material_textures
+from ...core.blender.import_cache import find_datablock, remember_datablock, scoped_import
+from ...core.blender.mesh_geometry import populate_triangle_mesh
 
 
 OPPOSITE_FACE_OFFSET = 0.0005
@@ -127,18 +129,36 @@ def offset_opposite_face_geometry(
     if offset == 0.0 or len(verts_arr) == 0 or len(faces_arr) == 0:
         return 0
 
-    face_groups = defaultdict(list)
-    for face_idx, face in enumerate(faces_arr):
-        key = tuple(sorted(
-            tuple(
-                round(float(coord), OPPOSITE_FACE_POSITION_DECIMALS)
-                for coord in verts_arr[int(vert_idx)]
-            )
-            for vert_idx in face
-        ))
-        face_groups[key].append(face_idx)
+    # Quantize each vertex once, then group triangles by three sorted position
+    # IDs. This keeps the all-triangle scan in NumPy instead of allocating nine
+    # Python floats and nested tuples for every face.
+    coordinates = np.asarray(verts_arr, dtype=np.float64)
+    rounded = np.round(coordinates, OPPOSITE_FACE_POSITION_DECIMALS)
+    scaled = coordinates * 10**OPPOSITE_FACE_POSITION_DECIMALS
+    # NumPy's multiply/rint shortcut can disagree with Python round at decimal
+    # half-way boundaries. Preserve the original rule for those rare values.
+    halfway = np.abs(np.abs(scaled - np.rint(scaled)) - 0.5)
+    ambiguous = np.isfinite(scaled) & (halfway <= np.abs(np.spacing(scaled)) * 2)
+    for row, column in zip(*np.nonzero(ambiguous)):
+        rounded[row, column] = round(float(coordinates[row, column]), OPPOSITE_FACE_POSITION_DECIMALS)
+    del scaled, halfway, ambiguous, coordinates
+    _, position_ids = np.unique(rounded, axis=0, return_inverse=True)
+    position_ids = position_ids.reshape(-1)
+    del rounded
+    keys = np.sort(position_ids[faces_arr], axis=1)
+    _, group_ids, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    group_ids = group_ids.reshape(-1)
+    del keys, position_ids, _
+    candidates = np.flatnonzero(counts[group_ids] > 1)
+    del counts
+    if not candidates.size:
+        return 0
+    candidates = candidates[np.argsort(group_ids[candidates], kind="stable")]
+    boundaries = np.r_[0, np.flatnonzero(np.diff(group_ids[candidates])) + 1, len(candidates)]
+    del group_ids
 
-    face_vertices = verts_arr[faces_arr]
+    # Only coincident triangles need normals or pair comparisons.
+    face_vertices = verts_arr[faces_arr[candidates]]
     face_normals = np.cross(
         face_vertices[:, 1] - face_vertices[:, 0],
         face_vertices[:, 2] - face_vertices[:, 0],
@@ -148,19 +168,17 @@ def offset_opposite_face_geometry(
     face_normals[valid_face_normals] /= face_normal_lengths[valid_face_normals, None]
 
     affected_vertices: set[int] = set()
-    for grouped_faces in face_groups.values():
-        if len(grouped_faces) < 2:
-            continue
-        for first_pos, face_a in enumerate(grouped_faces):
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        for face_a in range(start, end - 1):
             if not valid_face_normals[face_a]:
                 continue
             normal_a = face_normals[face_a]
-            for face_b in grouped_faces[first_pos + 1:]:
+            for face_b in range(face_a + 1, end):
                 if not valid_face_normals[face_b]:
                     continue
                 if float(np.dot(normal_a, face_normals[face_b])) < OPPOSITE_FACE_DOT_THRESHOLD:
-                    affected_vertices.update(int(idx) for idx in faces_arr[face_a])
-                    affected_vertices.update(int(idx) for idx in faces_arr[face_b])
+                    affected_vertices.update(int(idx) for idx in faces_arr[candidates[face_a]])
+                    affected_vertices.update(int(idx) for idx in faces_arr[candidates[face_b]])
 
     if not affected_vertices:
         return 0
@@ -241,8 +259,7 @@ class BinReader:
     def half_to_float(h: int) -> float:
         """Decode a uint16 half-float to a Python float.
 
-        Kept for API compatibility; bulk UV decode now uses NumPy's
-        native float16 -> float32 conversion (see build_objects_from_component).
+        Retained for API compatibility with scalar callers.
         """
         sign = (h & 0x8000) >> 8
         exp  = h & 0x7C00
@@ -721,6 +738,7 @@ def get_untextured_mec_material():
     return material
 
 
+@scoped_import
 def build_objects_from_component(
         context,
         base_name: str,
@@ -974,14 +992,12 @@ def build_objects_from_component(
         #         InterlockedUMax(RequestedTextureSizes[texBase + index[i]],
         #                         screenScale * size[i]);
         #
-        # so the float drives the requested streaming resolution, not a draw or
-        # cull distance. That earlier reading was wrong: the value does correlate
-        # with the mesh's bounding radius (log-log r = 0.86) and is smaller in
-        # interiors, but only because a larger object needs a larger texture.
+        # so the float drives requested streaming resolution, not draw or cull
+        # distance. Its correlation with bounding radius (log-log r = 0.86) reflects
+        # the larger texture demand of larger objects.
         #
-        # This importer only wants the texture identities, so it takes the first
-        # half and stops at the -1. The game treats size[i] > 0 as the validity
-        # test; the two agreed on every mesh type checked.
+        # This importer needs only texture identities. Select entries from the index
+        # half using the game's size[i] > 0 validity test.
         _MT_STRIDE  = 112
         material_infos_base = base_ubulk + material_infos_offset
         mt_mat_indices = []
@@ -1006,11 +1022,9 @@ def build_objects_from_component(
             for row, sizes in zip(material_info_raw[:, :14], material_info_sizes):
                 mt_mat_indices.append(row[:int((sizes > 0).sum())].tolist())
 
-        # FMassiveEnvironmentMeshInfo - 112 bytes, one per mesh type. The offset
-        # was previously miscatalogued as unidentified and this table was never
-        # read at all. Not needed by this importer's own logic; read here purely
-        # so the bounding sphere and per-LoD error thresholds are available to
-        # stash as mesh properties below instead of being silently skipped.
+        # FMassiveEnvironmentMeshInfo - 112 bytes, one per mesh type. Read it to
+        # preserve the bounding sphere and per-LoD error thresholds as mesh properties;
+        # the importer's own logic does not otherwise need this table.
         meshinfo_base = base_ubulk + mesh_infos_offset
         if mesh_type_cnt:
             meshinfo_ints_arr = np.frombuffer(combined, dtype='<i4', offset=meshinfo_base,
@@ -1311,9 +1325,8 @@ def build_objects_from_component(
 
         for mt, inst_list in mesh_instances.items():
             mat_hashes = [] if untextured else mats_for_mt(mt)
-            # Ordered key: slot position is part of a material's identity now
-            # that the list is positional, so two mesh types sharing the same
-            # textures in different slots are correctly kept apart.
+            # Slot position is part of a material's identity, so an ordered key keeps
+            # mesh types with the same textures in different slots distinct.
             hash_key   = tuple(mat_hashes)
             if hash_key not in group_material_map:
                 mat_name = f"{base_name}_Group{group_idx}_mat{next_mat_id:03d}"
@@ -1391,20 +1404,19 @@ def build_objects_from_component(
                     )
                     if offset_count:
                         print(f"    {mesh_name}: offset {offset_count} opposite-face vertices")
-                mesh.from_pydata(verts_slice.tolist(), [], faces_arr.tolist())
+                populate_triangle_mesh(mesh, verts_slice, faces_arr)
 
                 # UVs via foreach_set - one C call per layer instead of a Python loop over loops.
                 loop_count = len(mesh.loops)
                 if loop_count:
-                    loop_vi = np.empty(loop_count, dtype=np.int32)
-                    mesh.loops.foreach_get("vertex_index", loop_vi)
+                    loop_vi = faces_arr.reshape(-1)
 
-                    uv_layer0 = mesh.uv_layers.new(name="UVMap")
+                    uv_layer0 = mesh.uv_layers.new(name="UVMap", do_init=False)
                     uv0 = np.ascontiguousarray(uvs_slice[loop_vi, 0:2], dtype=np.float32).ravel()
                     uv_layer0.data.foreach_set("uv", uv0)
 
                     if has_uv2:
-                        uv_layer1 = mesh.uv_layers.new(name="UVMap2")
+                        uv_layer1 = mesh.uv_layers.new(name="UVMap2", do_init=False)
                         uv1 = np.ascontiguousarray(uvs_slice[loop_vi, 2:4], dtype=np.float32).ravel()
                         uv_layer1.data.foreach_set("uv", uv1)
                 else:
@@ -1415,31 +1427,33 @@ def build_objects_from_component(
 
                 if bpy.app.version < (4, 1, 0):
                     mesh.use_auto_smooth = True
+                # This Blender API parses Python sequences element by element;
+                # a list is faster here than iterating NumPy scalar objects.
                 mesh.normals_split_custom_set_from_vertices(norms_slice.tolist())
 
                 if untextured:
                     mesh.materials.append(get_untextured_mec_material())
                 elif mat_name:
                     namespace = texture_material_namespace(tex_root, tex_ext)
-                    mat = next((item for item in bpy.data.materials
-                                if item.get("ue_mec_material_name") == mat_name
-                                and item.get("ue_texture_namespace") == namespace), None)
+                    mat = find_datablock("materials", "mec-material", (namespace, mat_name),
+                                         lambda item: (item.get("ue_texture_namespace"),
+                                                       item.get("ue_mec_material_name")))
                     if mat is None:
                         mat = bpy.data.materials.new(mat_name)
                         mat["ue_mec_material_name"] = mat_name
                         mat["ue_texture_namespace"] = namespace
                         hashes = group_material_hashes[mat_name]
-                        # Numbered by MaterialInfo slot (0-based) now that the
-                        # list is positional; empty slots are simply omitted,
-                        # since Blender custom properties cannot hold None.
+                        # Number by MaterialInfo slot (0-based). Omit empty slots because
+                        # Blender custom properties cannot hold None.
                         for hash_idx, hash_val in enumerate(hashes):
                             if hash_val is None:
                                 continue
                             mat[f"UE import {hash_idx:02d}"] = hash_val
                         setup_material_nodes(mat, hashes, tex_root, tex_ext,
                                              tex_index=tex_index)
+                        remember_datablock("materials", mat)
                     else:
-                        refresh_material_textures(mat, lambda path: load_image(path, tex_root, tex_ext, tex_index))
+                        refresh_material_textures(mat, material_image_loader(tex_root, tex_ext, tex_index))
                     mesh.materials.append(mat)
                     npoly = len(mesh.polygons)
                     if npoly:

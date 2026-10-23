@@ -12,7 +12,7 @@ Outside Blender the file can be run with a KDI path to exercise the parser:
 
 from __future__ import annotations
 
-from ...language import tooltips
+from ...language import strings
 
 import hashlib
 import json
@@ -786,7 +786,7 @@ if bpy is not None:
         filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
         write_external_report: BoolProperty(
             name="Write JSON report beside KDI",
-            description=tooltips.KDI_AUDIT_WRITE_EXTERNAL_REPORT,
+            description=strings.KDI_AUDIT_WRITE_EXTERNAL_REPORT,
             default=True,
         )
 

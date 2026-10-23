@@ -17,10 +17,16 @@ For the prior mentioned Square Enix titles, proprietary binary formats such as t
 - [`bridge/`](bridge/) — the C# source for `FF7RGameAssetBridge`, the helper
   process that reads package data straight out of a mounted game install.
   See [`bridge/README.md`](bridge/README.md) to rebuild it.
+- [Niagara research](docs/niagara/README.md) — detailed Unreal Engine 4.27 source notes for a future cooked Niagara to Geometry Nodes converter, including serialization, simulation, renderers, and version-specific limitations.
 
 Inside the add-on, reusable infrastructure lives in `core/`, reusable decoded
 formats live in `formats/`, engine/material/import differences live in
 `games/<title>/`, and Blender-facing menus and preferences live in `ui/`.
+
+Rebirth's **Niagara (Mesh resources)** importer now extracts unique mesh/material
+variants through the generic UE material pipeline. Its [resource model and
+backend](addon/formats/niagara/README.md) are separate from the future simulation
+and Geometry Nodes work described in the research notes.
 
 ## What's not here.
 - Oodle DLL used for decompressing Unreal package files. You probably already have a game that ships with an oo2core_7.dll or oo2core_9.dll such as Final Fantasy VII Remake or even some non-Unreal games such as Elden Ring.

@@ -84,17 +84,24 @@ FACE_FORWARD_PROPERTY = "sqex_face_forward"
 AXIS_ORDER_UNREAL = "UNREAL"
 AXIS_ORDER_BLENDER = "BLENDER"
 AXIS_ORDER_PROPERTY = "sqex_axis_order"
+# Older "UNREAL" rigs still received the X-to-Y display correction. Keep an
+# explicit frame marker so animation/KDI imports can distinguish saved rigs.
+BONE_AXIS_FRAME_PROPERTY = "sqex_bone_axis_frame"
+BONE_AXIS_FRAME_SOURCE = "SOURCE"
+BONE_AXIS_FRAME_BLENDER = "BLENDER"
+
+
+def preserves_source_bone_axes(armature_obj: Any) -> bool:
+    if armature_obj is None:
+        return False
+    return armature_obj.get(
+        BONE_AXIS_FRAME_PROPERTY, armature_obj.data.get(BONE_AXIS_FRAME_PROPERTY)
+    ) == BONE_AXIS_FRAME_SOURCE
 
 
 def armature_face_forward(armature_obj: Any) -> str:
-    """Which forward axis an armature was built with.
-
-    Armatures imported before this was recorded, and any rig built elsewhere,
-    report ``FACE_FORWARD_UNREAL`` -- the operator default, and the only value
-    that was ever produced without the option being set.
-    """
-    value = armature_obj.get(FACE_FORWARD_PROPERTY) if armature_obj else None
-    return FACE_FORWARD_BLENDER if value == FACE_FORWARD_BLENDER else FACE_FORWARD_UNREAL
+    """Return the forward axis recorded on an imported armature."""
+    return armature_obj[FACE_FORWARD_PROPERTY]
 
 
 def apply_naive_ik(armature_obj: bpy.types.Object) -> tuple[int, int]:
@@ -187,11 +194,12 @@ def build_armature_from_bones(
     transform down the hierarchy (bones must list parents before children,
     which FinalRefBoneInfo/the gargoyle always guarantee).
 
-    The game data carries no notion of bone length, so tails are derived: each
-    bone is aimed down its UE local +X (see the axis note in the tail loop
-    below), reaching its nearest child, and leaf bones take a fraction of their
-    parent's length. That correction rotates only each bone's own display frame,
-    never the chain used to place children, so head positions are unaffected.
+    The game data carries no notion of bone length, so lengths are derived from
+    the children and leaf bones take a fraction of their parent's length.
+    ``preserve_ue_axis_order`` keeps the converted source rotation intact: UE's
+    chain continues along local X while Blender draws the bone along local Y.
+    Otherwise the display frame is reoriented to point Blender Y down UE X.
+    Neither choice changes the chain used to place children.
 
     ``connect_bones`` opts a bone into Blender's "connected" mode (no visible gap
     to its parent) whenever its head already sits within ``CONNECT_DISTANCE_THRESHOLD``
@@ -266,6 +274,10 @@ def build_armature_from_bones(
     armature_obj[AXIS_ORDER_PROPERTY] = (
         AXIS_ORDER_UNREAL if preserve_ue_axis_order else AXIS_ORDER_BLENDER
     )
+    for target in (armature_obj, armature_data):
+        target[BONE_AXIS_FRAME_PROPERTY] = (
+            BONE_AXIS_FRAME_SOURCE if preserve_ue_axis_order else BONE_AXIS_FRAME_BLENDER
+        )
     armature_obj["ue_import_scale"] = scale_factor
 
     if limbal_created:
@@ -507,11 +519,15 @@ def _build_socket_edit_bones(
         socket_bone.use_connect = False
         basis = socket_matrix.to_3x3()
         head = socket_matrix.translation
-        aim = (basis @ Vector((1.0, 0.0, 0.0))).normalized()
         socket_bone.head = head
-        socket_bone.tail = head + aim * DEFAULT_BONE_LENGTH
-        socket_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
-        if not preserve_ue_axis_order:
+        if preserve_ue_axis_order:
+            aim = (basis @ Vector((0.0, 1.0, 0.0))).normalized()
+            socket_bone.tail = head + aim * DEFAULT_BONE_LENGTH
+            socket_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
+        else:
+            aim = (basis @ Vector((1.0, 0.0, 0.0))).normalized()
+            socket_bone.tail = head + aim * DEFAULT_BONE_LENGTH
+            socket_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
             socket_bone.roll += math.pi * 0.5
         socket_bone_names[socket_name] = socket_bone.name
     return socket_bone_names
@@ -625,13 +641,19 @@ def _build_edit_bones(
 
         # Blender defines a bone's local +Y as head->tail, but UE skeletal bones
         # run down their local +X (children are offset along the parent's +X).
-        # The default display-frame basis is the add-on's Blender/KDI convention;
-        # preserving UE ordering leaves the source axis frame intact. The bone
-        # frame and the KDI coordinate profile must agree, or translations and
-        # rotations are interpreted in different frames.
-        edit_bone.tail = head + aim * length
-        edit_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
-        if not preserve_ue_axis_order:
+        # Preserving source axes must bypass the X-to-Y reorientation entirely,
+        # not merely its additional roll. Blender always draws along local Y,
+        # so an unmodified source frame has its tail on source Y, while source X
+        # still points down the authored skeleton chain.
+        if preserve_ue_axis_order:
+            # Reconstruct the unmodified source Y/Z frame explicitly. Merely
+            # assigning .matrix loses roll precision for near-negative-Y bones.
+            source_y = (basis @ Vector((0.0, 1.0, 0.0))).normalized()
+            edit_bone.tail = head + source_y * length
+            edit_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
+        else:
+            edit_bone.tail = head + aim * length
+            edit_bone.align_roll(basis @ Vector((0.0, 0.0, 1.0)))
             edit_bone.roll += math.pi * 0.5
 
         if connect_bones and edit_bone.parent is not None and (not game_features or allows_connect(bones[index]["name"])):

@@ -14,7 +14,7 @@ the ``*_KDI_BLENDER_AUDIT.json`` produced by kdi_step1_audit.py.
 
 from __future__ import annotations
 
-from ...language import tooltips
+from ...language import strings
 
 import json
 import math
@@ -49,12 +49,12 @@ _HEADER_CALLBACK_KEY = "_sqex_kdi_header_callback"
 
 
 AXIS_ORDER_ITEMS = (
-    ("XYZ", "X → X, Y → Y, Z → Z", tooltips.KDI_AXIS_XYZ),
-    ("XZY", "X → X, Y → Z, Z → Y (Unreal)", tooltips.KDI_AXIS_XZY),
-    ("YXZ", "X → Y, Y → X, Z → Z", tooltips.KDI_AXIS_YXZ),
-    ("YZX", "X → Y, Y → Z, Z → X (Blender)", tooltips.KDI_AXIS_YZX),
-    ("ZXY", "X → Z, Y → X, Z → Y", tooltips.KDI_AXIS_ZXY),
-    ("ZYX", "X → Z, Y → Y, Z → X", tooltips.KDI_AXIS_ZYX),
+    ("XYZ", "X → X, Y → Y, Z → Z", strings.KDI_AXIS_XYZ),
+    ("XZY", "X → X, Y → Z, Z → Y (Unreal)", strings.KDI_AXIS_XZY),
+    ("YXZ", "X → Y, Y → X, Z → Z", strings.KDI_AXIS_YXZ),
+    ("YZX", "X → Y, Y → Z, Z → X (Blender)", strings.KDI_AXIS_YZX),
+    ("ZXY", "X → Z, Y → X, Z → Y", strings.KDI_AXIS_ZXY),
+    ("ZYX", "X → Z, Y → Y, Z → X", strings.KDI_AXIS_ZYX),
 )
 
 # The loose JSON KDI workflow is the reference frame used by this module.  A
@@ -64,6 +64,7 @@ AXIS_ORDER_ITEMS = (
 # the loose-JSON/reference local frame. The inverse is its transpose.
 COORDINATE_PROFILE_REFERENCE = "REFERENCE"
 COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90 = "PACKAGE_SKELETON_ROLL_90"
+COORDINATE_PROFILE_SOURCE_AXES = "SOURCE_AXES"
 PACKAGE_TO_REFERENCE_BASIS = (
     (0.0, 1.0, 0.0),
     (-1.0, 0.0, 0.0),
@@ -76,7 +77,20 @@ def coordinate_basis_to_reference(profile: str) -> list[list[float]]:
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
     if profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90:
         return [list(row) for row in PACKAGE_TO_REFERENCE_BASIS]
+    if profile == COORDINATE_PROFILE_SOURCE_AXES:
+        # The established rolled package frame is source @ DISPLAY_CORRECTION.
+        # Carry unmodified source coordinates into that same reference frame:
+        # PACKAGE_TO_REFERENCE_BASIS @ DISPLAY_CORRECTION.inverted().
+        return [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]
     raise ValueError(f"Unsupported KDI coordinate profile: {profile!r}")
+
+
+def coordinate_profile_axis_order(profile: str) -> str:
+    return {
+        COORDINATE_PROFILE_REFERENCE: "XZY",
+        COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90: "YZX",
+        COORDINATE_PROFILE_SOURCE_AXES: "XYZ",
+    }[profile]
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -239,21 +253,21 @@ def multiply3_vector(m: list[list[float]], v: list[float]) -> list[float]:
 def source_vector_in_reference_frame(config: dict[str, Any], vector: list[float]) -> list[float]:
     """Convert a package-skeleton pose-space vector to the established KDI frame."""
     return multiply3_vector(
-        coordinate_basis_to_reference(config.get("coordinate_profile", COORDINATE_PROFILE_REFERENCE)),
+        coordinate_basis_to_reference(config["coordinate_profile"]),
         vector,
     )
 
 
 def source_quaternion_in_reference_frame(config: dict[str, Any], quaternion: list[float]) -> list[float]:
     """Express a pose-space rotation in the loose-JSON KDI reference frame."""
-    basis = coordinate_basis_to_reference(config.get("coordinate_profile", COORDINATE_PROFILE_REFERENCE))
+    basis = coordinate_basis_to_reference(config["coordinate_profile"])
     rotation = quaternion_to_matrix3(quaternion)
     return matrix3_to_quaternion(multiply3(multiply3(basis, rotation), transpose3(basis)))
 
 
 def reference_quaternion_in_target_frame(config: dict[str, Any], quaternion: list[float]) -> list[float]:
     """Convert a KDI result from the reference frame back to the target bone frame."""
-    basis = coordinate_basis_to_reference(config.get("coordinate_profile", COORDINATE_PROFILE_REFERENCE))
+    basis = coordinate_basis_to_reference(config["coordinate_profile"])
     inverse_basis = transpose3(basis)
     rotation = quaternion_to_matrix3(quaternion)
     return matrix3_to_quaternion(multiply3(multiply3(inverse_basis, rotation), basis))
@@ -841,23 +855,12 @@ def quaternion_to_matrix3(q: list[float]) -> list[list[float]]:
 
 
 def config_source_bones(config: dict[str, Any]) -> list[str]:
-    """The source bones of a scalar config, newest key first.
-
-    Registries written before multi-source support only carry the singular
-    ``source_bone``/``source_weight``, so fall back to those: an existing .blend
-    keeps evaluating exactly as it did.
-    """
-    bones = config.get("source_bones")
-    if bones:
-        return list(bones)
-    return [config["source_bone"]]
+    """Return the source bones of a scalar config."""
+    return list(config["source_bones"])
 
 
 def config_source_weights(config: dict[str, Any]) -> list[float]:
-    weights = config.get("source_weights")
-    if weights:
-        return [float(weight) for weight in weights]
-    return [float(config.get("source_weight", 1.0))]
+    return [float(weight) for weight in config["source_weights"]]
 
 
 def blend_weights(weights: list[float]) -> tuple[list[float], float]:
@@ -870,8 +873,7 @@ def blend_weights(weights: list[float]) -> tuple[list[float], float]:
     weights summing to 1.0 (true skin-style weights, e.g. [0.2, 0.8]) while 133
     are all-ones summing to 2.0/3.0/4.0, which plainly means "average these
     equally" rather than "apply it three times". Clamping the magnitude at 1.0
-    satisfies both, and since no single-source weight in the corpus exceeds 1.0
-    it reproduces the previous single-source behaviour exactly.
+    satisfies both without amplifying single-source weights.
     """
     total = sum(weights)
     if total <= 0.0:
@@ -912,7 +914,7 @@ def source_rotation_delta(config: dict[str, Any], values: tuple[float, ...] | li
     count = len(config_source_bones(config))
     mix, magnitude = blend_weights(config_source_weights(config))
 
-    if count > 1 and config.get("neutral_rotation"):
+    if count > 1:
         if mode == "PARENT_ROTATION":
             rest_locals = config["rest_local_rotations"]
             current = [
@@ -951,12 +953,12 @@ def source_rotation_delta(config: dict[str, Any], values: tuple[float, ...] | li
         deltas = [list(values[index * 4:index * 4 + 4]) for index in range(count)]
     elif mode == "NODE_ROTATION":
         base_matrix = normalized_rows(values, 9 * count)
-        rest_relatives = config.get("rest_relative_rotations") or [config["rest_relative_rotation"]]
+        rest_relatives = config["rest_relative_rotations"]
         deltas = []
         for index in range(count):
             source_matrix = normalized_rows(values, 9 * index)
             current_relative = multiply3(transpose3(base_matrix), source_matrix)
-            rest_relative = rest_relatives[min(index, len(rest_relatives) - 1)]
+            rest_relative = rest_relatives[index]
             deltas.append(matrix3_to_quaternion(multiply3(transpose3(rest_relative), current_relative)))
     else:
         raise ValueError(f"Source mode {mode} does not produce a quaternion")
@@ -1261,10 +1263,6 @@ def build_source_config(source_node: dict[str, Any], armature: Any) -> dict[str,
         "source_type": source_type,
         "source_bones": source_bones,
         "source_weights": weights,
-        # Retained so a registry written by this version stays readable by the
-        # single-source accessors, and vice versa.
-        "source_bone": source_bones[0],
-        "source_weight": weights[0],
         "base_bone": base_info.get("BoneName"),
         "source_body": source_body,
         "source_operator_index": source_node["operator_index"],
@@ -1290,7 +1288,6 @@ def build_source_config(source_node: dict[str, Any], armature: Any) -> dict[str,
             for bone in source_bones
         ]
         config["rest_relative_rotations"] = rest_relatives
-        config["rest_relative_rotation"] = rest_relatives[0]
     return config
 
 
@@ -1426,10 +1423,7 @@ def build_effector_graph(
     ordered node list evaluated by ``evaluate_effector_graph``.
 
     A node's result may fan out to several consumers, so each operator is
-    emitted once and referenced by index. The depth-1 case -- one effector
-    between a source and a target -- reduces to exactly the arithmetic the
-    single-effector path always performed, since the same ``scalar_source_value``
-    and ``apply_effector`` do the work.
+    emitted once and referenced by index.
     """
     graph: list[dict[str, Any]] = []
     emitted: dict[Any, int] = {}
@@ -1773,9 +1767,8 @@ def build_anchor_config(node: dict[str, Any], armature: Any, config_id: int) -> 
     target_name = body["TargetObjectBoneName"]
     source_names = list(body.get("SourceBoneNameArray") or [])
     weights = [float(value) for value in (body.get("WeightArray") or [])]
-    # Source-less constraints are filtered out before reaching here, so this is
-    # now only an integrity check on the paired arrays -- which no operator in
-    # the 530-file corpus violates.
+    # Source-less constraints are filtered out before reaching here. Check
+    # the paired arrays' integrity; none in the 530-file corpus violates it.
     if not source_names or len(source_names) != len(weights):
         raise ValueError(
             f"Constraint {node['operator_index']} on bone {target_name} has "
@@ -1959,10 +1952,8 @@ def add_ordered_variables(driver: Any, armature: Any, data_paths: list[str]) -> 
 def add_source_variables(driver: Any, config: dict[str, Any], armature: Any) -> list[str]:
     """Create this config's driver variables, in ``source_data_paths`` order.
 
-    Generated straight from that function so the variable order cannot drift
-    from the order ``scalar_source_value`` slices ``values`` in -- which the
-    per-mode branches this replaced had to keep in sync by hand, and which
-    multi-source made considerably easier to get wrong.
+    Deriving variables from that function keeps their order aligned with how
+    ``scalar_source_value`` slices ``values``, including multi-source configs.
     """
     return add_ordered_variables(driver, armature, source_data_paths(config))
 
@@ -2357,13 +2348,16 @@ def build_scalar_drivers(
         # receives, so the frame has to reach them too.
         for source in effector_graph_sources(config) if "effector_graph" in config else ():
             source["coordinate_profile"] = coordinate_profile
-        # The +90-degree package-bone roll maps reference Z to negative package
-        # X. Scale does not carry that sign, but translation does.
+        # Rolled package bones map reference Z to negative package X; source
+        # axes map reference Z to negative source Y. Scale ignores those signs.
         config["target_axis_sign"] = (
             -1.0
-            if coordinate_profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
-            and config["target_type"] == "TargetTranslate"
-            and config["target_parameter"] == "TranslateZ"
+            if config["target_type"] == "TargetTranslate" and (
+                (coordinate_profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
+                 and config["target_parameter"] == "TranslateZ")
+                or (coordinate_profile == COORDINATE_PROFILE_SOURCE_AXES
+                    and config["target_parameter"] == "TranslateY")
+            )
             else 1.0
         )
     anchor_nodes = [
@@ -2690,13 +2684,13 @@ class KDI_OT_step2_scalar_drivers(SQEX_LoggedOperator, ImportHelper):
     )
     translation_axis_order: EnumProperty(
         name="Translation axis mapping",
-        description=tooltips.KDI_TRANSLATION_AXIS_ORDER,
+        description=strings.KDI_TRANSLATION_AXIS_ORDER,
         items=AXIS_ORDER_ITEMS,
         default="XZY",
     )
     scale_axis_order: EnumProperty(
         name="Scale axis mapping",
-        description=tooltips.KDI_SCALE_AXIS_ORDER,
+        description=strings.KDI_SCALE_AXIS_ORDER,
         items=AXIS_ORDER_ITEMS,
         default="XZY",
     )
@@ -2707,7 +2701,7 @@ class KDI_OT_step2_scalar_drivers(SQEX_LoggedOperator, ImportHelper):
     additive: BoolProperty(
         name="Add to the existing KDI layer",
         description=(
-            tooltips.KDI_ADDITIVE
+            strings.KDI_ADDITIVE
         ),
         default=False,
         options={"HIDDEN", "SKIP_SAVE"},
@@ -2917,7 +2911,7 @@ def register() -> None:
         bpy.props.BoolProperty(
             name="KDI Drivers",
             description=(
-                tooltips.KDI_DRIVERS_ENABLED
+                strings.KDI_DRIVERS_ENABLED
             ),
             default=True,
             update=_kdi_drivers_enabled_update,

@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+import zlib
 
 import bpy
 
@@ -59,10 +60,31 @@ class GenericFixture(RequestFixture, GenericSession):
     pass
 
 
+class PngPackageFixture(PackageAssetSession):
+    def request(self, payload, **kwargs):
+        # CUE4Parse can encode uncompressed mips as PNG. The returned
+        # path can differ from the caller's requested .dds path, even for a tiny
+        # image whose entire PNG is shorter than a DDS header.
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+        output = Path(payload["ddsOutput"]).with_suffix(".png")
+        pixels = b"\0" + bytes((255, 127, 0, 255)) * 2
+        data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(pixels * 2)) + chunk(b"IEND", b""))
+        assert len(data) < 128
+        output.write_bytes(data)
+        return {"dds": {"output": str(output), "width": 2, "height": 2,
+                        "byteLength": len(data), "pixelFormat": "PF_B8G8R8A8", "fileExtension": "png"}}
+
+
 with tempfile.TemporaryDirectory(prefix="talisman_mip_test_") as directory:
     root = Path(directory)
     seed = root / "T.dds"
     dds(seed)
+    png_loader = PngPackageFixture(str(root), "", "", profile=PROFILE)
+    png = png_loader("/Game/Test/Uncompressed.Uncompressed")
+    assert png is not None and tuple(png.size) == (2, 2)
+    assert png.packed_file.data.startswith(b"\x89PNG\r\n\x1a\n")
     reduced = root / "selected.dds"
     info = select_dds_mip(seed, reduced, 16, -1)
     assert info["mipIndex"] == 2

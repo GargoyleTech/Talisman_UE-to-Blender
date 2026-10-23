@@ -5,11 +5,17 @@ import os
 import math
 import re
 import importlib
+import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from mathutils import Vector, Euler, Matrix, Quaternion
 
-from . import lights, particles, worlds
+from . import cameras, decals, landscapes, lights, particles, splines, text_render, worlds, post_process
+from .instance_geometry import foliage_transform_arrays
+import numpy as np
 
+if TYPE_CHECKING:
+    from ..unreal_package.mesh_import import SharedSkinWeights
 
 TextureIndexCache = dict[tuple[str, str], dict[str, str]]
 _SETPOS_MARKER = "_setpos_"
@@ -22,12 +28,15 @@ _SKELETAL_COMPONENT_TYPES = {
     # payload through this custom subclass.
     "TresSkeletalMeshComponent",
 }
+_SPLINE_COMPONENT_TYPES = {"SplineComponent", "SplineMeshComponent", "SQEX_SplineComponent", "EndSplineBrushComponent"}
 
 # Blender spot lights emit along local -Z, while UE components use +X forward.
 _LIGHT_FWD_FIX = (
     Matrix.Rotation(math.radians(90.0), 4, "X") @
     Matrix.Rotation(math.radians(-90.0), 4, "Y")
 )
+# Blender text lies in XY with +Z facing the reader. UE TextRender faces +X.
+_TEXT_FWD_FIX = Matrix(((0, 0, 1), (1, 0, 0), (0, 1, 0)))
 _EXTERNAL_EMISSIVE_CONTEXT_PROP = "ExternalEmissiveContext"
 _package_skeletal_mesh_binder = None
 _external_emissive_initializer = None
@@ -66,6 +75,7 @@ class SkeletalMeshDatablocks:
     armature: bpy.types.Armature | None
     skeletal_mesh: dict
     virtual_path: str
+    shared_weights: "SharedSkinWeights | None" = None
 
 def extract_static_mesh_name(object_name_str: str) -> str | None:
     if not object_name_str:
@@ -267,6 +277,32 @@ def light_rotation_from_relative(rot_dict: dict) -> Euler:
     return (mesh_rot.to_matrix().to_4x4() @ _LIGHT_FWD_FIX).to_euler("XYZ")
 
 
+def component_rotation_from_relative(rot_dict: dict, obj: bpy.types.Object) -> Euler:
+    """Retain the component frame while correcting each visual's local axes."""
+    rotation = rotation_from_relative(rot_dict)
+    if obj.type == "FONT":
+        return (rotation.to_matrix() @ _TEXT_FWD_FIX).to_euler("XYZ")
+    kind = getattr(getattr(obj, "data", None), "type", None)
+    if kind in {"AREA", "SUN"} or obj.type == "CAMERA":
+        # Missing rotation is the identity UE frame, which still needs the
+        # +X -> Blender -Z emitter correction. Width is local X, height Y.
+        return (rotation.to_matrix().to_4x4() @ _LIGHT_FWD_FIX).to_euler("XYZ")
+    if kind == "SPOT":
+        return light_rotation_from_relative(rot_dict)
+    return rotation
+
+
+def component_scale_from_entry(props: dict, obj: bpy.types.Object) -> Vector:
+    scale = scale_from_entry(props)
+    if obj.type in {"FONT", "CAMERA"} or getattr(getattr(obj, "data", None), "type", None) in {"AREA", "SUN"}:
+        # The visual's X/Y plane spans UE component Y/Z after axis correction.
+        scale = Vector((scale.y, scale.z, scale.x))
+    if obj.type == "FONT":
+        scale.x *= lights.float_or_default(props.get("XScale"), 1.0)
+        scale.y *= lights.float_or_default(props.get("YScale"), 1.0)
+    return scale
+
+
 def _has_rotation_values(rot_dict: dict) -> bool:
     """Return True when the export supplied at least one UE rotation channel."""
     if not isinstance(rot_dict, dict):
@@ -416,8 +452,9 @@ def create_point_light_from_entry(
     light_obj.location = loc
     light_obj.rotation_euler = rot
     light_obj.scale = scale
-    lights.apply_ue_light_object_properties(light_obj)
     parent_collection.objects.link(light_obj)
+    lights.apply_ue_light_object_properties(light_obj)
+    lights.apply_component_visibility(light_obj, props)
     return light_obj
 
 
@@ -450,9 +487,52 @@ def create_spot_light_from_entry(
     light_obj.location = loc
     light_obj.rotation_euler = rot
     light_obj.scale = scale
-    lights.apply_ue_light_object_properties(light_obj)
     parent_collection.objects.link(light_obj)
+    lights.apply_ue_light_object_properties(light_obj)
+    lights.apply_component_visibility(light_obj, props)
     return light_obj
+
+
+def create_rect_light_from_entry(
+    entry, parent_collection, location_scale, exposure_mult,
+    attenuation_radius_mult, always_cast_shadows=False, attach_parent_obj=None,
+):
+    props = entry.get("Properties") or {}
+    name = _resolve_light_name(entry, "RectLight")
+    data = lights.create_static_light_data(
+        name, "AREA", {**entry, **props}, location_scale=location_scale,
+        exposure_mult=exposure_mult, attenuation_radius_mult=attenuation_radius_mult,
+        always_cast_shadows=always_cast_shadows,
+    )
+    obj = bpy.data.objects.new(name, data)
+    parent_collection.objects.link(obj)
+    if attach_parent_obj is not None:
+        obj.parent = attach_parent_obj
+    obj.location = location_from_relative(props.get("RelativeLocation", entry.get("RelativeLocation", {})), location_scale)
+    obj.rotation_euler = component_rotation_from_relative(props.get("RelativeRotation", entry.get("RelativeRotation", {})), obj)
+    obj.scale = component_scale_from_entry(props, obj)
+    lights.apply_ue_light_object_properties(obj)
+    lights.apply_component_visibility(obj, props)
+    return obj
+
+
+def create_directional_light_from_entry(
+    entry, parent_collection, location_scale, exposure_mult,
+    attenuation_radius_mult=1.0, always_cast_shadows=False, attach_parent_obj=None,
+):
+    props = entry.get("Properties") or {}
+    name = _resolve_light_name(entry, "DirectionalLight")
+    data = lights.create_static_light_data(name, "SUN", props, location_scale=location_scale,
+        exposure_mult=exposure_mult, always_cast_shadows=always_cast_shadows)
+    obj = bpy.data.objects.new(name, data)
+    parent_collection.objects.link(obj)
+    obj.parent = attach_parent_obj
+    obj.location = location_from_relative(props.get("RelativeLocation", {}), location_scale)
+    obj.rotation_euler = component_rotation_from_relative(props.get("RelativeRotation", {}), obj)
+    obj.scale = component_scale_from_entry(props, obj)
+    obj["source_type"] = "DirectionalLightComponent"
+    lights.apply_component_visibility(obj, props)
+    return obj
 
 
 def extract_skeletal_mesh_name(entry: dict) -> tuple[str | None, str | None]:
@@ -472,6 +552,8 @@ def extract_skeletal_mesh_name(entry: dict) -> tuple[str | None, str | None]:
             if not isinstance(obj_path, str) or not obj_path:
                 continue
             object_path = extract_static_mesh_name(obj_path)
+            if object_path.casefold() == "none":
+                continue
             last_segment = object_path.rstrip("/").rsplit("/", 1)[-1]
             asset_name = last_segment.split(".")[0] or None
             if asset_name:
@@ -482,7 +564,7 @@ def extract_skeletal_mesh_name(entry: dict) -> tuple[str | None, str | None]:
         return None, None
 
     obj_path = template.get("ObjectPath", "")
-    if not obj_path:
+    if not obj_path or (isinstance(obj_path, str) and obj_path.casefold() == "none"):
         return None, None
 
     last_segment = obj_path.rstrip("/").rsplit("/", 1)[-1]
@@ -780,12 +862,23 @@ def _apply_material_parameter_light_props(
         obj["material_parameter_light_intensity"] = intensity
         light_data = getattr(obj, "data", None)
         if light_data is not None and hasattr(light_data, "energy"):
-            lights.set_light_energy(light_data, intensity * exposure_mult)
+            if lights.UE_INTENSITY_PROP in obj:
+                obj[lights.UE_INTENSITY_PROP] = intensity
+                units = light_data.get('ue_authored_intensity_units', 'UNITLESS')
+                obj[lights.UE_UNIT_CODE_PROP] = lights.photometry.UNIT_CODES.get(lights.photometry.unit_name(units), 0)
+                obj[lights.UE_EXPOSURE_PROP] = exposure_mult
+                light_data['ue_intensity_units'] = units
+                light_data['ue_intensity_source'] = 'MaterialParameterLight'
+            else:
+                lights.set_light_energy(light_data, intensity * lights.apply_light_exposure(light_data, exposure_mult))
     if "ColorTemperature" in mpl:
         temperature = _float_or_default(mpl.get("ColorTemperature"))
         obj["material_parameter_light_color_temperature"] = temperature
         light_data = getattr(obj, "data", None)
         if light_data is not None:
+            if lights.UE_TEMPERATURE_PROP in obj:
+                obj[lights.UE_TEMPERATURE_PROP] = temperature
+                obj[lights.UE_USE_TEMPERATURE_PROP] = True
             if hasattr(light_data, "use_temperature"):
                 light_data.use_temperature = True
             if hasattr(light_data, "temperature"):
@@ -797,18 +890,17 @@ def _apply_material_parameter_light_props(
         if light_data is not None and hasattr(light_data, "color") and len(color_value) >= 3:
             lights.set_light_color(
                 light_data,
-                (
-                    max(0.0, min(1.0, color_value[0] / 255.0)),
-                    max(0.0, min(1.0, color_value[1] / 255.0)),
-                    max(0.0, min(1.0, color_value[2] / 255.0)),
-                ),
+                lights.photometry.light_color({'LightColor': mpl['Color']}),
             )
             # MaterialParameterLight's FColor is the authored light colour.
             # Do not let Blender apply ColorTemperature a second time to it.
             if hasattr(light_data, "use_temperature"):
                 light_data.use_temperature = False
+            if lights.UE_USE_TEMPERATURE_PROP in obj:
+                obj[lights.UE_USE_TEMPERATURE_PROP] = False
     if hex_value is not None:
         obj["material_parameter_light_color_hex"] = hex_value
+    obj.update_tag()
 
 
 def _apply_vector_parameter_props(obj: bpy.types.Object, props: dict):
@@ -879,11 +971,8 @@ def apply_deferred_light_parent(
     loc_dict = props.get("RelativeLocation", {})
     rot_dict = props.get("RelativeRotation", {})
     light_obj.location = location_from_relative(loc_dict, scale_factor=location_scale)
-    if getattr(light_obj.data, "type", None) == "SPOT":
-        light_obj.rotation_euler = light_rotation_from_relative(rot_dict)
-    else:
-        light_obj.rotation_euler = rotation_from_relative(rot_dict)
-    light_obj.scale = scale_from_entry(props)
+    light_obj.rotation_euler = component_rotation_from_relative(rot_dict, light_obj)
+    light_obj.scale = component_scale_from_entry(props, light_obj)
 
 
 def apply_deferred_object_parent(
@@ -897,8 +986,8 @@ def apply_deferred_object_parent(
     loc_dict = props.get("RelativeLocation", {})
     rot_dict = props.get("RelativeRotation", {})
     child_obj.location = location_from_relative(loc_dict, scale_factor=location_scale)
-    child_obj.rotation_euler = rotation_from_relative(rot_dict)
-    child_obj.scale = scale_from_entry(props)
+    child_obj.rotation_euler = component_rotation_from_relative(rot_dict, child_obj)
+    child_obj.scale = component_scale_from_entry(props, child_obj)
 
 
 def outer_to_instance_name(outer_name: str, asset_name: str) -> str:
@@ -947,27 +1036,30 @@ def resolve_game_asset_file_path(asset_path_name: str, game_root: str, extension
 
 
 def collect_level_streaming_asset_paths(data: list) -> list[str]:
-    """Return asset paths from LevelStreamingAlwaysLoaded/Dynamic entries (preferred over EndStreamingVolume)."""
+    """Return authored sublevel references, including legacy Kismet streams."""
     asset_paths: list[str] = []
     seen: set[str] = set()
 
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        if entry.get("Type") not in {"LevelStreamingAlwaysLoaded", "LevelStreamingDynamic"}:
+        if entry.get("Type") not in {"LevelStreamingAlwaysLoaded", "LevelStreamingDynamic", "LevelStreamingKismet"}:
             continue
 
         props = entry.get("Properties", {})
         if not isinstance(props, dict):
             continue
         world_asset = props.get("WorldAsset")
-        if not isinstance(world_asset, dict):
+        # KH's older soft references serialize as a string; newer games use
+        # FSoftObjectPath's AssetPathName/SubPathString struct.
+        asset_path_name = world_asset.get("AssetPathName") if isinstance(world_asset, dict) else world_asset
+        if not asset_path_name or asset_path_name == "None":
+            asset_path_name = props.get("PackageNameToLoad")
+        if not isinstance(asset_path_name, str) or not asset_path_name.strip() or asset_path_name == "None":
             continue
-
-        asset_path_name = world_asset.get("AssetPathName")
-        if not asset_path_name or asset_path_name in seen:
+        if asset_path_name.casefold() in seen:
             continue
-        seen.add(asset_path_name)
+        seen.add(asset_path_name.casefold())
         asset_paths.append(asset_path_name)
 
     return asset_paths
@@ -1120,11 +1212,8 @@ def parent_to_bone(
     loc = location_from_relative(
         props.get("RelativeLocation", {}), scale_factor=location_scale
     )
-    if getattr(child_obj.data, "type", None) == "SPOT":
-        rot = light_rotation_from_relative(props.get("RelativeRotation", {}))
-    else:
-        rot = rotation_from_relative(props.get("RelativeRotation", {}))
-    relative_matrix = Matrix.LocRotScale(loc, rot, scale_from_entry(props))
+    rot = component_rotation_from_relative(props.get("RelativeRotation", {}), child_obj)
+    relative_matrix = Matrix.LocRotScale(loc, rot, component_scale_from_entry(props, child_obj))
     socket_head_matrix = bone.matrix_local @ relative_matrix
     bone_parent_frame = bone.matrix_local @ Matrix.Translation((0.0, bone.length, 0.0))
     child_obj.parent = armature_obj
@@ -1140,7 +1229,7 @@ def _apply_deferred_parent_transform(
     parent_obj: bpy.types.Object,
     location_scale: float,
 ) -> None:
-    if getattr(child_obj.data, "type", None) in {"POINT", "SPOT"}:
+    if getattr(child_obj.data, "type", None) in {"POINT", "SPOT", "AREA"}:
         apply_deferred_light_parent(child_obj, props, parent_obj, location_scale)
     else:
         apply_deferred_object_parent(child_obj, props, parent_obj, location_scale)
@@ -1194,12 +1283,12 @@ def create_static_mesh_instance_from_datablock(
     game_features: bool = True,
 ) -> bpy.types.Object:
     """Instance an already-imported package mesh without duplicating its data."""
-    obj = bpy.data.objects.new(name, mesh)
+    obj = bpy.data.objects.new(mesh.get("ue_virtual_path", mesh.name).rsplit("/", 1)[-1].split(".", 1)[0], mesh)
     obj.location = loc
     obj.rotation_euler = rot
     obj.scale = rel_scale
-    if mesh.get("sqex_virtual_path"):
-        obj["sqex_virtual_path"] = mesh["sqex_virtual_path"]
+    if mesh.get("ue_virtual_path"):
+        obj["ue_virtual_path"] = mesh["ue_virtual_path"]
     static_collection.objects.link(obj)
     if game_features:
         _initialize_external_emissive_context(obj)
@@ -1298,7 +1387,7 @@ def create_foliage_instances_from_entry(
     if not isinstance(props, dict):
         return None
     instance_transforms = props.get("PerInstanceSMData")
-    if not isinstance(instance_transforms, list) or not instance_transforms:
+    if not isinstance(instance_transforms, (list, np.ndarray)) or not len(instance_transforms):
         return None
 
     component_loc = location_from_relative(
@@ -1308,22 +1397,8 @@ def create_foliage_instances_from_entry(
     component_scale = scale_from_entry(props, entry)
     component_matrix = Matrix.LocRotScale(component_loc, component_rot, component_scale)
 
-    locations: list[tuple[float, float, float]] = []
-    rotations: list[tuple[float, float, float]] = []
-    scales: list[tuple[float, float, float]] = []
-    for transform in instance_transforms:
-        if not isinstance(transform, dict):
-            continue
-        loc, rot, scale = transform_location_rotation_scale(
-            transform, scale_factor=location_scale
-        )
-        location, rotation, final_scale = (
-            component_matrix @ Matrix.LocRotScale(loc, rot, scale)
-        ).decompose()
-        locations.append(tuple(location))
-        rotations.append(tuple(rotation.to_euler("XYZ")))
-        scales.append(tuple(final_scale))
-    if not locations:
+    locations, rotations, scales = foliage_transform_arrays(instance_transforms, component_matrix, location_scale)
+    if not len(locations):
         return None
 
     component_name = entry.get("Name", "FoliageInstancedStaticMeshComponent")
@@ -1344,19 +1419,20 @@ def create_foliage_instances_from_entry(
         else f"Foliage | {mesh_label}"
     )
     points = bpy.data.meshes.new(f"{foliage_name}_Points")
-    points.from_pydata(locations, [], [])
+    points.vertices.add(len(locations))
+    points.vertices.foreach_set("co", locations.ravel())
     points.update()
     rotation_attribute = points.attributes.new(
         _FOLIAGE_ROTATION_ATTRIBUTE, "FLOAT_VECTOR", "POINT"
     )
     rotation_attribute.data.foreach_set(
-        "vector", [value for rotation in rotations for value in rotation]
+        "vector", rotations.ravel()
     )
     scale_attribute = points.attributes.new(
         _FOLIAGE_SCALE_ATTRIBUTE, "FLOAT_VECTOR", "POINT"
     )
     scale_attribute.data.foreach_set(
-        "vector", [value for scale in scales for value in scale]
+        "vector", scales.ravel()
     )
 
     foliage = bpy.data.objects.new(foliage_name, points)
@@ -1364,8 +1440,8 @@ def create_foliage_instances_from_entry(
     foliage["sqex_component_name"] = component_name
     foliage["sqex_foliage_instance_count"] = len(locations)
     foliage["sqex_foliage_instance_source"] = props.get("FoliageInstanceSource", "bridge")
-    if mesh.get("sqex_virtual_path"):
-        foliage["sqex_virtual_path"] = mesh["sqex_virtual_path"]
+    if mesh.get("ue_virtual_path"):
+        foliage["ue_virtual_path"] = mesh["ue_virtual_path"]
     foliage_collection.objects.link(foliage)
     modifier = foliage.modifiers.new("UE Foliage Instances", "NODES")
     modifier.node_group = _ensure_foliage_node_group(
@@ -1386,10 +1462,10 @@ def create_package_skeletal_mesh_instance(
 ) -> bpy.types.Object:
     """Place a package SkeletalMesh using shared Mesh/Armature datablocks.
 
-    The armature is the component root when available.  Its child mesh has
-    per-object vertex groups and an Armature modifier, but both objects reuse
-    the cached game asset's datablocks.  This mirrors static-mesh placement and
-    leaves no helper empty or collection-instance source behind.
+    The armature is the component root when available.  Its child mesh reuses
+    the source's skin weights and group layout with its own Armature modifier.
+    Both objects reuse the cached game asset's datablocks, mirroring static-mesh
+    placement without a helper empty or collection-instance source.
     """
     armature_obj = None
     mesh_obj = None
@@ -1401,18 +1477,19 @@ def create_package_skeletal_mesh_instance(
             armature_obj.rotation_euler = rot
             armature_obj.scale = rel_scale
             skeletal_collection.objects.link(armature_obj)
-            mesh_obj = bpy.data.objects.new(f"{name}_Mesh", asset.mesh)
+            mesh_obj = bpy.data.objects.new(asset.virtual_path.rsplit("/", 1)[-1].split(".", 1)[0], asset.mesh)
             skeletal_collection.objects.link(mesh_obj)
             _bind_package_skeletal_mesh_object(
                 mesh_obj,
                 asset.skeletal_mesh,
                 armature_obj,
                 preserve_world_transform=False,
+                shared_weights=asset.shared_weights,
                 **({"game_features": False} if not game_features else {}),
             )
             root_obj = armature_obj
         else:
-            mesh_obj = bpy.data.objects.new(name, asset.mesh)
+            mesh_obj = bpy.data.objects.new(asset.virtual_path.rsplit("/", 1)[-1].split(".", 1)[0], asset.mesh)
             mesh_obj.location = loc
             mesh_obj.rotation_mode = "XYZ"
             mesh_obj.rotation_euler = rot
@@ -1421,6 +1498,7 @@ def create_package_skeletal_mesh_instance(
             # Preserve the skin groups even if the asset has no usable skeleton.
             _bind_package_skeletal_mesh_object(
                 mesh_obj, asset.skeletal_mesh,
+                shared_weights=asset.shared_weights,
                 **({"game_features": False} if not game_features else {}),
             )
             root_obj = mesh_obj
@@ -1462,7 +1540,7 @@ def collect_asset_names_for_import(data: list) -> tuple[set[str], set[str]]:
 
         t = entry.get("Type")
         if t in {
-            "EndEnvironmentStaticMeshComponent", "StaticMeshComponent",
+            "EndEnvironmentStaticMeshComponent", "StaticMeshComponent", "TresStaticMeshComponent",
             "FoliageInstancedStaticMeshComponent",
         }:
             props = entry.get("Properties", {})
@@ -1484,7 +1562,7 @@ def collect_package_static_mesh_paths_for_import(data: list) -> set[str]:
     paths: set[str] = set()
     for entry in data:
         if not isinstance(entry, dict) or entry.get("Type") not in {
-            "EndEnvironmentStaticMeshComponent", "StaticMeshComponent",
+            "EndEnvironmentStaticMeshComponent", "StaticMeshComponent", "TresStaticMeshComponent",
             "FoliageInstancedStaticMeshComponent",
         }:
             continue
@@ -1577,20 +1655,60 @@ def import_map_entries(
     target_collection: bpy.types.Collection | None = None,
     game_features: bool = True,
     component_initializer=None,
+    parent_to_root: bool = True,
     import_point_lights: bool = True,
     import_spot_lights: bool = True,
+    import_rect_lights: bool = True,
+    import_directional_lights: bool = True,
+    color_lut_loader=None,
+    light_texture_loader=None,
+    light_profile=None,
+    bake_light_parameters: bool = False,
+    import_splines: bool | None = None,
+    import_landscapes: bool = True,
+    landscape_lod: int = 1,
+    max_landscape_vertices: int = 2_000_000,
+    landscape_layer_preview: bool = False,
 ) -> tuple[int, set[str]]:
     """Create requested Blender models and lights from package-decoded UMAP entries."""
     location_scale = _float_or_default(location_scale, 0.01)
-    import_lights = import_lights and (import_point_lights or import_spot_lights)
+    if import_splines is None:
+        import_splines = import_models
+    import_lights = import_lights and (import_point_lights or import_spot_lights or import_rect_lights or import_directional_lights)
+    import_landscapes = import_models and import_landscapes
+    if not isinstance(data, list):
+        raise ValueError("Package map entries must be a list of objects")
+    terrain_lod = landscape_lod
+    if import_landscapes:
+        terrain_lod, terrain_vertices = landscapes.plan_lod(data, landscape_lod, max_landscape_vertices)
+        if terrain_lod != landscape_lod:
+            print(f"[Landscape] {source_name}: using LOD {terrain_lod} instead of {landscape_lod} to fit {terrain_vertices:,} terrain vertices within the map budget.")
 
     def resolve_parent(props, component_objects, child_name="object", report_missing=True):
         return resolve_attach_parent_object(
             props, component_objects, child_name, report_missing, allow_scene_lookup=game_features,
         )
 
-    if not isinstance(data, list):
-        raise ValueError("Package map entries must be a list of objects")
+    # A spline-only import must keep all of its transform ancestors, including
+    # mesh components whose geometry was disabled. Avoid importing unrelated
+    # SceneComponents (and their unresolved mesh attachments) in that mode.
+    spline_ancestor_ids = set()
+    if import_splines:
+        entries_by_key = {key: entry for entry in data if isinstance(entry, dict)
+                          for key in _entry_component_reference_keys(entry)}
+        for entry in data:
+            if not isinstance(entry, dict) or (entry.get("Type") not in _SPLINE_COMPONENT_TYPES | {"SQEX_SplineRootComponent"}
+                    and entry.get("SourceType") != "SQEX_SplineRootComponent"):
+                continue
+            current, visited = entry, {id(entry)}
+            while current is not None:
+                reference = (current.get("Properties") or {}).get("AttachParent")
+                current = next((entries_by_key[key] for key in _object_reference_lookup_keys(reference)
+                                if key in entries_by_key), None)
+                if current is None or id(current) in visited:
+                    break
+                visited.add(id(current))
+                spline_ancestor_ids.add(id(current))
 
     print(f"[Rebirth Map Import] Decoded {len(data)} top-level entries from {source_name}.")
 
@@ -1639,6 +1757,9 @@ def import_map_entries(
     def ensure_skeletal_collection() -> bpy.types.Collection:
         return ensure_typed_import_collection(ensure_root_collection(), "_Skeletal")
 
+    def ensure_splines_collection() -> bpy.types.Collection:
+        return ensure_typed_import_collection(ensure_root_collection(), "_Splines")
+
     def ensure_lights_collection() -> bpy.types.Collection:
         return ensure_typed_import_collection(ensure_root_collection(), "_Lights")
 
@@ -1660,6 +1781,7 @@ def import_map_entries(
     pending_material_parameter_lights: list[dict] = []
     pending_vector_parameters: list[tuple[int, dict]] = []
     map_mesh_objects: list[bpy.types.Object] = []
+    imported_light_objects: list[bpy.types.Object] = []
     foliage_source_cache: dict[int, bpy.types.Object] = {}
     foliage_node_group_cache: dict[int, bpy.types.NodeTree] = {}
     if import_models and game_features:
@@ -1685,6 +1807,9 @@ def import_map_entries(
             location_scale=location_scale,
             include_box_reflection_captures=True,
         )
+
+    created_count += post_process.import_camera_regions(
+        data, source_name, location_scale, rotation_from_relative, color_lut_loader)
 
     # Create non-skeletal components first.  Deferred attachment resolution below
     # preserves parent/socket relationships even when a light targets a rig that
@@ -1747,7 +1872,7 @@ def import_map_entries(
             map_mesh_objects.append(foliage)
             created_count += int(foliage.get("sqex_foliage_instance_count", 0))
 
-        elif import_models and t in {"EndEnvironmentStaticMeshComponent", "StaticMeshComponent"}:
+        elif import_models and t in {"EndEnvironmentStaticMeshComponent", "StaticMeshComponent", "TresStaticMeshComponent"}:
             props = entry.get("Properties", {})
             if not isinstance(props, dict):
                 props = {}
@@ -1973,8 +2098,45 @@ def import_map_entries(
 
             created_count += 1
 
-        elif ((import_models and t == "TresRootComponent") or
-              (not game_features and (import_models or import_lights) and t == "SceneComponent")):
+        elif import_splines and t in _SPLINE_COMPONENT_TYPES:
+            props = entry.get("Properties") or {}
+            actor_name = _resolve_outer_name(entry)
+            component_name = entry.get("Name") or "Spline"
+            instance_name = f"{actor_name} | {component_name}" if actor_name else component_name
+            try:
+                obj = splines.create_spline(entry, instance_name, ensure_splines_collection(), location_scale)
+            except (TypeError, ValueError, KeyError) as exc:
+                print(f"[Rebirth Map Import] Spline '{instance_name}' could not be imported: {exc}")
+                obj = None
+            if obj is None:
+                # A path with no authored curve can still carry the transform
+                # of attached mesh spans or other component children.
+                print(f"[Rebirth Map Import] Spline '{instance_name}' has no usable points; retaining its transform.")
+                obj = create_mesh_empty(instance_name, Vector((0, 0, 0)), Euler((0, 0, 0)), ensure_splines_collection())
+            obj.location = location_from_relative(props.get("RelativeLocation", {}), scale_factor=location_scale)
+            obj.rotation_euler = rotation_from_relative(props.get("RelativeRotation", {}))
+            obj.scale = scale_from_entry(props, entry)
+            obj["source_name"] = instance_name
+            obj["source_type"] = entry.get("SourceType") or t
+            splines.tag_brush_outline(obj, entry)
+            register_component_object(component_objects, entry, obj)
+            if component_initializer is not None:
+                component_initializer(obj, entry)
+            _register_actor_object(actor_objects, actor_name or component_name, obj)
+            map_mesh_objects.append(obj)
+            if props.get("AttachSocketName"):
+                pending_attaches.append((obj, props, props["AttachSocketName"]))
+            elif props.get("AttachParent"):
+                pending_parent_attaches.append((obj, props, instance_name))
+            created_count += 1
+
+        elif ((import_models and t == "TresRootComponent") or id(entry) in spline_ancestor_ids or
+              ((import_models or import_lights or import_splines) and
+               (entry.get("SourceType") or t) == "SQEX_SplineRootComponent") or
+              ((import_models or import_lights) and t == "SceneComponent" and entry.get("AttachmentParentOnly")) or
+              ((import_models or import_lights) and t in _SPLINE_COMPONENT_TYPES) or
+              (not game_features and (
+                  (import_models or import_lights) and t == "SceneComponent"))):
             # Kingdom Hearts event-pawn Blueprints put their actor/world
             # transform on a TresRootComponent and attach the visible
             # TresSkeletalMeshComponent below it.  Preserve that tiny parent
@@ -1994,18 +2156,28 @@ def import_map_entries(
             rot = rotation_from_relative(
                 props.get("RelativeRotation", entry.get("RelativeRotation", {}))
             )
+            source_type = entry.get("SourceType") or t
+            sqex_spline = source_type in {"SQEX_SplineComponent", "SQEX_SplineRootComponent"}
+            # Ordinary SceneComponents also carry spline/brush transforms.
+            # Keep these helpers beside their splines rather than treating
+            # them as skeletal roots because they share this creation branch.
+            spline_helper = sqex_spline or id(entry) in spline_ancestor_ids
             root_obj = create_mesh_empty(
                 root_name,
                 loc,
                 rot,
-                ensure_skeletal_collection(),
+                ensure_splines_collection() if spline_helper else ensure_skeletal_collection(),
                 scale=scale_from_entry(props, entry),
             )
             root_obj["source_name"] = root_name
-            root_obj["source_type"] = t
+            root_obj["source_type"] = source_type
+            if sqex_spline:
+                root_obj["ue_sqex_spline_properties"] = json.dumps(props, ensure_ascii=False)
             register_component_object(component_objects, entry, root_obj)
+            if component_initializer is not None:
+                component_initializer(root_obj, entry)
             _register_actor_object(actor_objects, root_name, root_obj)
-            if not game_features:
+            if not game_features or entry.get("AttachmentParentOnly") or sqex_spline or id(entry) in spline_ancestor_ids:
                 map_mesh_objects.append(root_obj)
                 if props.get("AttachParent"):
                     pending_parent_attaches.append((root_obj, props, root_name))
@@ -2062,44 +2234,98 @@ def import_map_entries(
 
             created_count += pack_created_count
 
-        elif import_lights and import_point_lights and t == "PointLightComponent":
-            lights_collection = ensure_lights_collection()
-
-            props = entry.get("Properties", {})
-            light_name = _resolve_light_name(entry, "PointLight")
-            attach_socket = props.get("AttachSocketName")
-            attach_parent_obj = None if attach_socket else resolve_parent(
-                props, component_objects, light_name, report_missing=False,
-            )
-            light_obj = create_point_light_from_entry(
-                entry=entry,
-                parent_collection=lights_collection,
-                location_scale=location_scale,
-                exposure_mult=exposure_mult,
-                attenuation_radius_mult=attenuation_radius_mult,
-                always_cast_shadows=always_cast_shadows,
-                attach_parent_obj=attach_parent_obj,
-            )
-            outer_name = _resolve_outer_name(entry)
-            if outer_name:
-                light_objects_by_outer.setdefault(outer_name, []).append(light_obj)
-            if attach_socket:
-                pending_attaches.append((light_obj, props, attach_socket))
-            elif attach_parent_obj is None and props.get("AttachParent"):
-                pending_light_attaches.append((light_obj, props, light_name))
+        elif import_landscapes and t == "LandscapeComponent":
+            props = entry.get("Properties") or {}
+            info = entry.get("Landscape") or {}
+            name = entry.get("Name") or "Landscape"
+            try:
+                if light_texture_loader is None or not hasattr(light_texture_loader, "landscape_mesh"):
+                    raise ValueError("Terrain needs a mounted package session; loose JSON alone has no height pixels.")
+                payload = light_texture_loader.landscape_mesh(info, terrain_lod)
+                terrain_collection = ensure_typed_import_collection(ensure_root_collection(), "_Terrain")
+                terrain_collection["ue_landscape_requested_lod"] = landscape_lod
+                terrain_collection["ue_landscape_planned_lod"] = terrain_lod
+                terrain_collection["ue_landscape_vertex_budget"] = max_landscape_vertices
+                obj = landscapes.create_terrain(name, payload, terrain_collection, location_scale, landscape_layer_preview)
+            except Exception as exc:
+                missing_assets.add(info.get("objectPath") or name)
+                print(f"[Landscape ERROR] {info.get('objectPath') or name}: {exc}")
+                continue
+            obj.location = location_from_relative(props.get("RelativeLocation", {}), location_scale)
+            obj.rotation_euler = component_rotation_from_relative(props.get("RelativeRotation", {}), obj)
+            obj.scale = component_scale_from_entry(props, obj)
+            obj["source_type"] = "LandscapeComponent"
+            if props.get("bVisible") is False or props.get("bHiddenInGame") is True:
+                obj.hide_render = True; obj.hide_set(True)
+            register_component_object(component_objects, entry, obj)
+            if component_initializer is not None:
+                component_initializer(obj, entry)
+            map_mesh_objects.append(obj)
+            if props.get("AttachSocketName"):
+                pending_attaches.append((obj, props, props["AttachSocketName"]))
+            elif props.get("AttachParent"):
+                pending_parent_attaches.append((obj, props, name))
             created_count += 1
 
-        elif import_lights and import_spot_lights and t == "SpotLightComponent":
+        elif import_models and t in {"DecalComponent", "CameraComponent", "CineCameraComponent"}:
+            props = entry.get("Properties") or {}
+            name = _resolve_light_name(entry, t.removesuffix("Component"))
+            collection = ensure_typed_import_collection(ensure_root_collection(), "_Decals" if t == "DecalComponent" else "_Cameras")
+            if t == "DecalComponent":
+                obj = decals.create_decal_object(name, props, collection, location_scale, light_texture_loader)
+            else:
+                obj = cameras.create_camera_object(name, props, collection, location_scale, cine=t == "CineCameraComponent")
+            obj.location = location_from_relative(props.get("RelativeLocation", {}), location_scale)
+            obj.rotation_euler = component_rotation_from_relative(props.get("RelativeRotation", {}), obj)
+            obj.scale = component_scale_from_entry(props, obj)
+            obj["source_type"] = entry.get("SourceType", t)
+            register_component_object(component_objects, entry, obj)
+            if component_initializer is not None:
+                component_initializer(obj, entry)
+            map_mesh_objects.append(obj)
+            if props.get("AttachSocketName"):
+                pending_attaches.append((obj, props, props["AttachSocketName"]))
+            elif props.get("AttachParent"):
+                pending_parent_attaches.append((obj, props, name))
+            created_count += 1
+
+        elif import_models and t in {"TextRenderComponent", "EndTextRenderComponent"}:
+            props = entry.get("Properties") or {}
+            name = _resolve_light_name(entry, "TextRender")
+            obj = text_render.create_text_object(name, props, ensure_typed_import_collection(ensure_root_collection(), "_Text"), location_scale)
+            obj.location = location_from_relative(props.get("RelativeLocation", {}), location_scale)
+            obj.rotation_euler = component_rotation_from_relative(props.get("RelativeRotation", {}), obj)
+            obj.scale = component_scale_from_entry(props, obj)
+            register_component_object(component_objects, entry, obj)
+            if component_initializer is not None:
+                component_initializer(obj, entry)
+            map_mesh_objects.append(obj)
+            if props.get("AttachSocketName"):
+                pending_attaches.append((obj, props, props["AttachSocketName"]))
+            elif props.get("AttachParent"):
+                pending_parent_attaches.append((obj, props, name))
+            created_count += 1
+
+        elif import_lights and (
+            (import_point_lights and t == "PointLightComponent") or
+            (import_spot_lights and t == "SpotLightComponent") or
+            (import_rect_lights and t == "RectLightComponent") or
+            (import_directional_lights and t == "DirectionalLightComponent")
+        ):
             lights_collection = ensure_lights_collection()
 
             props = entry.get("Properties", {})
-            light_name = _resolve_light_name(entry, "SpotLight")
+            creator = {"PointLightComponent": create_point_light_from_entry,
+                       "SpotLightComponent": create_spot_light_from_entry,
+                       "RectLightComponent": create_rect_light_from_entry,
+                       "DirectionalLightComponent": create_directional_light_from_entry}[t]
+            light_name = _resolve_light_name(entry, t.removesuffix("Component"))
             attach_socket = props.get("AttachSocketName")
             attach_parent_obj = None if attach_socket else resolve_parent(
                 props, component_objects, light_name, report_missing=False,
             )
-            light_obj = create_spot_light_from_entry(
-                entry=entry,
+            light_obj = creator(
+                entry={**entry, '_ue_light_profile': light_profile or ('FF7' if game_features else 'UE4')},
                 parent_collection=lights_collection,
                 location_scale=location_scale,
                 exposure_mult=exposure_mult,
@@ -2107,6 +2333,11 @@ def import_map_entries(
                 always_cast_shadows=always_cast_shadows,
                 attach_parent_obj=attach_parent_obj,
             )
+            lights.apply_source_texture(light_obj, light_texture_loader)
+            imported_light_objects.append(light_obj)
+            register_component_object(component_objects, entry, light_obj)
+            if component_initializer is not None:
+                component_initializer(light_obj, entry)
             outer_name = _resolve_outer_name(entry)
             if outer_name:
                 light_objects_by_outer.setdefault(outer_name, []).append(light_obj)
@@ -2172,6 +2403,11 @@ def import_map_entries(
                     location_scale,
                 )
 
+    # SQEX's legacy SplineInfo is authored in world coordinates even though
+    # the spline is attached to a transformed root. Convert once, after the
+    # full attachment chain exists, to avoid applying that root twice.
+    splines.finalize_world_space_paths(map_mesh_objects)
+
     for entry in pending_material_parameter_lights:
         props = entry.get("Properties", {})
         outer_name = _resolve_outer_name(entry)
@@ -2194,11 +2430,18 @@ def import_map_entries(
         if target is not None:
             _apply_vector_parameter_props(target, entry.get("Properties", {}))
 
-    if map_mesh_objects:
+    if map_mesh_objects and parent_to_root:
         root = ensure_map_import_root(
             ensure_root_collection(), source_name, display_size=location_scale * 100.0,
         )
         parent_map_objects_to_root(root, map_mesh_objects)
+
+    if bake_light_parameters and imported_light_objects:
+        # Final transforms, inherited properties and MaterialParameterLight
+        # overrides must be evaluated before freezing native light settings.
+        from .light_rig import bake_static_light_parameters
+        baked = bake_static_light_parameters(imported_light_objects)
+        print(f"[Rebirth Map Import] Baked parameters on {baked} static light(s).")
 
     print(
         f"[Rebirth Map Import] Finished '{os.path.basename(source_name)}' - "

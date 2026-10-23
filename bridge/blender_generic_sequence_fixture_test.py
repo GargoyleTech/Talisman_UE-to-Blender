@@ -2,7 +2,9 @@
 
 from pathlib import Path
 import copy
+from contextlib import ExitStack, nullcontext
 import sys
+from unittest.mock import patch
 
 import bpy
 
@@ -149,6 +151,19 @@ bpy.context.view_layer.update()
 assert rig.hide_render
 assert bpy.data.texts.get(runner.collection['ue_import_report'])
 runner.rollback()
+# A profile's asset filter stays hidden through authored spawn/visibility curves.
+filtered_session = Mounted()
+filtered_session.hidden_object_patterns = ("rOb?t",)
+filtered_runner = Importer(bpy.context, filtered_session, '/Game/Root', start_frame=11)
+with _active_collection(bpy.context, filtered_runner.collection):
+    filtered_runner.run()
+filtered_meshes = [obj for obj in filtered_runner.collection.all_objects if obj.type == 'MESH']
+assert filtered_meshes
+for frame in (11, 47, 83, 179):
+    bpy.context.scene.frame_set(frame)
+    for obj in filtered_meshes:
+        assert obj.hide_get() and obj.hide_render, (frame, obj.name)
+filtered_runner.rollback()
 assert not any(col.get('ue_sequence_path') for col in bpy.data.collections)
 assert not any(action.get('ue_sequence_path') for action in bpy.data.actions)
 
@@ -269,3 +284,154 @@ probe = Importer(bpy.context, Mounted(), '/Game/Root')
 assert probe.resolver.existing(actor_path) is None
 probe.rollback()
 print('GENERIC_SEQUENCE_FIXTURE_OK: nested timing, camera axes/cuts/shared data, weighted NLA clips, reverse/loops, socket attachments, visibility, rollback')
+
+# Exercise the registered operator with the real checklist and import pipeline.
+# Selecting a master and one of its shots explicitly must produce independent
+# scenes even though the master also contains that shot as a nested instance.
+from addon.formats.unreal_mesh import sequences
+from addon.games import package_browser
+
+source_scene = bpy.context.scene
+source_scene.render.fps = 30
+source_scene.render.fps_base = 1.001
+source_scene.frame_start, source_scene.frame_end = 5, 99
+source_scene.frame_set(17, subframe=0.25)
+source_objects = set(source_scene.objects)
+source_markers = list(source_scene.timeline_markers)
+source_camera = source_scene.camera
+browser_key = ('sequence-fixture', '')
+
+
+def select_sequences(paths):
+    paths = [path.lstrip('/') for path in paths]
+    sequences._INDEX[browser_key] = paths
+    package_browser.activate(bpy.context, sequences._BROWSER, paths,
+                             dialog_operator=sequences.SQEX_OT_import_generic_unreal_sequence.bl_idname)
+    sequences._BROWSER['selected'].update(paths)
+    package_browser.populate(bpy.context, sequences._BROWSER)
+
+
+with ExitStack() as patches:
+    patches.enter_context(patch.object(sequences, '_key', return_value=browser_key))
+    patches.enter_context(patch.object(sequences.importer, '_paths', return_value={}))
+    patches.enter_context(patch.object(sequences.importer, '_game_version', return_value='GAME_UE4_27'))
+    patches.enter_context(patch.object(sequences.importer, '_pbr_mapping', return_value={}))
+    patches.enter_context(patch.object(sequences.importer, '_hidden_object_patterns', return_value=()))
+    patches.enter_context(patch.object(sequences.session, 'GenericSession', side_effect=lambda *a, **k: nullcontext(Mounted())))
+    select_sequences(['/Game/Root', '/Game/Child'])
+    before = set(bpy.data.scenes)
+    result = bpy.ops.import_scene.sqex_generic_unreal_sequence(start_frame=11)
+    assert result == {'FINISHED'}, result
+    scenes = set(bpy.data.scenes) - before
+    assert len(scenes) == 2
+    by_path = {next('/'+col['ue_sequence_path'].lstrip('/') for col in scene.collection.children): scene for scene in scenes}
+    master, shot = by_path['/Game/Root'], by_path['/Game/Child']
+    assert bpy.context.scene == shot  # The browser returns paths in sorted order.
+    assert not (set(master.objects) & set(shot.objects))
+    for scene, duration, instances in ((master, 8, 2), (shot, 2, 1)):
+        assert scene.render.fps == 30 and abs(scene.render.fps_base-1.001) < 1e-6
+        assert scene.frame_start == 11 and scene.frame_end == __import__('math').ceil(11+duration*30/scene.render.fps_base)-1
+        assert scene.frame_current == 11
+        assert scene.camera in list(scene.objects)
+        assert scene.timeline_markers and all(marker.camera is None or marker.camera in list(scene.objects) for marker in scene.timeline_markers)
+        collection = next(iter(scene.collection.children))
+        payload = __import__('json').loads(bpy.data.texts[collection['ue_import_report']].as_string())
+        assert payload['sequenceInstances'] == instances
+        assert payload['resolvedBindings'] == (2 if scene == master else 1)
+        if scene == master:
+            assert payload['animationStrips'] == 2
+            assert any(obj.type == 'ARMATURE' for obj in scene.objects)
+    assert set(source_scene.objects) == source_objects
+    assert list(source_scene.timeline_markers) == source_markers and source_scene.camera == source_camera
+    assert (source_scene.frame_start, source_scene.frame_end, source_scene.frame_current) == (5, 99, 17)
+    assert abs(source_scene.frame_subframe-0.25) < 1e-6
+
+    # A typed package still takes priority and a single selection imports into
+    # the current scene rather than creating another one.
+    bpy.context.window.scene = source_scene
+    before = set(bpy.data.scenes)
+    assert bpy.ops.import_scene.sqex_generic_unreal_sequence(virtual_path='/Game/Child', start_frame=21) == {'FINISHED'}
+    assert set(bpy.data.scenes) == before and bpy.context.scene == source_scene
+    assert any(col.get('ue_sequence_path') == '/Game/Child' for col in source_scene.collection.children)
+
+    # Failure after actors/actions/markers exist rolls back just that cutscene;
+    # the next selection still imports into its own scene.
+    run = Importer.run
+
+    def fail_master(runner):
+        result = run(runner)
+        if runner.collection['ue_sequence_path'].lstrip('/') == 'Game/Root':
+            raise RuntimeError('Deliberate batch fixture failure')
+        return result
+
+    select_sequences(['/Game/Root', '/Game/Child'])
+    before, before_objects, before_actions = set(bpy.data.scenes), set(bpy.data.objects), set(bpy.data.actions)
+    with patch.object(Importer, 'run', fail_master):
+        assert bpy.ops.import_scene.sqex_generic_unreal_sequence(start_frame=31) == {'FINISHED'}
+    added = set(bpy.data.scenes) - before
+    assert len(added) == 1
+    survivor = added.pop()
+    assert bpy.context.scene == survivor and survivor.frame_start == 31
+    assert set(bpy.data.objects) - before_objects == set(survivor.objects)
+    assert not any(action.get('ue_sequence_path', '').lstrip('/') == 'Game/Root' for action in set(bpy.data.actions)-before_actions)
+
+    # If every selection fails, no scene/actors/actions are left behind and
+    # the active scene is preserved.
+    before, before_objects, before_actions = set(bpy.data.scenes), set(bpy.data.objects), set(bpy.data.actions)
+    with patch.object(Importer, 'run', side_effect=RuntimeError('Deliberate total failure')):
+        try:
+            bpy.ops.import_scene.sqex_generic_unreal_sequence()
+        except RuntimeError as exc:
+            assert 'All selected cutscenes failed' in str(exc)
+        else:
+            raise AssertionError('Expected failed batch to be cancelled')
+    assert set(bpy.data.scenes) == before and bpy.context.scene == survivor
+    assert set(bpy.data.objects) == before_objects and set(bpy.data.actions) == before_actions
+
+print('GENERIC_SEQUENCE_BATCH_OK: separate scenes, nested shots, independent actors/cuts/ranges, single import, partial/all failure rollback')
+
+# Crisis Core uses the same graph and batch behavior with its own preferences,
+# mounted title profile and checklist, without requiring a generic profile.
+from addon.core.profiles import GamePaths
+from addon.games.crisis_core.importers import cutscenes as crisis_cutscenes
+from addon.formats.unreal_package.session import PackageAssetSession
+
+paths = GamePaths('sequence-fixture')
+title_session = crisis_cutscenes.CrisisCoreSequenceSession(paths)
+assert title_session.profile == crisis_cutscenes.PROFILE
+with patch.object(PackageAssetSession, 'request', return_value={}) as request:
+    title_session.request({'action': 'skeletal_mesh', 'assetPath': '/Game/Robot.Robot'})
+    assert request.call_args.args[0]['assetPath'] == 'CCFF7R/Content/Robot'
+    title_session.request({'action': 'generic_actor_template', 'assetPath': '/Game/Map',
+                           'objectPath': '/Game/Map.Map:PersistentLevel.Actor'})
+    assert request.call_args.args[0]['objectPath'] == '/Game/Map.Map:PersistentLevel.Actor'
+    title_session.request({'action': 'generic_actor_template', 'assetPath': '/Game/Map',
+                           'objectPath': 'ccff7r/content/Map.Map:PersistentLevel.Actor'})
+    assert request.call_args.args[0]['objectPath'] == '/Game/Map.Map:PersistentLevel.Actor'
+    title_session.request({'action': 'umap_actors', 'assetPath': 'CCFF7R/Content/Map.umap'})
+    assert request.call_args.args[0]['assetPath'] == 'CCFF7R/Content/Map.umap'
+
+with ExitStack() as patches:
+    patches.enter_context(patch.object(crisis_cutscenes.static_mesh, '_configured_paths', return_value=paths))
+    patches.enter_context(patch.object(crisis_cutscenes, 'refresh_cutscene_index', return_value=['Game/Child', 'Game/Root']))
+    patches.enter_context(patch.object(crisis_cutscenes, 'CrisisCoreSequenceSession', side_effect=lambda *a: nullcontext(Mounted())))
+    package_browser.activate(bpy.context, crisis_cutscenes._CUTSCENE_BROWSER, ['Game/Child', 'Game/Root'])
+    crisis_cutscenes._CUTSCENE_BROWSER['selected'].update(['Game/Child', 'Game/Root'])
+    package_browser.populate(bpy.context, crisis_cutscenes._CUTSCENE_BROWSER)
+    bpy.context.window.scene = source_scene
+    before = set(bpy.data.scenes)
+    assert bpy.ops.import_scene.ff7r_crisis_core_cutscene_game_packages(start_frame=13) == {'FINISHED'}
+    created = set(bpy.data.scenes) - before
+    assert len(created) == 2 and all(scene.frame_start == 13 for scene in created)
+    assert not set.intersection(*(set(scene.objects) for scene in created))
+    assert any(obj.type == 'ARMATURE' for scene in created for obj in scene.objects)
+    bpy.context.window.scene = source_scene
+    before = set(bpy.data.scenes)
+    assert bpy.ops.import_scene.ff7r_crisis_core_cutscene_game_packages(
+        virtual_path='/Game/Child', start_frame=23, import_models=False, import_animation=False) == {'FINISHED'}
+    assert set(bpy.data.scenes) == before
+    collection = next(col for col in reversed(list(source_scene.collection.children))
+                      if col.get('ue_sequence_path') == '/Game/Child')
+    assert any(obj.type == 'CAMERA' for obj in collection.all_objects)
+    assert not any(obj.type in {'ARMATURE', 'MESH'} for obj in collection.all_objects)
+print('CRISIS_CORE_SEQUENCE_FIXTURE_OK: title profile/path adapter, independent batch scenes, explicit path priority, camera-only import')

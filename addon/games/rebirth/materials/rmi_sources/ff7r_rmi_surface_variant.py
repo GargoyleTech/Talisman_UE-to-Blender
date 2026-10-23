@@ -17,6 +17,10 @@ material down to that variant:
   * "Shading Model" is set to match the variant's model-defining flag
     (Eye_ / Hair_ / Skin_ / Subsurface_ / Fabric_ / Unlit_ / else Standard)
 
+The add-on can instead request keep_all_switches=True. That initializes each
+switch from the variant but retains every supported control, driver, numeric
+parameter, texture/UV source and override path for later editing.
+
 By default this trims the ACTIVE OBJECT'S ACTIVE MATERIAL SLOT IN PLACE --
 e.g. your own working copy of the full shader, however you've named it
 (a real case: a duplicate renamed to "PC0000_00_TopsA"). Set TARGET_MATERIAL
@@ -25,41 +29,21 @@ selection. Set MAKE_COPY_FROM_MASTER = True if you instead want a brand-new
 "RMI_Surface_<variant>" copy freshly duplicated off FF7R_RMI_Surface_Master
 -- see the warning on that flag below before turning it on.
 
-IMPORTANT -- why importing ff7r_rmi_surface.py used to break OTHER materials
+Shared node groups
 ------------------------------------------------------------------------------
-"A node group SHARES its node tree between instances" is called out in
-ff7r_rmi_surface.py's own module docstring: FF7R Eye, FF7R Hair Strand,
-FF7R Coverage, UE Tangent To World, and every other util_*/grp_* group are
-ONE node-group datablock referenced by a ShaderNodeGroup instance in every
-material that uses that feature -- the master, and any hand-made variant
-copy of it (PC0000_00_TopsA included).
+FF7R Eye, FF7R Hair Strand, FF7R Coverage, UE Tangent To World, and the other
+util_*/grp_* groups share one node-group datablock across all materials that
+use them. Removing and recreating interface sockets changes their identities
+and severs links in every referencing material, so builders reuse populated
+groups with their socket identities and values intact.
 
-ff7r_rmi_surface.py used to call build() unconditionally the moment it was
-imported. build() calls every util_*()/grp_*() function, and each of those
-calls _rebuild_group() on its shared group -- which does
-`g.interface.remove(it)` for every existing input/output socket and then
-recreates them from scratch. That doesn't just touch
-FF7R_RMI_Surface_Master: it destroys and replaces the socket identities on
-groups that EVERY OTHER material referencing them is still linked to, which
-breaks those links wherever that group is used -- including inside a material
-this script never even looked up by name. That is what was happening to
-PC0000_00_TopsA.001.
+Importing ff7r_rmi_surface.py only defines functions and constants. This
+script calls master_mod.build() only when MAKE_COPY_FROM_MASTER is True,
+rebuilding the master's own node tree before duplicating it. The default
+trims the chosen material without rebuilding the master.
 
-The fix is upstream: ff7r_rmi_surface.py now guards its build()+report call
-behind `if __name__ == "__main__":`, so importing it (as this script does,
-via importlib, to reuse its tables) only defines functions/constants and
-does NOT rebuild anything. This script only calls master_mod.build() at all
-when MAKE_COPY_FROM_MASTER is True, and even then that only touches
-FF7R_RMI_Surface_Master's own node tree plus the shared groups' interfaces --
-which is unavoidable if you want a guaranteed-fresh master to copy from, but
-is why that mode is opt-in rather than the default.
-
-node.mute itself was never the problem -- an earlier revision of this file
-mistakenly swapped it for a cosmetic recolor thinking mute was deleting
-links; it wasn't, the group-interface rebuild above was. Muting is back:
-Frame/Reroute nodes silently can't be muted and are skipped; everything else
-gets marked with the same "M" the Shader Editor already uses for "disabled",
-which is more legible for a manual culling pass than a recolor.
+Frame/Reroute nodes cannot be muted and are skipped. Other muted nodes use
+the Shader Editor's standard "M" indicator for a manual culling pass.
 
 What "mute" actually does to a Mix node, and the one rule that follows
 ------------------------------------------------------------------------------
@@ -151,14 +135,10 @@ VARIANT = "RMI_Surface_Standard_Coverage_Wide_Detail"
 TARGET_MATERIAL = None
 
 # False (default): trim TARGET_MATERIAL / the active material in place.
-# True: ignore TARGET_MATERIAL and instead (re)build FF7R_RMI_Surface_Master
-# fresh and duplicate IT into a new "RMI_Surface_<variant>" material. This
-# calls master_mod.build(), which touches every shared "FF7R "/"UE " node
-# group's interface -- safe for materials that only ever read from those
-# groups' CURRENT interface, but see the module docstring: if you have other
-# hand-edited materials in this .blend using those same shared groups, their
-# links can be affected too. Leave this False unless you specifically want a
-# clean copy of the master rather than to trim what you already have open.
+# True: rebuild FF7R_RMI_Surface_Master and duplicate it into a new
+# "RMI_Surface_<variant>" material. Populated shared groups retain their
+# interfaces, but the master's own node tree is rebuilt. Leave this False
+# to trim the chosen material without rebuilding the master.
 MAKE_COPY_FROM_MASTER = False
 
 # Blender's Text Editor does not give a dropped-in/loaded text block a
@@ -287,9 +267,9 @@ def shading_model_for(switches):
 
 DETAIL_FLAGS = ("Detail_", "DetailColor_", "DetailMetallic_", "DetailNormal_",
                 "DetailRoughness_", "DetailOcclusion_", "Isotropy_")
-# build(): DetailLayer's "Enable" is the OR-chain over exactly these six
-# detail-role flags; Isotropy_ additionally forces RNM through the same
-# detail_mode node, so it belongs in the same "detail machinery matters" set.
+# Surface connects Detail_ directly to the group's Enable. Keep the broad
+# requirements here for shared eye/hair builders and role-specific controls;
+# _mute() never bypasses these processing groups or their enable connections.
 
 ENUM_REQUIRES = {
     "Shading Model": None,                                  # core selector
@@ -525,7 +505,7 @@ def get_or_copy_master(master_mat_name, variant_full_name):
     return variant_mat
 
 
-def apply_variant(mat, master_mod, variant_full_name, switches):
+def apply_variant(mat, master_mod, variant_full_name, switches, *, keep_all_switches=False):
     t = mat.node_tree
     stats = {"removed": [], "muted": 0, "kept_switches": 0, "ladder": 0}
 
@@ -533,11 +513,12 @@ def apply_variant(mat, master_mod, variant_full_name, switches):
     for control, members, _default in master_mod.SWITCH_CONTROLS:
         node = t.nodes.get("SW_" + members[0])
         active = any(m in switches for m in members)
-        if active:
+        if active or keep_all_switches:
             if control in mat:
-                mat[control] = True
+                mat[control] = active
             _mute(node, False)
-            stats["kept_switches"] += 1
+            if active:
+                stats["kept_switches"] += 1
         else:
             _retire_property(mat, node, control, stats)
 
@@ -545,7 +526,7 @@ def apply_variant(mat, master_mod, variant_full_name, switches):
     for name, _d, _mn, _mx, _desc in master_mod.ENUM_PROPS:
         req = ENUM_REQUIRES.get(name)
         node = t.nodes.get("E_" + name.replace(" ", "_"))
-        if not _is_active(req, switches):
+        if not keep_all_switches and not _is_active(req, switches):
             _retire_property(mat, node, name, stats)
         elif name == "Shading Model" and name in mat:
             mat[name] = shading_model_for(switches)
@@ -577,8 +558,20 @@ def apply_variant(mat, master_mod, variant_full_name, switches):
     for name, _d, _mn, _mx, _desc in master_mod.FLOAT_PROPS:
         req = FLOAT_REQUIRES.get(name)
         node = t.nodes.get("P_" + name.replace(" ", "_"))
-        if not _is_active(req, switches):
+        if not keep_all_switches and not _is_active(req, switches):
             _retire_property(mat, node, name, stats)
+
+    mat["_RMI_Variant"] = variant_full_name
+    mat["_RMI_Variant_Switches"] = sorted(switches)
+    # Pick renderer settings once from the imported variant. Live checkbox
+    # edits deliberately do not change the material's render method.
+    refresh_alpha = getattr(master_mod, "refresh_hologram_alpha", None)
+    if refresh_alpha is not None and refresh_alpha(mat):
+        master_mod.configure_surface_render_settings(mat)
+    if keep_all_switches:
+        # Retaining checkboxes alone is insufficient: muted texture/UV
+        # sources and bypassed feature rungs would still disable their paths.
+        return stats
 
     # 4. texture roles: TEX_<role> / USE_<role> pairs ------------------------
     for role, sw in master_mod.SWITCH_FOR_ROLE.items():
@@ -660,8 +653,6 @@ def apply_variant(mat, master_mod, variant_full_name, switches):
         # "<menu>_val<i>" is left alone too -- its B is unlinked, so it is a
         # value holder rather than a rung, and _mute_ladder_mix refuses it.
 
-    mat["_RMI_Variant"] = variant_full_name
-    mat["_RMI_Variant_Switches"] = sorted(switches)
     return stats
 
 

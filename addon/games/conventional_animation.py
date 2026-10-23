@@ -1,6 +1,6 @@
 """Shared animation picker, package session and per-clip reporting workflow."""
 
-from ..language import tooltips
+from ..language import strings
 
 import traceback
 
@@ -57,6 +57,7 @@ def make_animation_importer(
                 )
                 return {"CANCELLED"}
             self.start_frame = context.scene.frame_current
+            self._load_last_import_settings(context)
             package_browser.activate(
                 context, browser, paths, dialog_operator=self.bl_idname
             )
@@ -147,6 +148,7 @@ def make_animation_importer(
                 {"WARNING"},
                 f"{len(failures)} selected animation(s) failed; see the console for details.",
             )
+        self._save_last_import_settings(context)
         return {"FINISHED"}
 
     return type(
@@ -166,8 +168,9 @@ def make_animation_importer(
             },
             "bl_idname": bl_idname,
             "bl_label": f"Import {game_name} Animations",
-            "bl_description": tooltips.ANIMATION_IMPORT.format(game_name=game_name),
+            "bl_description": strings.ANIMATION_IMPORT.format(game_name=game_name),
             "bl_options": {"REGISTER", "UNDO"},
+            "_persisted_props": ("replace_current_action", "use_fake_user"),
             "poll": poll,
             "invoke": invoke,
             "draw": draw,

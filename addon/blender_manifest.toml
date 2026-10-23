@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "talisman"
-version = "1.0.0"
+version = "1.1.0"
 name = "Talisman"
 tagline = "Import Unreal Engine meshes, maps and animations into Blender"
 maintainer = "GargoyleTech"

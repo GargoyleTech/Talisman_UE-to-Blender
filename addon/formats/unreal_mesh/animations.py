@@ -1,6 +1,6 @@
 """Neutral AnimSequence loading, with no title-specific root or bone rules."""
 
-from ...language import tooltips
+from ...language import strings
 
 import math
 
@@ -194,21 +194,22 @@ SQEX_OT_index_generic_unreal_animation.__annotations__ = _config_properties()
 class SQEX_OT_import_generic_unreal_animation(SQEX_LoggedOperator):
     bl_idname = "object.sqex_import_generic_unreal_animation"
     bl_label = "Import Generic Unreal Animations"
-    bl_description = tooltips.GENERIC_ANIMATION_DESCRIPTION
+    bl_description = strings.GENERIC_ANIMATION_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
-    virtual_path: bpy.props.StringProperty(name="Animation Package", description=tooltips.GENERIC_PACKAGE_PATH)
+    virtual_path: bpy.props.StringProperty(name="Animation Package", description=strings.GENERIC_PACKAGE_PATH)
     start_frame: bpy.props.IntProperty(name="Start Frame", default=1)
     replace_current_action: bpy.props.BoolProperty(name="Set as Active Action", default=True)
     use_fake_user: bpy.props.BoolProperty(name="Keep Unused Actions", default=True)
     scale_factor: bpy.props.FloatProperty(name="Model Import Scale", default=0.01, min=0.000001,
-        description=tooltips.GENERIC_ANIMATION_SCALE_FACTOR)
+        description=strings.GENERIC_ANIMATION_SCALE_FACTOR)
 
     @classmethod
     def poll(cls, context):
         return context.active_object is not None and context.active_object.type == "ARMATURE"
 
     def invoke(self, context, _event):
+        self._load_last_import_settings(context)
         try:
             _prefs, profiles = importer._profiles(context)
             profile_id = source_property(context.active_object, "ue_profile_id")
@@ -271,6 +272,7 @@ class SQEX_OT_import_generic_unreal_animation(SQEX_LoggedOperator):
             context.scene.frame_set(context.scene.frame_current)
             report(self, {"WARNING"} if failures else {"INFO"},
                    f"Imported {len(imported):,} Actions, {sum(result[2] for result in imported):,} keys; {len(failures):,} failures.")
+            self._save_last_import_settings(context)
             return {"FINISHED"}
         except Exception as exc:
             report(self, {"ERROR"}, f"Unreal animation import failed: {exc}")
@@ -278,4 +280,5 @@ class SQEX_OT_import_generic_unreal_animation(SQEX_LoggedOperator):
 
 
 SQEX_OT_import_generic_unreal_animation.__annotations__.update(_config_properties())
+SQEX_OT_import_generic_unreal_animation._persisted_props = ("path_filter", "replace_current_action", "use_fake_user")
 CLASSES = (SQEX_OT_index_generic_unreal_animation, SQEX_OT_import_generic_unreal_animation)

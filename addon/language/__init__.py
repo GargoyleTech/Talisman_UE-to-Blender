@@ -1,1 +1,1 @@
-"""Language content for Talisman; English hover text is exposed by tooltips."""
+"""Language content for Talisman; user-facing text is exposed by strings."""

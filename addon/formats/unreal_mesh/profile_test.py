@@ -10,7 +10,7 @@ import textwrap
 import bpy
 
 from ...core.bridge import gargoyle_command
-from ...core.profiles import GamePaths
+from ...core.profiles import GamePaths, normalize_optional_input
 from .session import make_profile
 
 
@@ -23,7 +23,7 @@ def configuration(preferences, profile):
         return bpy.path.abspath(value) if value else ""
 
     paths = GamePaths(absolute(profile.game_path), absolute(preferences.oodle_dll),
-                      absolute(profile.usmap_path), profile.aes_key.strip())
+                      absolute(normalize_optional_input(profile.usmap_path)), profile.aes_key)
     signature = hashlib.sha256(repr((paths, profile.game_version)).encode()).hexdigest()
     return paths, profile.game_version, signature
 

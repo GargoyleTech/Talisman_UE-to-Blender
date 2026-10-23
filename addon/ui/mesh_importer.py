@@ -1,6 +1,6 @@
 """Shared UE4-first layout for StaticMesh and SkeletalMesh package dialogs."""
 
-from ..language import tooltips
+from ..language import strings
 
 
 SKELETAL_OPTION_LABELS = {
@@ -16,19 +16,19 @@ SKELETAL_OPTION_LABELS = {
 }
 
 SKELETAL_OPTION_DESCRIPTIONS = {
-    "import_kdi": tooltips.SHARED_SKELETAL_IMPORT_KDI,
-    "preserve_ue_axis_order": tooltips.SHARED_SKELETAL_PRESERVE_UE_AXIS_ORDER,
-    "connect_bones": tooltips.SHARED_SKELETAL_CONNECT_BONES,
+    "import_kdi": strings.SHARED_SKELETAL_IMPORT_KDI,
+    "preserve_ue_axis_order": strings.SHARED_SKELETAL_PRESERVE_UE_AXIS_ORDER,
+    "connect_bones": strings.SHARED_SKELETAL_CONNECT_BONES,
     "import_mesh_referenced_bones_only": (
-        tooltips.SHARED_SKELETAL_IMPORT_MESH_REFERENCED_BONES_ONLY
+        strings.SHARED_SKELETAL_IMPORT_MESH_REFERENCED_BONES_ONLY
     ),
     "create_variant_bone_collections": (
-        tooltips.SHARED_SKELETAL_CREATE_VARIANT_BONE_COLLECTIONS
+        strings.SHARED_SKELETAL_CREATE_VARIANT_BONE_COLLECTIONS
     ),
-    "attachment_sockets": tooltips.SHARED_SKELETAL_ATTACHMENT_SOCKETS,
-    "setup_naive_ik": tooltips.SHARED_SKELETAL_SETUP_NAIVE_IK,
-    "create_limbal_bone": tooltips.SHARED_SKELETAL_CREATE_LIMBAL_BONE,
-    "generate_mouth_controls": tooltips.SHARED_SKELETAL_GENERATE_MOUTH_CONTROLS,
+    "attachment_sockets": strings.SHARED_SKELETAL_ATTACHMENT_SOCKETS,
+    "setup_naive_ik": strings.SHARED_SKELETAL_SETUP_NAIVE_IK,
+    "create_limbal_bone": strings.SHARED_SKELETAL_CREATE_LIMBAL_BONE,
+    "generate_mouth_controls": strings.SHARED_SKELETAL_GENERATE_MOUTH_CONTROLS,
 }
 
 SKELETAL_OPTION_NAMES = frozenset(SKELETAL_OPTION_LABELS)
@@ -52,6 +52,9 @@ def draw_package_mesh_options(layout, operator, *, mesh_kind, game_label, game_o
     row.prop(operator, "scale_factor")
     row.prop(operator, "face_y_forward")
     common.prop(operator, "offset_opposite_faces")
+    if mesh_kind == "STATIC" and hasattr(operator, "nanite_mode"):
+        from .nanite import draw_nanite_options
+        draw_nanite_options(layout, operator)
     if mesh_kind == "SKELETAL":
         row = common.row(align=True)
         row.prop(operator, "build_skeleton")

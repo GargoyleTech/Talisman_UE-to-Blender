@@ -11,18 +11,30 @@ Fantasy game profile, execute Blueprints, or reconstruct the game's runtime.
    library setting. Use the same profile and scale as your model/map imports.
 2. Open **File > Import > Talisman > Generic UE4 > Cutscene (LevelSequence)**. Choose the
    profile, optionally filter the path, then **Load / Refresh Sequence List**.
-3. Select exactly one LevelSequence, or enter its exact mounted package path.
-   Choose the master sequence to include nested shots automatically.
-4. Optionally use **Inspect Actor Bindings** and choose scene objects as explicit
-   targets. Empty targets use automatic resolution. Existing generic map
-   imports are matched by source actor/component paths, not ambiguous names.
+3. Select one or more LevelSequences, or enter an exact mounted package path
+   (which takes priority over the checklist). Choose a master sequence to include
+   nested shots automatically; its shots stay together in the same scene.
+4. For a single selection, optionally use **Inspect Actor Bindings** and choose
+   scene objects as explicit targets. Empty targets use automatic resolution.
+   Existing generic map imports are matched by source actor/component paths,
+   not ambiguous names. Multiple selections use automatic binding resolution
+   in new, empty scenes; explicit binding overrides require a single selection.
 5. Set the start frame and import options, then import. A dedicated collection
    holds newly created actors. The scene frame rate is unchanged; authored tick
    times and nested playback rates are converted to that frame rate.
+   A single selection imports into the current scene. Multiple selections each
+   get a separate scene named after the selected sequence, with independent
+   actors, animation, camera-cut markers and playback range. These scenes use
+   the original scene's frame rate and the chosen start frame/options. Existing
+   scenes are preserved, and Blender adds a suffix when a scene name is already
+   in use. The first successful cutscene in browser order becomes active.
 6. Read **UE Sequence Report | collection name** in Blender's Text Editor. The
    collection's `ue_import_report` property identifies the report. It records
    resolved/unresolved bindings, skipped tracks, asset failures and timing
    approximations. An import can finish with a useful partial scene and warnings.
+   If one cutscene in a batch fails, its import is rolled back and its new scene
+   is removed; the remaining selections are still imported. The import summary
+   gives the failure count, with individual errors in the console.
 
 **Load Missing Bound Actors** loads individual referenced level actors and
 serialized Blueprint component defaults. This includes inherited component
@@ -84,7 +96,9 @@ texture types retain labelled empty nodes rather than silently disappearing.
 
 The neutral Blender fixtures cover nested tick rates/trims, looping, reverse
 clips, overlapping clip weights, camera axes/lens/cuts, socket attachments,
-visibility, shared camera data and rollback on Blender 4.5 and 5.1.
+visibility, shared camera data, separate scenes for multiple selections,
+independent batch camera cuts/frame ranges, and partial/total failure rollback
+on Blender 4.5 and 5.1.
 
 Real stock UE4.27 assets tested include Security Breach's
 `BurntrapBossMaster` (eight nested shots, 149 bindings and 11 animation sections)

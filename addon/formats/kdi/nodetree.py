@@ -26,7 +26,7 @@ path layering.
 
 from __future__ import annotations
 
-from ...language import tooltips
+from ...language import strings
 
 import json
 from typing import Any
@@ -183,7 +183,7 @@ class SQEX_KDI_Node(bpy.types.Node):
 class SQEX_KDI_SourceTranslateNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_SourceTranslateNode"
     bl_label = "Source Translate"
-    bl_description = tooltips.KDI_GRAPH_SOURCETRANSLATENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_SOURCETRANSLATENODE_DESCRIPTION
     kdi_operator_type = "SourceTranslate"
     default_outputs = ("TranslateX", "TranslateY", "TranslateZ", "Distance")
 
@@ -191,7 +191,7 @@ class SQEX_KDI_SourceTranslateNode(SQEX_KDI_Node):
 class SQEX_KDI_SourceRotateNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_SourceRotateNode"
     bl_label = "Source Rotate"
-    bl_description = tooltips.KDI_GRAPH_SOURCEROTATENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_SOURCEROTATENODE_DESCRIPTION
     kdi_operator_type = "SourceRotate"
     default_outputs = (
         "BendS", "BendT", "Roll", "BendingAngle", "RotateAngle",
@@ -202,7 +202,7 @@ class SQEX_KDI_SourceRotateNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorEZParamLinkNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorEZParamLinkNode"
     bl_label = "EZ Parameter Link"
-    bl_description = tooltips.KDI_GRAPH_EFFECTOREZPARAMLINKNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTOREZPARAMLINKNODE_DESCRIPTION
     kdi_operator_type = "EffectorEZParamLink"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
@@ -211,7 +211,7 @@ class SQEX_KDI_EffectorEZParamLinkNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorEZParamLinkLinearNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorEZParamLinkLinearNode"
     bl_label = "Linear Parameter Link"
-    bl_description = tooltips.KDI_GRAPH_EFFECTOREZPARAMLINKLINEARNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTOREZPARAMLINKLINEARNODE_DESCRIPTION
     kdi_operator_type = "EffectorEZParamLinkLinear"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
@@ -220,7 +220,7 @@ class SQEX_KDI_EffectorEZParamLinkLinearNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorLinkWithNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorLinkWithNode"
     bl_label = "Link With"
-    bl_description = tooltips.KDI_GRAPH_EFFECTORLINKWITHNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTORLINKWITHNODE_DESCRIPTION
     kdi_operator_type = "EffectorLinkWith"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
@@ -229,7 +229,7 @@ class SQEX_KDI_EffectorLinkWithNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorRBFInterpNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorRBFInterpNode"
     bl_label = "RBF Interpolation"
-    bl_description = tooltips.KDI_GRAPH_EFFECTORRBFINTERPNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTORRBFINTERPNODE_DESCRIPTION
     kdi_operator_type = "EffectorRBFInterp"
     default_inputs = ("Input[0]",)
     default_outputs = ("Output",)
@@ -238,7 +238,7 @@ class SQEX_KDI_EffectorRBFInterpNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorExprNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorExprNode"
     bl_label = "Expression"
-    bl_description = tooltips.KDI_GRAPH_EFFECTOREXPRNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTOREXPRNODE_DESCRIPTION
     kdi_operator_type = "EffectorExpr"
     default_inputs = ("Input[0]",)
     default_outputs = ("Output",)
@@ -247,7 +247,7 @@ class SQEX_KDI_EffectorExprNode(SQEX_KDI_Node):
 class SQEX_KDI_EffectorInverseNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_EffectorInverseNode"
     bl_label = "Inverse"
-    bl_description = tooltips.KDI_GRAPH_EFFECTORINVERSENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_EFFECTORINVERSENODE_DESCRIPTION
     kdi_operator_type = "EffectorInverse"
     default_inputs = ("Input",)
     default_outputs = ("Output",)
@@ -256,7 +256,7 @@ class SQEX_KDI_EffectorInverseNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetTranslateNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetTranslateNode"
     bl_label = "Target Translate"
-    bl_description = tooltips.KDI_GRAPH_TARGETTRANSLATENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETTRANSLATENODE_DESCRIPTION
     kdi_operator_type = "TargetTranslate"
     default_inputs = ("TranslateX", "TranslateY", "TranslateZ")
 
@@ -264,7 +264,7 @@ class SQEX_KDI_TargetTranslateNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetScaleNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetScaleNode"
     bl_label = "Target Scale"
-    bl_description = tooltips.KDI_GRAPH_TARGETSCALENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETSCALENODE_DESCRIPTION
     kdi_operator_type = "TargetScale"
     default_inputs = ("ScaleX", "ScaleY", "ScaleZ")
 
@@ -272,7 +272,7 @@ class SQEX_KDI_TargetScaleNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetBendSTRollNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetBendSTRollNode"
     bl_label = "Target Bend S/T/Roll"
-    bl_description = tooltips.KDI_GRAPH_TARGETBENDSTROLLNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETBENDSTROLLNODE_DESCRIPTION
     kdi_operator_type = "TargetBendSTRoll"
     default_inputs = ("BendS", "BendT", "Roll")
 
@@ -280,7 +280,7 @@ class SQEX_KDI_TargetBendSTRollNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetBendRollNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetBendRollNode"
     bl_label = "Target Bend/Roll"
-    bl_description = tooltips.KDI_GRAPH_TARGETBENDROLLNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETBENDROLLNODE_DESCRIPTION
     kdi_operator_type = "TargetBendRoll"
     default_inputs = ("BendingQuat", "Roll")
 
@@ -288,7 +288,7 @@ class SQEX_KDI_TargetBendRollNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetRotateNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetRotateNode"
     bl_label = "Target Rotate"
-    bl_description = tooltips.KDI_GRAPH_TARGETROTATENODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETROTATENODE_DESCRIPTION
     kdi_operator_type = "TargetRotate"
     default_inputs = ("RotateQuat",)
 
@@ -296,21 +296,21 @@ class SQEX_KDI_TargetRotateNode(SQEX_KDI_Node):
 class SQEX_KDI_TargetPoscnsNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetPoscnsNode"
     bl_label = "Target Position Constraint"
-    bl_description = tooltips.KDI_GRAPH_TARGETPOSCNSNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETPOSCNSNODE_DESCRIPTION
     kdi_operator_type = "TargetPoscns"
 
 
 class SQEX_KDI_TargetOricnsNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetOricnsNode"
     bl_label = "Target Orientation Constraint"
-    bl_description = tooltips.KDI_GRAPH_TARGETORICNSNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETORICNSNODE_DESCRIPTION
     kdi_operator_type = "TargetOricns"
 
 
 class SQEX_KDI_TargetDircnsNode(SQEX_KDI_Node):
     bl_idname = "SQEX_KDI_TargetDircnsNode"
     bl_label = "Target Direction Constraint"
-    bl_description = tooltips.KDI_GRAPH_TARGETDIRCNSNODE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_TARGETDIRCNSNODE_DESCRIPTION
     kdi_operator_type = "TargetDircns"
 
 
@@ -657,18 +657,18 @@ class SQEX_KDI_OT_visualize(SQEX_LoggedOperator):
 
     filepath: StringProperty(
         name="KDI JSON",
-        description=tooltips.KDI_GRAPH_OT_VISUALIZE_FILEPATH,
+        description=strings.KDI_GRAPH_OT_VISUALIZE_FILEPATH,
         subtype="FILE_PATH",
         default="",
     )
     target_bone: StringProperty(
         name="Only bones driving",
-        description=tooltips.KDI_GRAPH_OT_VISUALIZE_TARGET_BONE,
+        description=strings.KDI_GRAPH_OT_VISUALIZE_TARGET_BONE,
         default="",
     )
     max_nodes: IntProperty(
         name="Node limit",
-        description=tooltips.KDI_GRAPH_OT_VISUALIZE_MAX_NODES,
+        description=strings.KDI_GRAPH_OT_VISUALIZE_MAX_NODES,
         default=DEFAULT_MAX_NODES,
         min=10,
         max=5000,
@@ -729,7 +729,7 @@ class SQEX_KDI_OT_focus_selected_bone(SQEX_LoggedOperator):
 
     bl_idname = "kdi.focus_selected_bone_graph"
     bl_label = "KDI: Focus Selected Bone in Graph"
-    bl_description = tooltips.KDI_GRAPH_OT_FOCUS_SELECTED_BONE_DESCRIPTION
+    bl_description = strings.KDI_GRAPH_OT_FOCUS_SELECTED_BONE_DESCRIPTION
     bl_options = {"REGISTER"}
 
     @classmethod

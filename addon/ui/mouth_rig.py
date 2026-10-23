@@ -1,6 +1,6 @@
 """Artist controls for the optional generated Rebirth jaw layer."""
 
-from ..language import tooltips
+from ..language import strings
 
 from ..core.blender import mouth_rig
 from ..core.blender.reporting import SQEX_LoggedOperator, report
@@ -16,7 +16,7 @@ def _armature(context):
 class OBJECT_OT_generate_mouth_controls(SQEX_LoggedOperator):
     bl_idname = "object.sqex_generate_mouth_controls"
     bl_label = "Generate Mouth Controls (experimental)"
-    bl_description = tooltips.SCENE_TOOLS_GENERATE_MOUTH_CONTROLS_DESCRIPTION
+    bl_description = strings.SCENE_TOOLS_GENERATE_MOUTH_CONTROLS_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

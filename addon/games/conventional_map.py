@@ -16,6 +16,7 @@ from . import package_browser
 from ..ui.textures import texture_options
 from ..formats.ue_map.package_importer import MapBrowserState, PackageMapSource, make_package_map_importer
 from ..formats.ue_map.streaming import StreamingMapQueue
+from ..formats.ue_map.landscapes import import_options as landscape_options
 
 
 CLASSES: tuple = ()
@@ -157,9 +158,17 @@ def make_umap_importer(
                         static_mesh_resolver=static_mesh_resolver,
                         skeletal_mesh_resolver=skeletal_mesh_resolver,
                         import_models=self.import_models, import_lights=self.import_lights,
+                        import_splines=self.import_splines,
                         import_point_lights=self.import_point_lights,
                         import_spot_lights=self.import_spot_lights,
+                        import_rect_lights=self.import_rect_lights,
+                        import_directional_lights=self.import_directional_lights,
+                        bake_light_parameters=self.bake_light_parameters,
                         import_reflection_probes=self.import_light_probes,
+                        color_lut_loader=session.color_lut,
+                        light_texture_loader=session,
+                        light_profile="UE4",
+                        **landscape_options(self),
                     )
                     created += map_created
                     missing_assets.update(map_missing)

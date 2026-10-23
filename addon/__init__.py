@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Talisman for Unreal Engine",
     "author": "GargoyleTech",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 0, 0),
     "location": "File > Import > Unreal Engine (Talisman); Object > Talisman",
     "description": "Import Unreal Engine meshes, maps and animations into Blender",
@@ -28,8 +28,8 @@ if callable(_previous_reload_cleanup):
 
 
 # Refresh the master text module before any consumer recreates RNA properties.
-from .language import tooltips
-importlib.reload(tooltips)
+from .language import strings
+importlib.reload(strings)
 
 from .core import bridge as gargoyle_core
 from .core import profiles as game_profiles
@@ -43,8 +43,9 @@ from .formats.kdi import nodetree as kdi_nodetree
 from .formats.mec import importer as mec_importer
 from .formats.mec import material as mec_material
 from .formats.mec import parser as mec_parser
-from .formats.ue_map import lights, map_import, particles, timeline_actions, worlds
-from .core.blender import material_nodes
+from .formats.mec import texture_hashes as mec_texture_hashes
+from .formats.ue_map import landscapes, lights, map_import, particles, splines, text_render, timeline_actions, worlds
+from .core.blender import import_cache, mesh_geometry, material_nodes, preferences_storage
 from .core.blender import animation as animation_core
 from .core.blender import collections as scene_collections
 from .formats import unreal_package as package_runtime
@@ -61,6 +62,7 @@ from .games import conventional_map, conventional_mesh, conventional_animation, 
 from .games.crisis_core import profile as crisis_core_profile
 from .games.crisis_core.importers import static_mesh as crisis_core_static_mesh
 from .games.crisis_core.importers import animations as crisis_core_animations
+from .games.crisis_core.importers import cutscenes as crisis_core_cutscenes
 from .games.kingdom_hearts.importers import static_mesh as kingdom_hearts_static_mesh
 from .games.kingdom_hearts.importers import matinee as kingdom_hearts_matinee
 from .games.kingdom_hearts import materials as kingdom_hearts_materials
@@ -71,6 +73,8 @@ from .games.kingdom_hearts_iii.importers import static_mesh as kingdom_hearts_ii
 from .games.rebirth import profile as rebirth_profile
 from .games.rebirth.importers import animations
 from .games.rebirth.importers import packages as game_packages
+from .formats.niagara import package_data as niagara_data, resources as niagara_resources
+from .games.rebirth.importers import niagara as rebirth_niagara
 from .games.rebirth.materials import rmi_surface
 from .games.remake import profile as remake_profile
 from .games.remake import materials as remake_materials
@@ -90,6 +94,9 @@ from .formats.unreal_mesh import sequence_import as generic_sequence_import
 from .formats.unreal_mesh import sequences as generic_sequences
 from .ui import menus as ui_menus
 from .ui import textures as ui_textures
+from .formats.unreal_package import texture_browser as texture_browser_transport
+from .ui import texture_browser as ui_texture_browser
+from .ui import texture_node as ui_texture_node
 from .ui import mesh_importer as ui_mesh_importer
 from .ui import map_importer as ui_map_importer
 from .formats.ue_map import streaming as map_streaming
@@ -120,6 +127,9 @@ for _module in (
     reporting,
     render_settings,
     lights,
+    text_render,
+    splines,
+    landscapes,
     particles,
     worlds,
     animation_core,
@@ -133,8 +143,12 @@ for _module in (
     kdi_audit,
     kdi_drivers,
     kdi_nodetree,
+    import_cache,
+    mesh_geometry,
     material_nodes,
+    preferences_storage,
     mec_material,
+    mec_texture_hashes,
     mec_parser,
     mec_importer,
     ik_rig,
@@ -162,6 +176,9 @@ for _module in (
     generic_unreal_session,
     generic_profile_test,
     generic_unreal_materials,
+    niagara_data,
+    niagara_resources,
+    rebirth_niagara,
     generic_unreal_maps,
     generic_unreal_importer,
     animations,
@@ -175,6 +192,7 @@ for _module in (
     remake_cutscenes,
     crisis_core_static_mesh,
     crisis_core_animations,
+    crisis_core_cutscenes,
     kingdom_hearts_materials,
     kingdom_hearts_static_mesh,
     kingdom_hearts_matinee,
@@ -182,6 +200,9 @@ for _module in (
     kingdom_hearts_iii_static_mesh,
     z_fighting,
     ui_preferences,
+    texture_browser_transport,
+    ui_texture_browser,
+    ui_texture_node,
     ui_operators,
     ui_mouth_rig,
     ui_ik_rig,
@@ -195,6 +216,8 @@ classes = tuple(
     cls
     for cls in (
         *ui_preferences.CLASSES,
+        *ui_texture_browser.CLASSES,
+        *ui_texture_node.CLASSES,
         *animations.CLASSES,
         *remake_animations.CLASSES,
         *remake_cutscenes.CLASSES,
@@ -202,12 +225,14 @@ classes = tuple(
         *conventional_map.CLASSES,
         mec_importer.FF7R_REBIRTH_OT_import_mec_umap,
         *game_packages.CLASSES,
+        *rebirth_niagara.CLASSES,
         *generic_unreal_importer.CLASSES,
         *generic_unreal_animations.CLASSES,
         *generic_sequences.CLASSES,
         *remake_static_mesh.CLASSES,
         *crisis_core_static_mesh.CLASSES,
         *crisis_core_animations.CLASSES,
+        *crisis_core_cutscenes.CLASSES,
         *kingdom_hearts_0_2_static_mesh.CLASSES,
         *kingdom_hearts_iii_static_mesh.CLASSES,
         *kdi_nodetree.CLASSES,
@@ -224,6 +249,7 @@ classes = tuple(
 
 
 _REGISTERED = False
+_PREFERENCES_READY = False
 
 
 def _remove_menu_callback(menu, callback) -> None:
@@ -249,7 +275,7 @@ def _register_class(cls) -> None:
 
 
 def register():
-    global _REGISTERED
+    global _REGISTERED, _PREFERENCES_READY
     if _REGISTERED:
         unregister()
     _REGISTERED = True
@@ -257,7 +283,9 @@ def register():
         generic_unreal_importer._load_versions()
         for cls in classes:
             _register_class(cls)
+        preferences_storage.restore_preferences()
         ui_preferences.ensure_generic_unreal_profiles()
+        ui_texture_browser.register()
         kdi_nodetree.register_add_menu()
         package_browser.register_runtime_properties()
         package_browser.register_shortcuts()
@@ -269,14 +297,20 @@ def register():
         bpy.types.VIEW3D_MT_edit_armature.append(ui_menus.menu_func_edit_armature)
         bpy.types.VIEW3D_MT_pose_context_menu.append(ui_menus.menu_func_pose_bone)
         kdi_drivers.register()
+        _PREFERENCES_READY = True
     except Exception:
         unregister()
         raise
 
 
 def unregister():
-    global _REGISTERED
+    global _REGISTERED, _PREFERENCES_READY
+    if _PREFERENCES_READY:
+        preferences_storage.save_preferences()
+    _PREFERENCES_READY = False
+    ui_texture_browser.unregister()
     generic_profile_test.unregister()
+    mec_texture_hashes.unregister()
     try:
         kdi_drivers.unregister()
     except Exception as exc:

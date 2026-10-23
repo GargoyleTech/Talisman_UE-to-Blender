@@ -62,16 +62,15 @@ DISPLAY_CORRECTION = Matrix((
 ))
 DISPLAY_CORRECTION_INVERSE = DISPLAY_CORRECTION.inverted()
 
-# With UE axis ordering preserved, the package bone's local +X still points
-# down Blender's display-bone +Y and its local +Z stays the display +Z.  The
-# Blender-oriented convention below adds a further +90-degree roll to this
-# basis; see ``_build_edit_bones`` in ``core.blender.skeletons``.
-PRESERVED_AXIS_CORRECTION = Matrix((
+# Pre-fix "UNREAL" rigs skipped the extra roll but still remapped X to Y.
+# Keep their correction for saved scenes; new preserved rigs use source axes.
+LEGACY_PRESERVED_AXIS_CORRECTION = Matrix((
     (0.0, 1.0, 0.0, 0.0),
     (-1.0, 0.0, 0.0, 0.0),
     (0.0, 0.0, 1.0, 0.0),
     (0.0, 0.0, 0.0, 1.0),
 ))
+PRESERVED_AXIS_CORRECTION = Matrix.Identity(4)
 PRESERVED_AXIS_CORRECTION_INVERSE = PRESERVED_AXIS_CORRECTION.inverted()
 
 # The root track ("Trans") is not a bone-parented transform: its translation is
@@ -97,8 +96,10 @@ ROOT_TRACK_CORRECTION = (
     @ Matrix.Rotation(math.radians(90.0), 4, "X")
 )
 ROOT_DISPLAY_CORRECTION = DISPLAY_CORRECTION @ ROOT_TRACK_CORRECTION
+# Carry the same physical root-track adjustment into the unmodified source
+# frame, so switching bone axes does not rotate the animated character.
 PRESERVED_ROOT_DISPLAY_CORRECTION = (
-    PRESERVED_AXIS_CORRECTION @ ROOT_TRACK_CORRECTION
+    ROOT_DISPLAY_CORRECTION @ DISPLAY_CORRECTION_INVERSE
 )
 
 # Largest per-element difference tolerated between a bone's rest matrix and the
@@ -135,9 +136,9 @@ def _blender_basis_values(
     both rest and pose instead pick up the importer's -Y-forward rotation and it
     cancels between them.
 
-    Conjugating by ``D`` is the step that was missing: without it the UE delta
-    gets applied in the display frame rather than being carried into it, which
-    leaves poses that look plausible in scale but are rotated by ~100 degrees.
+    Without conjugating by ``D``, the UE delta gets applied in the display frame
+    rather than being carried into it, leaving poses that look plausible in
+    scale but are rotated by ~100 degrees.
     """
     source_matrix = Matrix.LocRotScale(
         _ue_location(translation),
@@ -157,12 +158,15 @@ def _display_corrections_for_armature(
     Blender-oriented display roll.  That is also the safe fallback for rigs
     made elsewhere, whose bone frame cannot be inferred reliably.
     """
-    if armature.get(skeleton_importer.AXIS_ORDER_PROPERTY) == skeleton_importer.AXIS_ORDER_UNREAL:
+    if skeleton_importer.preserves_source_bone_axes(armature):
         return (
             PRESERVED_AXIS_CORRECTION,
             PRESERVED_AXIS_CORRECTION_INVERSE,
             PRESERVED_ROOT_DISPLAY_CORRECTION,
         )
+    if armature.get(skeleton_importer.AXIS_ORDER_PROPERTY) == skeleton_importer.AXIS_ORDER_UNREAL:
+        legacy = LEGACY_PRESERVED_AXIS_CORRECTION
+        return legacy, legacy.inverted(), legacy @ ROOT_TRACK_CORRECTION
     return (
         DISPLAY_CORRECTION,
         DISPLAY_CORRECTION_INVERSE,

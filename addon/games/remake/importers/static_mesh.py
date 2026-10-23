@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 import json
 import os
@@ -200,9 +200,9 @@ def _post_skeleton(
                         ensure_ascii=False,
                         indent=2,
                     )
-                kdi_axis_order = "XZY" if operator.preserve_ue_axis_order else "YZX"
+                kdi_axis_order = "XYZ" if operator.preserve_ue_axis_order else "YZX"
                 kdi_coordinate_profile = (
-                    shared_packages.COORDINATE_PROFILE_REFERENCE
+                    shared_packages.COORDINATE_PROFILE_SOURCE_AXES
                     if operator.preserve_ue_axis_order
                     else COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
                 )
@@ -290,13 +290,13 @@ class FF7R_REMAKE_OT_import_kdi_game_packages(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_remake_kdi_game_packages"
     bl_label = "KineDriver from Remake Packages"
     bl_description = (
-        tooltips.REMAKE_KDI_DESCRIPTION
+        strings.REMAKE_KDI_DESCRIPTION
     )
     bl_options = {"REGISTER", "UNDO"}
 
     virtual_path: bpy.props.StringProperty(
         name="Package KDI",
-        description=tooltips.REMAKE_KDI_VIRTUAL_PATH,
+        description=strings.REMAKE_KDI_VIRTUAL_PATH,
         search=_search_virtual_kdis,
         search_options={"SORT"},
     )
@@ -380,11 +380,7 @@ class FF7R_REMAKE_OT_import_kdi_game_packages(SQEX_LoggedOperator):
                     # existing scenes without requiring a fresh mesh import.
                     COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90,
                 )
-                axis_order = (
-                    "YZX"
-                    if coordinate_profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
-                    else "XZY"
-                )
+                axis_order = shared_packages.coordinate_profile_axis_order(coordinate_profile)
                 result = bpy.ops.import_scene.sqex_kinedriver_json(
                     filepath=kdi_path,
                     replace_previous_generated=self.replace_previous_generated,

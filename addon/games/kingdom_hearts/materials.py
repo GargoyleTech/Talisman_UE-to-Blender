@@ -151,7 +151,7 @@ def build_material(
     material = _existing_material(material_name, material_path, image_loader)
     if (
         material.get("sqex_kh_material_version") == _MATERIAL_VERSION
-        and str(material.get("sqex_virtual_path") or "").casefold() == material_path.casefold()
+        and str(material.get("ue_virtual_path") or "").casefold() == material_path.casefold()
     ):
         return refresh_material_textures(material, image_loader)
 
@@ -213,7 +213,7 @@ def build_material(
         links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
         material["sqex_normal_parameter"] = normal.get("sqex_texture_parameter", normal.name)
 
-    material["sqex_virtual_path"] = material_path
+    material["ue_virtual_path"] = material_path
     material["sqex_kh_material_version"] = _MATERIAL_VERSION
     material["sqex_texture_parameter_names"] = parameter_names
     material["sqex_texture_parameter_count"] = len(parameter_names)

@@ -8,6 +8,7 @@ import importlib
 import sys
 
 import bpy
+from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import addon
@@ -18,6 +19,7 @@ from addon.formats import unreal_package
 from addon.formats.unreal_package import importer as shared
 from addon.formats.unreal_mesh import importer as generic
 from addon.ui.mesh_importer import CORE_SKELETAL_OPTIONS, GAME_SKELETAL_OPTIONS, draw_package_mesh_options
+from addon.ui.nanite import NANITE_OPTION_NAMES
 
 
 def rna(cls):
@@ -69,6 +71,9 @@ for cls in classes:
     if skeletal:
         assert set(shared.SKELETAL_OPTION_NAMES) <= set(properties.keys())
         assert not properties["attachment_sockets"].is_hidden
+        assert properties["preserve_ue_axis_order"].default is (
+            cls is generic.SQEX_OT_import_generic_unreal_skeletal_mesh
+        ), cls.bl_idname
         for name in GAME_SKELETAL_OPTIONS:
             applicable = name in source.game_options
             assert properties[name].is_hidden != applicable, (cls, name)
@@ -76,7 +81,7 @@ for cls in classes:
     else:
         assert not set(shared.SKELETAL_OPTION_NAMES) & set(properties.keys())
 
-    names = {*shared.MESH_OPTION_NAMES, *shared.SKELETAL_OPTION_NAMES, *GAME_SKELETAL_OPTIONS}
+    names = {*shared.MESH_OPTION_NAMES, *shared.SKELETAL_OPTION_NAMES, *GAME_SKELETAL_OPTIONS, *NANITE_OPTION_NAMES}
     operator = SimpleNamespace(**{name: prop.default for name, prop in properties.items() if name in names})
     layout = Layout()
     draw_package_mesh_options(layout, operator, mesh_kind=cls.mesh_kind,
@@ -84,7 +89,12 @@ for cls in classes:
     core = {*shared.MESH_OPTION_NAMES, *(shared.SKELETAL_OPTION_NAMES if skeletal else ())}
     assert set(layout.children[0].all_props()) == core
     applicable = set(GAME_SKELETAL_OPTIONS) & source.game_options if skeletal else set()
-    assert len(layout.children) == (2 if applicable else 1)
+    has_nanite = cls is generic.SQEX_OT_import_generic_unreal_static_mesh
+    assert bool(set(NANITE_OPTION_NAMES) & set(properties.keys())) == has_nanite
+    assert len(layout.children) == 1 + bool(applicable) + has_nanite
+    if has_nanite:
+        assert set(layout.children[1].all_props()) == set(NANITE_OPTION_NAMES)
+        assert set(NANITE_OPTION_NAMES) <= set(cls._persisted_props)
     if applicable:
         assert set(layout.children[1].all_props()) == applicable
         assert layout.children[1].labels == [f"{source.game_label} options"]
@@ -122,6 +132,10 @@ for cls in classes:
         assert len(saved) == 2
 
 
+assert rna(generic.SQEX_OT_import_generic_unreal_mesh).properties["preserve_ue_axis_order"].default is True
+assert rna(addon.game_packages.FF7R_REBIRTH_OT_import_skeleton_game_packages).properties["preserve_ue_axis_order"].default is False
+
+
 SKELETON = {
     "name": "SocketFixture", "bones": [
         {"name": "Root", "parentIndex": -1},
@@ -140,7 +154,10 @@ PAYLOAD = {
 
 class Session:
     cache_namespace = "universal-mesh-options"
+    hidden_object_patterns = ()
     failed = failed_materials = 0
+    nanite_fallbacks = {}
+    def geometry_summary(self): return "Fixture geometry."
 
     def __init__(self, *args, **kwargs): pass
     def __enter__(self): return self
@@ -154,7 +171,7 @@ def check_socket_modes(operator, path):
     for mode in ("NONE", "EMPTIES", "BONES"):
         before = set(bpy.data.objects)
         assert operator(virtual_path=path, attachment_sockets=mode, import_mesh_referenced_bones_only=True,
-                        connect_bones=True, import_kdi=False) == {"FINISHED"}
+                        connect_bones=True, preserve_ue_axis_order=False, import_kdi=False) == {"FINISHED"}
         added = set(bpy.data.objects) - before
         armature = next(obj for obj in added if obj.type == "ARMATURE")
         assert "Unused" not in armature.data.bones
@@ -166,8 +183,7 @@ def check_socket_modes(operator, path):
             assert not armature.data.bones["Attach"].use_deform
 
 
-# Native socket modes and bone controls now work in Crisis Core, where the old
-# dialog had disabled placeholders for them.
+# Crisis Core exposes native socket modes and bone controls.
 definition = addon.crisis_core_static_mesh.DEFINITION
 mesh_path = definition.profile.mounted_content_root + "/Fixture/Mesh.uasset"
 with (
@@ -181,6 +197,7 @@ with (
     patch.object(generic, "_paths", lambda *args: GamePaths("fixture")),
     patch.object(generic, "_game_version", lambda *args: "GAME_UE4_27"),
     patch.object(generic, "_pbr_mapping", lambda *args: {}),
+    patch.object(generic, "_hidden_object_patterns", lambda *args: ()),
     patch.object(generic.session, "GenericSession", Session),
 ):
     check_socket_modes(bpy.ops.import_scene.sqex_generic_unreal_skeletal_mesh, "/Game/Fixture.Mesh")
@@ -188,8 +205,45 @@ with (
     assert bpy.ops.import_scene.sqex_generic_unreal_mesh(
         mesh_kind="STATIC", virtual_path="/Game/Fixture.Mesh") == {"FINISHED"}
 
-# Rebirth's public mesh operators still reach its skeleton builder and retain
-# their material/BNM hooks while using the new common definition.
+    # Exercise the public generic operators used by the menu and legacy callers.
+    # Preserving axes must bypass the X-to-Y correction, not just its roll.
+    for operator, kwargs in (
+        (bpy.ops.import_scene.sqex_generic_unreal_skeletal_mesh, {}),
+        (bpy.ops.import_scene.sqex_generic_unreal_mesh, {"mesh_kind": "SKELETAL"}),
+    ):
+        for facing in ("UNREAL", "BLENDER"):
+            frames = {}
+            tails = {}
+            positions = {}
+            for preserve in (True, False):
+                before = set(bpy.data.objects)
+                assert operator(
+                    virtual_path="/Game/Fixture.Mesh", build_skeleton=True,
+                    preserve_ue_axis_order=preserve, face_y_forward=facing,
+                    attachment_sockets="BONES", connect_bones=False, **kwargs,
+                ) == {"FINISHED"}
+                added = set(bpy.data.objects) - before
+                rig = next(obj for obj in added if obj.type == "ARMATURE")
+                mesh = next(obj for obj in added if obj.type == "MESH")
+                assert mesh.parent == rig
+                for target in (rig, rig.data):
+                    assert target["sqex_axis_order"] == ("UNREAL" if preserve else "BLENDER")
+                    assert target["sqex_face_forward"] == facing
+                    assert target["sqex_bone_axis_frame"] == ("SOURCE" if preserve else "BLENDER")
+                frames[preserve] = {bone.name: bone.matrix_local.copy() for bone in rig.data.bones}
+                tails[preserve] = {bone.name: bone.tail_local.copy() for bone in rig.data.bones}
+                positions[preserve] = [vertex.co.copy() for vertex in mesh.data.vertices]
+            for name, preserved in frames[True].items():
+                expected = preserved @ Matrix((
+                    (0, 1, 0, 0), (0, 0, -1, 0), (-1, 0, 0, 0), (0, 0, 0, 1)))
+                actual = frames[False][name]
+                assert max(abs(a - b) for row_a, row_b in zip(actual, expected)
+                           for a, b in zip(row_a, row_b)) < 1e-5, (facing, name, actual, expected)
+                assert (tails[True][name] - tails[False][name]).length > 1e-5
+            assert all((a - b).length < 1e-6 for a, b in zip(positions[True], positions[False]))
+
+# Rebirth's public mesh operators must reach its skeleton builder and
+# material/BNM hooks through the shared definition.
 rebirth = addon.game_packages
 rig_path = "End/Content/Fixture/Rig.uasset"
 skeleton_path = "End/Content/Fixture/Skeleton.uasset"

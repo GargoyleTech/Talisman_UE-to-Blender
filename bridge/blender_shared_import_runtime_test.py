@@ -232,7 +232,7 @@ def operator_fixtures(directory):
             objects = [
                 obj
                 for obj in bpy.context.scene.objects
-                if obj.get("sqex_virtual_path") in static_paths
+                if obj.get("ue_virtual_path") in static_paths
             ]
             assert len(objects) == 2
             assert all(obj.data.attributes.get("ff7r_tangent") for obj in objects)
@@ -243,7 +243,7 @@ def operator_fixtures(directory):
             assert rig and rig.type == "ARMATURE"
             assert (
                 rig["sqex_kdi_coordinate_profile"]
-                == unreal_package.COORDINATE_PROFILE_REFERENCE
+                == unreal_package.COORDINATE_PROFILE_SOURCE_AXES
             )
             assert set(rig.data.bones.keys()) == {"Root", "Unused", "Child"}
             if title is remake:

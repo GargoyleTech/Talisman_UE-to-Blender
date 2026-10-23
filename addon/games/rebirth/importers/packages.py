@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 import json
 import os
@@ -22,6 +22,7 @@ from ....formats.mec.material import image_loader_override
 from ....ui.textures import TEXTURE_OPTION_NAMES, texture_properties, texture_options, draw_texture_options
 from ....formats.ue_map.package_importer import MapBrowserState, PackageMapSource, make_package_map_importer
 from ....formats.ue_map.streaming import StreamingMapQueue
+from ....formats.ue_map.landscapes import import_options as landscape_options
 from ....formats.ue_map import map_import
 from ....formats.bnm import parser as bnm_parser
 from ....formats.bnm import storage as bnm_storage
@@ -33,6 +34,8 @@ from ....formats.kdi.drivers import (
     AXIS_ORDER_ITEMS,
     COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90,
     COORDINATE_PROFILE_REFERENCE,
+    COORDINATE_PROFILE_SOURCE_AXES,
+    coordinate_profile_axis_order,
 )
 from ....core.blender.skeletons import (
     _bones_from_gargoyle,
@@ -818,17 +821,11 @@ def _attach_prop_to_owner(context, prop_obj, cutscene_id: str):
     if hasattr(constraint, "set_inverse_pending"):
         constraint.set_inverse_pending = False
 
-    # Cancel the socket bone's display roll.  A posed bone's matrix is
-    # ``UE_socket_matrix @ DISPLAY_CORRECTION`` (see animations.py), and UE
-    # attaches a weapon with an identity transform relative to the socket, so
-    # the Child Of basis has to be DISPLAY_CORRECTION's inverse for the prop to
-    # land in the UE socket's own frame.  That inverse maps X->+Y, Y->-Z, Z->-X,
-    # i.e. -90 deg X then +90 deg Z in local object space -- which is exactly
-    # the correction observed by eye on Cloud's back-mounted sword and Barret's
-    # gun-arm, two objects asymmetric enough to judge all three axes.
-    from .animations import DISPLAY_CORRECTION_INVERSE
+    # Cancel the owner's actual socket display correction. Source-axis rigs
+    # need no correction, while older saved rigs retain their original basis.
+    from .animations import _display_corrections_for_armature
     prop_obj.rotation_mode = 'XYZ'
-    prop_obj.rotation_euler = DISPLAY_CORRECTION_INVERSE.to_euler('XYZ')
+    prop_obj.rotation_euler = _display_corrections_for_armature(owner)[1].to_euler('XYZ')
     return owner, bone
 
 
@@ -1072,16 +1069,16 @@ def _load_cutscene_character_assets(
 class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_cutscene_game_packages"
     bl_label = "Cutscene from Rebirth Packages"
-    bl_description = tooltips.REBIRTH_CUTSCENE_DESCRIPTION
+    bl_description = strings.REBIRTH_CUTSCENE_DESCRIPTION
     bl_options = {'REGISTER', 'UNDO'}
 
     virtual_path: bpy.props.StringProperty(
         name="Cutscene Path",
-        description=tooltips.REBIRTH_CUTSCENE_VIRTUAL_PATH,
+        description=strings.REBIRTH_CUTSCENE_VIRTUAL_PATH,
     )
     cutscene_search_text: bpy.props.StringProperty(
         name="Search",
-        description=tooltips.REBIRTH_CUTSCENE_CUTSCENE_SEARCH_TEXT,
+        description=strings.REBIRTH_CUTSCENE_CUTSCENE_SEARCH_TEXT,
         options={'SKIP_SAVE'},
         update=_cutscene_search_filter_changed,
     )
@@ -1096,11 +1093,13 @@ class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
     import_lights: bpy.props.BoolProperty(name="Import Lights", default=True)
     always_cast_shadows: bpy.props.BoolProperty(
         name="Always Cast Shadows",
-        description=tooltips.REBIRTH_CUTSCENE_ALWAYS_CAST_SHADOWS,
+        description=strings.REBIRTH_CUTSCENE_ALWAYS_CAST_SHADOWS,
         default=False,
     )
     import_cameras: bpy.props.BoolProperty(name="Import Cameras", default=True)
     import_characters: bpy.props.BoolProperty(name="Import Characters", default=True)
+
+    _persisted_props = ("import_cameras", "import_lights", "import_characters", "always_cast_shadows")
 
     def invoke(self, context, _event):
         prefs = _preferences(context)
@@ -1117,6 +1116,7 @@ class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
             report(self, {'ERROR'}, f"Package cutscene index failed: {exc}")
             return {'CANCELLED'}
         self.cutscene_search_text = ""
+        self._load_last_import_settings(context)
         _populate_cutscene_search(self)
         return context.window_manager.invoke_props_dialog(self, width=750)
 
@@ -1219,6 +1219,7 @@ class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
                                 always_cast_shadows=self.always_cast_shadows,
                                 static_mesh_resolver=static_resolver,
                                 skeletal_mesh_resolver=skeletal_resolver,
+                                light_texture_loader=session,
                             )
                         except Exception as exc:
                             # Some cutscene bindings point at runtime-only temporary
@@ -1256,6 +1257,7 @@ class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
                     import_cameras=self.import_cameras,
                     import_characters=self.import_characters,
                     target_collection=cutscene_collection,
+                    light_texture_loader=session,
                 )
                 if self.import_characters:
                     attached_props = _apply_cutscene_prop_attachment_events(
@@ -1275,6 +1277,7 @@ class FF7R_REBIRTH_OT_import_cutscene_game_packages(SQEX_LoggedOperator):
             f"'{cutscene_collection.name}' ({object_count} object(s)"
             + (f", {adopted} level collection(s)" if adopted else "") + ").",
         )
+        self._save_last_import_settings(context)
         return {'FINISHED'}
 
 
@@ -1370,10 +1373,9 @@ def _execute_skeletal_meshes(self, context):
             raise ValueError("Select at least one SkeletalMesh in the package browser.")
         vertex_count = triangle_count = weighted_count = influence_total = 0
         material_count = bound_count = bonamik_asset_count = 0
-        # The import has to happen INSIDE the session: building RMI
+        # The import has to happen inside the session: building RMI
         # materials reads the material instance and streams its textures
-        # back over the same gargoyle process, so closing the session first
-        # (as this operator used to) leaves nothing to load them with.
+        # back over the same gargoyle process, which must remain open.
         with PackageAssetSession(game_root, oodle_dll, usmap_path) as session:
             for virtual_path in virtual_paths:
                 armature_obj = binding_armature
@@ -1468,7 +1470,7 @@ def _execute_skeletal_meshes(self, context):
 FF7R_REBIRTH_OT_import_static_mesh_game_packages = make_package_mesh_importer(
     class_name="FF7R_REBIRTH_OT_import_static_mesh_game_packages",
     bl_idname="import_scene.ff7r_rebirth_static_mesh_game_packages", module_name=__name__, mesh_kind="STATIC",
-    default_virtual_path=DEFAULT_STATIC_MESH_PATH, description=tooltips.REBIRTH_STATIC_MESH_DESCRIPTION,
+    default_virtual_path=DEFAULT_STATIC_MESH_PATH, description=strings.REBIRTH_STATIC_MESH_DESCRIPTION,
     source=PackageMeshSource(
         "Rebirth", _mesh_import_browser, _execute_static_meshes, defaults=_mesh_import_defaults,
         property_defaults={"offset_opposite_faces": OFFSET_FACES_BAKED},
@@ -1477,7 +1479,7 @@ FF7R_REBIRTH_OT_import_static_mesh_game_packages = make_package_mesh_importer(
 FF7R_REBIRTH_OT_import_skeletal_mesh_game_packages = make_package_mesh_importer(
     class_name="FF7R_REBIRTH_OT_import_skeletal_mesh_game_packages",
     bl_idname="import_scene.ff7r_rebirth_skeletal_mesh_game_packages", module_name=__name__, mesh_kind="SKELETAL",
-    description=tooltips.REBIRTH_SKELETAL_MESH_DESCRIPTION,
+    description=strings.REBIRTH_SKELETAL_MESH_DESCRIPTION,
     source=PackageMeshSource(
         "Rebirth", _mesh_import_browser, _execute_skeletal_meshes, defaults=_mesh_import_defaults,
         game_options=SKELETAL_OPTION_NAMES,
@@ -1492,13 +1494,13 @@ class FF7R_REBIRTH_OT_import_nearby_mec_terrain(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_nearby_mec_terrain"
     bl_label = "Experimental Nearby MEC Terrain"
     bl_description = (
-        tooltips.REBIRTH_NEARBY_MEC_TERRAIN_DESCRIPTION
+        strings.REBIRTH_NEARBY_MEC_TERRAIN_DESCRIPTION
     )
     bl_options = {'REGISTER', 'UNDO'}
 
     continent: bpy.props.EnumProperty(
         name="Continent",
-        description=tooltips.REBIRTH_NEARBY_MEC_TERRAIN_CONTINENT,
+        description=strings.REBIRTH_NEARBY_MEC_TERRAIN_CONTINENT,
         items=tuple(
             (key, config["label"], f"Use {config['label']} world origin")
             for key, config in MEC_CONTINENTS.items()
@@ -1508,7 +1510,7 @@ class FF7R_REBIRTH_OT_import_nearby_mec_terrain(SQEX_LoggedOperator):
     location: bpy.props.FloatVectorProperty(
         name="Continent-local Blender location",
         description=(
-            tooltips.REBIRTH_NEARBY_MEC_TERRAIN_LOCATION
+            strings.REBIRTH_NEARBY_MEC_TERRAIN_LOCATION
         ),
         size=3,
         subtype='TRANSLATION',
@@ -1517,14 +1519,14 @@ class FF7R_REBIRTH_OT_import_nearby_mec_terrain(SQEX_LoggedOperator):
     place_in_world_space: bpy.props.BoolProperty(
         name="Place at continent world origin",
         description=(
-            tooltips.REBIRTH_NEARBY_MEC_TERRAIN_PLACE_IN_WORLD_SPACE
+            strings.REBIRTH_NEARBY_MEC_TERRAIN_PLACE_IN_WORLD_SPACE
         ),
         default=False,
     )
     view_distance: bpy.props.FloatProperty(
         name="View distance",
         description=(
-            tooltips.REBIRTH_NEARBY_MEC_TERRAIN_VIEW_DISTANCE
+            strings.REBIRTH_NEARBY_MEC_TERRAIN_VIEW_DISTANCE
         ),
         default=MEC_NEARBY_DEFAULT_VIEW_DISTANCE,
         min=1.0,
@@ -1819,34 +1821,35 @@ def _execute_package_umaps(self, context):
                             map_temp_dir = os.path.join(temp_dir, f"{map_index:04d}")
                             os.makedirs(map_temp_dir, exist_ok=True)
                             local_umap = os.path.join(map_temp_dir, os.path.basename(virtual_path))
-                            package_session.extract_raw(virtual_path, local_umap)
-                            virtual_ubulk = os.path.splitext(virtual_path)[0] + ".ubulk"
-                            local_ubulk = os.path.splitext(local_umap)[0] + ".ubulk"
-                            try:
-                                package_session.extract_raw(
-                                    virtual_ubulk,
-                                    local_ubulk,
-                                    report_errors=False,
-                                )
-                            except Exception:
-                                pass
+                            if self.import_models:
+                                package_session.extract_raw(virtual_path, local_umap)
+                                virtual_ubulk = os.path.splitext(virtual_path)[0] + ".ubulk"
+                                local_ubulk = os.path.splitext(local_umap)[0] + ".ubulk"
+                                try:
+                                    package_session.extract_raw(
+                                        virtual_ubulk,
+                                        local_ubulk,
+                                        report_errors=False,
+                                    )
+                                except Exception:
+                                    pass
 
                             actor_payload = None
-                            if self.import_models or (self.import_lights and (self.import_point_lights or self.import_spot_lights)) or self.import_light_probes or self.recursive_import:
+                            if self.import_models or self.import_splines or (self.import_lights and (self.import_point_lights or self.import_spot_lights or self.import_rect_lights or self.import_directional_lights)) or self.import_light_probes or self.recursive_import:
                                 try:
                                     import_names, actor_payload = package_session.umap_data(virtual_path)
                                 except Exception as actor_read_error:
                                     # Actor parsing is newer and less universal than
                                     # MEC; retain the established MEC import path.
-                                    import_names = package_session.import_names(virtual_path)
+                                    import_names = package_session.import_names(virtual_path) if self.import_models else []
                                     failures.append((f"{virtual_path} [actor data]", str(actor_read_error)))
                                     print(f"Package actor data read failed: {virtual_path}: {actor_read_error}")
                             else:
-                                import_names = package_session.import_names(virtual_path)
+                                import_names = package_session.import_names(virtual_path) if self.import_models else []
                             try:
-                                # The gargoyle has handed the package-derived payload
-                                # to Python; release its decoded export graph before
-                                # Blender begins the potentially long geometry build.
+                                # Check package pressure before Blender's geometry
+                                # build, retaining small useful dependency caches
+                                # while the bridge stays within its memory budget.
                                 package_session.release_batch_memory()
                             except Exception as cleanup_error:
                                 # Cleanup is an optimization; it must never discard
@@ -1877,7 +1880,7 @@ def _execute_package_umaps(self, context):
                                     print(f"Package MEC import failed: {virtual_path}: {mec_error}")
 
                             actor_data = (actor_payload or {}).get("actors") or []
-                            if (self.import_models or self.import_lights or self.import_light_probes) and actor_data:
+                            if (self.import_models or self.import_splines or self.import_lights or self.import_light_probes) and actor_data:
                                 try:
                                     actor_created, actor_missing = map_import.import_map_entries(
                                         actor_data,
@@ -1892,7 +1895,13 @@ def _execute_package_umaps(self, context):
                                         import_lights=self.import_lights,
                                         import_point_lights=self.import_point_lights,
                                         import_spot_lights=self.import_spot_lights,
+                                        import_rect_lights=self.import_rect_lights,
+                                        import_directional_lights=self.import_directional_lights,
+                                        import_splines=self.import_splines,
+                                        bake_light_parameters=self.bake_light_parameters,
                                         import_reflection_probes=self.import_light_probes,
+                                        light_texture_loader=package_session,
+                                        **landscape_options(self),
                                     )
                                     actor_created_total += actor_created
                                     actor_missing_total |= actor_missing
@@ -1957,19 +1966,19 @@ FF7R_REBIRTH_OT_import_mec_game_packages = make_package_map_importer(
                             defaults=_package_umap_defaults),
     massive_environment=True,
     offset_faces_default=True,
-    light_probes_default=True,
+    light_probes_default=False,
 )
 
 
 class FF7R_REBIRTH_OT_import_kdi_game_packages(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_kdi_game_packages"
     bl_label = "KineDriver JSON from Rebirth Packages"
-    bl_description = tooltips.REBIRTH_KDI_DESCRIPTION
+    bl_description = strings.REBIRTH_KDI_DESCRIPTION
     bl_options = {'REGISTER', 'UNDO'}
 
     virtual_path: bpy.props.StringProperty(
         name="Package KDI",
-        description=tooltips.REBIRTH_KDI_VIRTUAL_PATH,
+        description=strings.REBIRTH_KDI_VIRTUAL_PATH,
         search=_search_virtual_kdis,
         search_options={'SORT'},
     )
@@ -2005,12 +2014,9 @@ class FF7R_REBIRTH_OT_import_kdi_game_packages(SQEX_LoggedOperator):
         armature = context.active_object
         if armature and armature.type == "ARMATURE":
             package_profile = armature.get(KDI_COORDINATE_PROFILE_PROPERTY)
-            if package_profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90:
-                self.translation_axis_order = "YZX"
-                self.scale_axis_order = "YZX"
-            else:
-                self.translation_axis_order = "XZY"
-                self.scale_axis_order = "XZY"
+            axis_order = coordinate_profile_axis_order(package_profile or COORDINATE_PROFILE_REFERENCE)
+            self.translation_axis_order = axis_order
+            self.scale_axis_order = axis_order
         self._load_last_import_settings(context)
         try:
             paths = refresh_kdi_index(
@@ -2188,12 +2194,14 @@ def _import_secondary_kdi_passes(
         and armature.type == "ARMATURE"
         and armature.get(AXIS_ORDER_PROPERTY) == AXIS_ORDER_UNREAL
     )
-    axis_order = "XZY" if preserve_ue_axis_order else "YZX"
     coordinate_profile = (
         COORDINATE_PROFILE_REFERENCE
         if preserve_ue_axis_order
         else COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
     )
+    if armature and armature.type == "ARMATURE":
+        coordinate_profile = armature.get(KDI_COORDINATE_PROFILE_PROPERTY, coordinate_profile)
+    axis_order = coordinate_profile_axis_order(coordinate_profile)
     imported, skipped = [], []
     for secondary_path, asset in secondary_assets:
         label = os.path.basename(secondary_path)
@@ -2256,66 +2264,66 @@ def _restrict_skeleton_to_folder_mesh_bones(
 class FF7R_REBIRTH_OT_import_skeleton_game_packages(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_skeleton_game_packages"
     bl_label = "Skeleton from Rebirth Packages"
-    bl_description = tooltips.REBIRTH_SKELETON_DESCRIPTION
+    bl_description = strings.REBIRTH_SKELETON_DESCRIPTION
     bl_options = {'REGISTER', 'UNDO'}
 
     virtual_path: bpy.props.StringProperty(
         name="Package Skeleton",
-        description=tooltips.REBIRTH_KDI_VIRTUAL_PATH,
+        description=strings.REBIRTH_KDI_VIRTUAL_PATH,
         search=_search_virtual_skeletons,
         search_options={'SORT'},
     )
     armature_name: bpy.props.StringProperty(
         name="Armature Name",
-        description=tooltips.REBIRTH_SKELETON_ARMATURE_NAME,
+        description=strings.REBIRTH_SKELETON_ARMATURE_NAME,
         default="",
     )
     scale_factor: bpy.props.FloatProperty(name="Scale", default=0.01, min=0.0001, max=100.0)
     connect_bones: bpy.props.BoolProperty(
         name="Connect bones to parent",
         description=(
-            tooltips.REBIRTH_SKELETAL_MESH_CONNECT_BONES
+            strings.REBIRTH_SKELETAL_MESH_CONNECT_BONES
         ),
         default=False,
     )
     attachment_sockets: bpy.props.EnumProperty(
         name="Attachment Sockets",
-        description=tooltips.REBIRTH_SKELETAL_MESH_ATTACHMENT_SOCKETS,
+        description=strings.REBIRTH_SKELETAL_MESH_ATTACHMENT_SOCKETS,
         items=ATTACHMENT_SOCKETS_ITEMS,
         default=ATTACHMENT_SOCKETS_EMPTIES,
     )
     setup_naive_ik: bpy.props.BoolProperty(
         name="Create limb IK controls",
         description=(
-            tooltips.REBIRTH_SKELETAL_MESH_SETUP_NAIVE_IK
+            strings.REBIRTH_SKELETAL_MESH_SETUP_NAIVE_IK
         ),
         default=False,
     )
     create_limbal_bone: bpy.props.BoolProperty(
         name="Create C_Limbal eye controller",
         description=(
-            tooltips.REBIRTH_SKELETON_CREATE_LIMBAL_BONE
+            strings.REBIRTH_SKELETON_CREATE_LIMBAL_BONE
         ),
         default=False,
     )
     generate_mouth_controls: bpy.props.BoolProperty(
         name="Generate Mouth Controls (experimental)",
         description=(
-            tooltips.REBIRTH_SKELETAL_MESH_GENERATE_MOUTH_CONTROLS
+            strings.REBIRTH_SKELETAL_MESH_GENERATE_MOUTH_CONTROLS
         ),
         default=False,
     )
     import_secondary_kdi: bpy.props.BoolProperty(
         name="Also import secondary KDI passes",
         description=(
-            tooltips.REBIRTH_SKELETON_IMPORT_SECONDARY_KDI
+            strings.REBIRTH_SKELETON_IMPORT_SECONDARY_KDI
         ),
         default=True,
     )
     import_kdi: bpy.props.BoolProperty(
         name="Import associated KDI",
         description=(
-            tooltips.REBIRTH_SKELETON_IMPORT_KDI
+            strings.REBIRTH_SKELETON_IMPORT_KDI
         ),
         # KineDriver has its own importer.  Keep this internal override for
         # callers that intentionally assemble a full rig (for example, the
@@ -2326,40 +2334,40 @@ class FF7R_REBIRTH_OT_import_skeleton_game_packages(SQEX_LoggedOperator):
     kdi_virtual_path_override: bpy.props.StringProperty(
         name="KDI Path Override",
         description=(
-            tooltips.REBIRTH_SKELETON_KDI_VIRTUAL_PATH_OVERRIDE
+            strings.REBIRTH_SKELETON_KDI_VIRTUAL_PATH_OVERRIDE
         ),
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
     referenced_bone_names_json: bpy.props.StringProperty(
         name="Mesh ReferenceSkeleton Bones",
-        description=tooltips.REBIRTH_SKELETON_REFERENCED_BONE_NAMES_JSON,
+        description=strings.REBIRTH_SKELETON_REFERENCED_BONE_NAMES_JSON,
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
     create_variant_bone_collections: bpy.props.BoolProperty(
         name="Create variant bone collections",
         description=(
-            tooltips.REBIRTH_SKELETAL_MESH_CREATE_VARIANT_BONE_COLLECTIONS
+            strings.REBIRTH_SKELETAL_MESH_CREATE_VARIANT_BONE_COLLECTIONS
         ),
         default=True,
     )
     import_mesh_referenced_bones_only: bpy.props.BoolProperty(
         name="Only import bones used by meshes in this folder",
         description=(
-            tooltips.REBIRTH_SKELETON_IMPORT_MESH_REFERENCED_BONES_ONLY
+            strings.REBIRTH_SKELETON_IMPORT_MESH_REFERENCED_BONES_ONLY
         ),
         default=False,
     )
     face_y_forward: bpy.props.EnumProperty(
         name="Face Forward",
-        description=tooltips.REBIRTH_SKELETON_FACE_Y_FORWARD,
+        description=strings.REBIRTH_SKELETON_FACE_Y_FORWARD,
         items=FACE_FORWARD_ITEMS,
         default=FACE_FORWARD_UNREAL,
     )
     preserve_ue_axis_order: bpy.props.BoolProperty(
         name="Keep original UE axis ordering",
-        description=tooltips.REBIRTH_SKELETON_PRESERVE_UE_AXIS_ORDER,
+        description=strings.REBIRTH_SKELETON_PRESERVE_UE_AXIS_ORDER,
         default=False,
     )
 
@@ -2569,7 +2577,7 @@ class FF7R_REBIRTH_OT_import_skeleton_game_packages(SQEX_LoggedOperator):
                 )
                 armature_obj[SKELETON_ASSET_PATH_PROPERTY] = virtual_path
                 armature_obj[KDI_COORDINATE_PROFILE_PROPERTY] = (
-                    COORDINATE_PROFILE_REFERENCE
+                    COORDINATE_PROFILE_SOURCE_AXES
                     if self.preserve_ue_axis_order
                     else COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
                 )
@@ -2600,13 +2608,13 @@ class FF7R_REBIRTH_OT_import_skeleton_game_packages(SQEX_LoggedOperator):
                             filepath=kdi_path,
                             replace_previous_generated=True,
                             translation_axis_order=(
-                                "XZY" if self.preserve_ue_axis_order else "YZX"
+                                "XYZ" if self.preserve_ue_axis_order else "YZX"
                             ),
                             scale_axis_order=(
-                                "XZY" if self.preserve_ue_axis_order else "YZX"
+                                "XYZ" if self.preserve_ue_axis_order else "YZX"
                             ),
                             coordinate_profile=(
-                                COORDINATE_PROFILE_REFERENCE
+                                COORDINATE_PROFILE_SOURCE_AXES
                                 if self.preserve_ue_axis_order
                                 else COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
                             ),

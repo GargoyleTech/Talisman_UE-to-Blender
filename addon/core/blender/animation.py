@@ -18,25 +18,11 @@ def scene_fps(scene) -> float:
 
 
 def _selected_armature_skeleton_path(armature: bpy.types.Object) -> str | None:
-    """Get the source Skeleton path recorded by a package armature or bound mesh."""
+    """Get the source Skeleton path recorded on a package armature."""
     direct_path = armature.get(SKELETON_ASSET_PATH_PROPERTY)
     if isinstance(direct_path, str) and direct_path.strip():
         return direct_path
 
-    # Older package imports did not tag their armature.  A bound package mesh
-    # still carries the linked Skeleton path, which lets those existing scenes
-    # use the picker without reimporting their character.
-    for obj in bpy.context.scene.objects:
-        if obj.type != "MESH":
-            continue
-        if not any(
-            modifier.type == "ARMATURE" and modifier.object == armature
-            for modifier in obj.modifiers
-        ):
-            continue
-        linked_path = obj.get("sqex_linked_skeleton_path")
-        if isinstance(linked_path, str) and linked_path.strip():
-            return linked_path
     return None
 
 

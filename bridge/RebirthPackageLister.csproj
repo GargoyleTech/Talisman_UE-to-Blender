@@ -2,6 +2,11 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <!-- Let the SDK select native assets for win-x64. SkiaSharp's legacy
+         targets otherwise copy every architecture and macOS as content. -->
+    <ShouldIncludeNativeSkiaSharp>false</ShouldIncludeNativeSkiaSharp>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>TalismanGameAssetBridge</AssemblyName>
@@ -13,7 +18,8 @@
     <Compile Remove="Inspect\**\*.cs" />
     <Compile Remove="AnimationTests\**\*.cs" />
     <Compile Remove="TextureTests\**\*.cs" />
-    <PackageReference Include="CUE4Parse" Version="1.2.2.202608" />
-    <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202608" />
+    <Compile Remove="GeometryTests\**\*.cs" />
+    <PackageReference Include="CUE4Parse" Version="1.2.2.202610" />
+    <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202610" />
   </ItemGroup>
 </Project>

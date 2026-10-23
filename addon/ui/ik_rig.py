@@ -1,6 +1,6 @@
 """Repair earlier generated limb controls, without an additional sidebar."""
 
-from ..language import tooltips
+from ..language import strings
 
 from ..core.blender import ik_rig
 from ..core.blender.reporting import SQEX_LoggedOperator, report
@@ -14,7 +14,7 @@ def _armature(context):
 class OBJECT_OT_repair_limb_ik(SQEX_LoggedOperator):
     bl_idname = "object.sqex_repair_limb_ik"
     bl_label = "Repair Generated Limb IK"
-    bl_description = tooltips.SCENE_TOOLS_REPAIR_LIMB_IK_DESCRIPTION
+    bl_description = strings.SCENE_TOOLS_REPAIR_LIMB_IK_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

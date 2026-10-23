@@ -85,7 +85,7 @@ internal static class GenericProfileTest
         {
             var directory = GenericUnreal.PackageDirectory(args[0]);
             using var provider = new DefaultFileProvider(directory, SearchOption.AllDirectories,
-                new VersionContainer(GenericUnreal.ParseVersion(args[10])));
+                new VersionContainer(GenericUnreal.ParseVersion(args[10])), StringComparer.OrdinalIgnoreCase);
             provider.MappingsContainer = mappings;
             provider.Initialize();
             // Unencrypted indexes can still contain encrypted assets.

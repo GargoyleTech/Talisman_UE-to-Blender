@@ -3,6 +3,31 @@
 import json
 
 
+def mesh_bind_skeleton(payload: dict, linked: dict | None = None) -> dict:
+    """Use the mesh's authored bind pose, retaining shared helper bones/sockets."""
+    inline = payload.get("inlineSkeleton") or {}
+    if not inline.get("bones"):
+        return linked or inline
+    if not linked or not linked.get("bones"):
+        return inline
+
+    # Mesh variants may bake size changes into translations rather than scale.
+    # Bone indices belong to each source separately; remap parents by name.
+    sources = [(bone, inline["bones"]) for bone in inline["bones"]]
+    names = {bone["name"] for bone in inline["bones"]}
+    sources.extend((bone, linked["bones"]) for bone in linked["bones"]
+                   if bone["name"] not in names)
+    indices = {bone["name"]: index for index, (bone, _) in enumerate(sources)}
+    bones = []
+    for source, source_bones in sources:
+        bone = dict(source)
+        parent = int(source.get("parentIndex", -1))
+        bone["parentIndex"] = (indices[source_bones[parent]["name"]]
+                               if 0 <= parent < len(source_bones) else -1)
+        bones.append(bone)
+    return dict(linked, bones=bones, boneCount=len(bones))
+
+
 def _create_variant_bone_collections(armature_obj, usage: dict) -> dict[str, int]:
     """Assign variant-exclusive, directly weighted bones to named collections.
 

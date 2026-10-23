@@ -23,6 +23,10 @@ import tempfile
 from contextlib import contextmanager
 import bpy
 
+from ...core.blender.import_cache import (
+    find_datablock, get_import_cache, import_cache_scope, remember_datablock,
+)
+
 from ...core.blender.material_nodes import (  # noqa: F401 - legacy helper exports
     load_packed_image,
     image_meets_texture_request,
@@ -51,7 +55,8 @@ def texture_limits(max_resolution=0, mip_offset=0):
     previous = _texture_limits
     _texture_limits = (max(0, int(max_resolution)), max(-16, min(0, int(mip_offset))))
     try:
-        yield
+        with import_cache_scope():
+            yield
     finally:
         _texture_limits = previous
 
@@ -69,7 +74,8 @@ def image_loader_override(loader):
     previous = _image_loader_override
     _image_loader_override = loader
     try:
-        yield
+        with import_cache_scope(get_import_cache(loader)):
+            yield
     finally:
         _image_loader_override = previous
 
@@ -78,8 +84,29 @@ def has_image_loader_override() -> bool:
     return _image_loader_override is not None
 
 
+def material_image_loader(tex_root, tex_ext, tex_index=None):
+    """Use one stable loader identity for a MEC batch and texture request."""
+    if _image_loader_override is not None:
+        return _image_loader_override
+    cache = get_import_cache()
+    namespace = texture_material_namespace(tex_root, tex_ext)
+    key = (namespace, _texture_limits, id(tex_index))
+    if cache is not None and key in cache.loaders:
+        return cache.loaders[key]
+
+    def loader(path):
+        return load_image(path, tex_root, tex_ext, tex_index)
+
+    loader.texture_namespace = namespace
+    loader.max_texture_resolution, loader.texture_mip_offset = _texture_limits
+    if cache is not None:
+        loader._import_datablocks = cache
+        cache.loaders[key] = loader
+    return loader
+
+
 def load_hash_table(addon_dir: str | None = None) -> None:
-    """Read texture_hashes.csv from *addon_dir* (defaults to this file's directory).
+    """Read the optional user-generated cache (or an explicit legacy directory).
 
     Safe to call multiple times — the table is rebuilt on each call so edits
     take effect without restarting Blender.
@@ -88,9 +115,10 @@ def load_hash_table(addon_dir: str | None = None) -> None:
     _hash_table = {}
 
     if addon_dir is None:
-        addon_dir = os.path.dirname(__file__)
-
-    csv_path = os.path.join(addon_dir, _CSV_NAME)
+        from .texture_hashes import cache_path
+        csv_path = cache_path()
+    else:
+        csv_path = os.path.join(addon_dir, _CSV_NAME)
     if not os.path.isfile(csv_path):
         return
 
@@ -214,8 +242,7 @@ def load_image(game_path: str, tex_root: str, tex_ext: str,
 
     name = os.path.basename(full)
     source = os.path.normcase(os.path.abspath(full))
-    existing = next((image for image in bpy.data.images
-                     if image.get("ue_texture_file") == source), None)
+    existing = find_datablock("images", "loose-file", source, lambda image: image.get("ue_texture_file"))
     max_resolution, mip_offset = _texture_limits
     if existing is not None and image_meets_texture_request(existing, max_resolution, mip_offset):
         return existing
@@ -223,14 +250,16 @@ def load_image(game_path: str, tex_root: str, tex_ext: str,
         from .texture_mips import select_dds_mip
         with tempfile.TemporaryDirectory(prefix="talisman_dds_mip_") as directory:
             info = select_dds_mip(full, os.path.join(directory, name), max_resolution, mip_offset) or {}
-            metadata = {"ue_texture_file": source, "sqex_virtual_path": game_path,
+            metadata = {"ue_texture_file": source, "ue_virtual_path": game_path,
                         "ue_texture_mip_index": info.get("mipIndex", 0),
                         "ue_max_texture_resolution": max_resolution, "ue_texture_mip_offset": mip_offset}
             if info:
                 metadata.update(ue_texture_source_width=info["sourceWidth"],
                                 ue_texture_source_height=info["sourceHeight"])
-            return load_packed_image(info.get("path", full), name, metadata=metadata,
-                                     max_resolution=max_resolution, existing=existing)
+            image = load_packed_image(info.get("path", full), name, metadata=metadata,
+                                      max_resolution=max_resolution, existing=existing)
+            remember_datablock("images", image)
+            return image
     except Exception as err:
         print(f"  Warning: could not load texture '{full}': {err}")
         return existing
@@ -816,11 +845,10 @@ def _setup_nodes_extended(mat, hashes: list, tex_root: str, tex_ext: str,
                            tex_index=None) -> None:
     """LEGACY 11/12-slot layout: UV1 base textures + UV2 detail textures.
 
-    These index sets describe *de-duplicated* slot lists, which is what the
-    importer used to produce. They are shifted relative to the real
-    FMassiveEnvironmentMaterialInfo slots and cannot reach the detail layer's
-    base colour, so they are reachable only through the dispatcher's fallback
-    branches. The accurate two-layer path is _setup_nodes_two_layer.
+    These index sets describe de-duplicated slot lists. They are shifted
+    relative to FMassiveEnvironmentMaterialInfo slots and cannot reach the
+    detail layer's base colour, so they are used only by the dispatcher's
+    fallback branches. The accurate two-layer path is _setup_nodes_two_layer.
 
     Shared base indices (UV1):
       0  Base Color      → Base Color
@@ -1355,13 +1383,11 @@ def setup_material_nodes(mat, hashes: list, tex_root: str, tex_ext: str,
     43,315 mesh types across both game builds, that count is only ever:
 
         7  -> single layer            (_setup_nodes_standard)
-        14 -> base layer + world-tiling detail layer (_setup_nodes_extended)
+        14 -> base layer + world-tiling detail layer (_setup_nodes_two_layer)
 
-    The intermediate counts the older branches keyed on (9/10/11/12) were an
-    artefact of de-duplicating the slot list, which also shifted slots onto the
-    wrong sockets - 36 of 437 two-layer mesh types were being routed to the
-    wrong tree. Those branches are kept below purely as a fallback, in case a
-    layout exists outside the sampled corpus.
+    De-duplicating slots can produce counts of 9/10/11/12 and shift textures
+    onto the wrong sockets. Those layouts are fallback branches for inputs
+    outside the sampled corpus.
     """
     n = len(hashes)
     if n == 14:

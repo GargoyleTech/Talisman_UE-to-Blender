@@ -9,6 +9,7 @@ from mathutils import Euler, Matrix, Vector
 
 from ...core.blender import animation as action_curves
 from ...core.blender import skeletons
+from ..ue_map import lights
 from . import animations
 from .sequence_bindings import Resolver, armature_for, children, transform, visual_for
 from .sequence_data import Channel, Graph, asset_path, bounds, guid, number, value
@@ -157,6 +158,17 @@ class Importer:
                 parts = path.rsplit(".", 1)
                 parent, key = (target.path_resolve(parts[0]), parts[1]) if len(parts) > 1 else (target, path)
                 setattr(parent, key, value)
+            if 'light_controls' in snapshot:
+                for name, value in snapshot['light_controls'].items():
+                    target[name] = value
+                for name, value in snapshot['light_animation_flags'].items():
+                    if value is None:
+                        if name in target:
+                            del target[name]
+                    else:
+                        target[name] = value
+                from ..ue_map.light_rig import ensure_source_helpers
+                ensure_source_helpers(target)
         self.scene.camera = self.original_camera
         self.scene.frame_start, self.scene.frame_end = self.original_range
         for marker in list(self.scene.timeline_markers):
@@ -324,8 +336,10 @@ class Importer:
             if name == "FieldOfView":
                 path, convert = "lens", lambda x: camera.data.sensor_width / (2 * math.tan(math.radians(max(0.1, min(179.9, x))) / 2))
         if light and self.import_lights:
-            owner = light.data
-            path = {"Intensity": "energy", "LightColor": "color"}.get(name)
+            resolved = lights.animation_property(light, name.rsplit('.', 1)[-1])
+            if resolved is not None:
+                owner, path, factor = resolved
+                convert = lambda x, factor=factor: x * factor
         if name in {"bHidden", "bHiddenInGame", "bVisible"} and kind == "MovieSceneBoolTrack":
             for section, lo, hi in self._sections(instance, track):
                 curve = channel(section.get("Properties", {}).get("BoolCurve"), self.graph, section.get("Name"), 0)
@@ -338,7 +352,9 @@ class Importer:
         if owner is None or path is None:
             self.unsupported(instance, track)
             return
-        if owner.users > 1:
+        if isinstance(owner, (bpy.types.Camera, bpy.types.Light)) and any(
+                candidate.data == owner and candidate not in {camera, light} and not candidate.get('ue_light_helper')
+                for candidate in bpy.data.objects):
             # A binding animates one component, not every object sharing its
             # Camera/Light datablock. Keep unrelated scene instances intact.
             visual = camera if isinstance(owner, bpy.types.Camera) else light
@@ -349,7 +365,7 @@ class Importer:
         for section, lo, hi in self._sections(instance, track):
             properties = section.get("Properties") or {}
             data = ([channel(properties.get(key), self.graph, section.get("Name")) for key in ("RedCurve", "GreenCurve", "BlueCurve")]
-                    if kind == "MovieSceneColorTrack" else [channel(properties.get("FloatCurve"), self.graph, section.get("Name"))])
+                    if kind == "MovieSceneColorTrack" else [channel(properties.get("BoolCurve" if kind == "MovieSceneBoolTrack" else "FloatCurve"), self.graph, section.get("Name"))])
             self.data_tracks[owner].append((path, instance, data, lo, hi, convert))
 
     def bake_transforms(self):
@@ -410,6 +426,21 @@ class Importer:
 
     def bake_properties(self):
         for owner, specifications in self.data_tracks.items():
+            if not self.available(owner):
+                continue
+            if isinstance(owner, bpy.types.Object) and owner.type == 'LIGHT':
+                # Resolve channels without changing an occupied binding. Make
+                # helper emitters only once the animation target is available.
+                self.snapshots[owner]['light_controls'] = {
+                    name: owner[name] for name in lights.UE_LIGHT_OBJECT_PROPS
+                    if name in owner and isinstance(owner[name], (bool, int, float))}
+                self.snapshots[owner]['light_animation_flags'] = {
+                    name: owner.get(name) for name in ('ue_animated_source_length', 'ue_animated_soft_radius')}
+                paths = {spec[0] for spec in specifications}
+                from ..ue_map.light_rig import ensure_source_helpers
+                ensure_source_helpers(owner,
+                    animated_length=f'["{lights.UE_SOURCE_LENGTH_PROP}"]' in paths,
+                    animated_soft_radius=f'["{lights.UE_SOFT_SOURCE_RADIUS_PROP}"]' in paths)
             frames = self.samples(time for _, _, _, lo, hi, _ in specifications for time in (lo, hi))
             output = {}
             for path in {spec[0] for spec in specifications}:
@@ -446,6 +477,10 @@ class Importer:
                             visible = state
                 flags.append((float(not (spawned and visible)),))
             for obj in children(root):
+                if obj.get('ue_hidden_by_profile'):
+                    continue  # Profile filters take priority over authored visibility.
+                if obj.get('ue_light_helper'):
+                    continue  # Visibility is driven by the primary emitter.
                 self.add_action(obj, {"hide_render": flags, "hide_viewport": flags}, frames, constant=True)
 
     def import_clips(self):

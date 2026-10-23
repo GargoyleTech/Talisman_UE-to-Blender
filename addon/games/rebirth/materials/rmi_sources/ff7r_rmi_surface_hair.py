@@ -10,7 +10,7 @@ RMI integration select it from a material parent's ground-truth switch set.
 """
 
 if __package__:
-    from .....language import tooltips
+    from .....language import strings
 else:
     # Preserve running the packaged builder directly in Blender's Text Editor.
     import sys as _sys
@@ -18,7 +18,7 @@ else:
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[4]))
     try:
-        from language import tooltips
+        from language import strings
     finally:
         _sys.path.pop(0)
 
@@ -548,11 +548,10 @@ def _decode_tangent_normal(tree, name, loc, label="", parent=None):
 
 # ------------------------------------------------------- custom properties ---
 
-# Defaults used by the original 47-switch implementation. The current-build
-# parent materials establish a 126-flag universe. Every flag is exposed below,
-# but flags with identical presence vectors across all 104 ground-truth variants
-# share ONE checkbox (the checkbox name is the complete "A_ + B_" list). This
-# prevents the UI from claiming separability no carrier or decompilation proves.
+# Parent materials establish a 126-flag universe. Every flag is exposed
+# below, but flags with identical presence vectors across all 104 ground-truth
+# variants share ONE checkbox (the complete "A_ + B_" list). This prevents the
+# UI from claiming separability no carrier or decompilation proves.
 _SWITCH_DEFAULTS = dict([
     ("Color_", 1.0), ("Normal_", 1.0), ("Roughness_", 1.0), ("Occlusion_", 1.0),
     ("WideOcclusion_", 1.0), ("Metallic_", 0.0), ("Standard_", 1.0),
@@ -693,8 +692,7 @@ def _switch_control_name(members):
     if len(full) <= max_control_length:
         return SWITCH_PROPERTY_PREFIX + full
     # The complete member list remains in the UI description and node label.
-    # Keeping the key below Blender's ID-property limit matters more than
-    # repeating it there, especially now that every switch has a prefix.
+    # Keep the key below Blender's ID-property limit, including its switch prefix.
     short = "%s + ... (%d flags)" % (members[0], len(members))
     return SWITCH_PROPERTY_PREFIX + short[:max_control_length]
 
@@ -714,74 +712,74 @@ CONTROL_FOR_SWITCH = {member: control for control, members, _default
 # meaningless as a switch of 0.37.  Drivers read ints fine.
 ENUM_PROPS = [
     ("Shading Model", 0, 0, 6,
-     tooltips.MATERIALS_SHADING_MODEL),
+     strings.MATERIALS_SHADING_MODEL),
     ("Coverage Mode", 0, 0, 2,
-     tooltips.MATERIALS_COVERAGE_MODE),
+     strings.MATERIALS_COVERAGE_MODE),
     ("Detail Blend", 0, 0, 2,
-     tooltips.MATERIALS_DETAIL_BLEND),
+     strings.MATERIALS_DETAIL_BLEND),
     ("Vertex Expression Source", 0, 0, 2,
-     tooltips.MATERIALS_VERTEX_EXPRESSION_SOURCE),
+     strings.MATERIALS_VERTEX_EXPRESSION_SOURCE),
 ]
 ENUM_PROPS = [prop for prop in ENUM_PROPS
               if prop[0] in {"Shading Model", "Coverage Mode"}]
 
 FLOAT_PROPS = [
     # name,                     default,             min,  max,  description
-    ("Object Fade", 1.0, 0.0, 1.0, tooltips.MATERIALS_OBJECT_FADE),
+    ("Object Fade", 1.0, 0.0, 1.0, strings.MATERIALS_OBJECT_FADE),
     ("Opacity Clip", OPACITY_CLIP, 0.0, 1.0,
-     tooltips.MATERIALS_OPACITY_CLIP),
+     strings.MATERIALS_OPACITY_CLIP),
     ("GBufferA.a", 0.645420, 0.0, 1.0,
-     tooltips.MATERIALS_GBUFFERA_A),
+     strings.MATERIALS_GBUFFERA_A),
     # --- eye (ff7r_eye_material_v2.py) ---
-    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, tooltips.MATERIALS_EYE_CORNEA_SLOPE),
-    ("Eye Eta", ETA, 0.0, 2.0, tooltips.MATERIALS_EYE_ETA),
-    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_CONST),
-    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_FALLOFF),
-    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, tooltips.MATERIALS_EYE_DEPTH_SCALE),
-    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_INNER),
-    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, tooltips.MATERIALS_EYE_MASK_OUTER),
-    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_OFFSET),
-    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, tooltips.MATERIALS_EYE_LIMBAL_SOFTNESS),
-    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, tooltips.MATERIALS_EYE_LIMBAL_APERTURE),
-    ("Eye Limbal Amount", 1.0, 0.0, 1.0, tooltips.MATERIALS_EYE_LIMBAL_AMOUNT),
+    ("Eye Cornea Slope", CORNEA_SLOPE, 0.0, 4.0, strings.MATERIALS_EYE_CORNEA_SLOPE),
+    ("Eye Eta", ETA, 0.0, 2.0, strings.MATERIALS_EYE_ETA),
+    ("Eye Depth Const", DEPTH_CONST, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_CONST),
+    ("Eye Depth Falloff", DEPTH_FALLOFF, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_FALLOFF),
+    ("Eye Depth Scale", DEPTH_SCALE, 0.0, 2.0, strings.MATERIALS_EYE_DEPTH_SCALE),
+    ("Eye Mask Inner", MASK_INNER, 0.0, 2.0, strings.MATERIALS_EYE_MASK_INNER),
+    ("Eye Mask Outer", MASK_OUTER, 0.0, 2.0, strings.MATERIALS_EYE_MASK_OUTER),
+    ("Eye Limbal Offset", LIMBAL_OFFSET, 0.0, 2.0, strings.MATERIALS_EYE_LIMBAL_OFFSET),
+    ("Eye Limbal Softness", LIMBAL_SOFTNESS, 0.0, 2.0, strings.MATERIALS_EYE_LIMBAL_SOFTNESS),
+    ("Eye Limbal Aperture", LIMBAL_APERTURE, 0.0, 8.0, strings.MATERIALS_EYE_LIMBAL_APERTURE),
+    ("Eye Limbal Amount", 1.0, 0.0, 1.0, strings.MATERIALS_EYE_LIMBAL_AMOUNT),
     ("Eye Iris AO Factor", 1, 0.0, 1.0,
-     tooltips.MATERIALS_EYE_IRIS_AO_FACTOR),
-    ("Pupil Dilation", 1.0, 0.05, 4.0, tooltips.MATERIALS_PUPIL_DILATION),
+     strings.MATERIALS_EYE_IRIS_AO_FACTOR),
+    ("Pupil Dilation", 1.0, 0.05, 4.0, strings.MATERIALS_PUPIL_DILATION),
     # --- hair (ff7r_hair_material.py -- measured) ---
     ("Hair Min VdotT", MIN_VDOTT, 0.001, 0.5,
-     tooltips.MATERIALS_HAIR_MIN_VDOTT),
+     strings.MATERIALS_HAIR_MIN_VDOTT),
     ("Hair Dither Sign", 1.0, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_DITHER_SIGN),
+     strings.MATERIALS_HAIR_DITHER_SIGN),
     ("Hair Roughness Curvature", ROUGHNESS_CURVATURE, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_ROUGHNESS_CURVATURE),
+     strings.MATERIALS_HAIR_ROUGHNESS_CURVATURE),
     ("Hair Anisotropic", HAIR_ANISOTROPIC, -1.0, 1.0,
-     tooltips.MATERIALS_HAIR_ANISOTROPIC),
+     strings.MATERIALS_HAIR_ANISOTROPIC),
     ("Hair Flow Influence", FLOW_INFLUENCE, 0.0, 1.0,
-     tooltips.MATERIALS_HAIR_FLOW_INFLUENCE),
+     strings.MATERIALS_HAIR_FLOW_INFLUENCE),
     ("Hair Specular F0", HAIR_SPECULAR_F0, 0.0, 0.16,
-     tooltips.MATERIALS_HAIR_SPECULAR_F0),
+     strings.MATERIALS_HAIR_SPECULAR_F0),
     # --- shared normal-map calibration ---
     ("Normal Map Strength", NORMAL_MAP_STRENGTH, 0.0, 2.0,
-     tooltips.MATERIALS_NORMAL_MAP_STRENGTH),
+     strings.MATERIALS_NORMAL_MAP_STRENGTH),
     # --- detail layer ---
     ("Detail Normal Strength", 0.5, 0.0, 1.0,
-     tooltips.MATERIALS_DETAIL_NORMAL_STRENGTH),
+     strings.MATERIALS_DETAIL_NORMAL_STRENGTH),
     # --- shading model parameters ---
-    ("Subsurface Scale", 0.05, 0.0, 1.0, tooltips.MATERIALS_SUBSURFACE_SCALE),
-    ("Sheen Roughness", 0.3, 0.0, 1.0, tooltips.MATERIALS_SHEEN_ROUGHNESS),
+    ("Subsurface Scale", 0.05, 0.0, 1.0, strings.MATERIALS_SUBSURFACE_SCALE),
+    ("Sheen Roughness", 0.3, 0.0, 1.0, strings.MATERIALS_SHEEN_ROUGHNESS),
     # --- constant roles (PLAN 0.4: never a texture anywhere in the game) ---
-    ("Isotropy", 0.0, 0.0, 1.0, tooltips.MATERIALS_ISOTROPY),
-    ("Sheen", 1.0, 0.0, 1.0, tooltips.MATERIALS_SHEEN),
-    ("Wetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_WETNESS),
-    ("DetailWetness", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAIL_WETNESS),
-    ("Visibility", 1.0, 0.0, 1.0, tooltips.MATERIALS_VISIBILITY),
-    ("FilmStructure", 0.4, 0.0, 1.0, tooltips.MATERIALS_FILM_STRUCTURE),
-    ("ExtraColor", 0.0, 0.0, 1.0, tooltips.MATERIALS_EXTRA_COLOR),
+    ("Isotropy", 0.0, 0.0, 1.0, strings.MATERIALS_ISOTROPY),
+    ("Sheen", 1.0, 0.0, 1.0, strings.MATERIALS_SHEEN),
+    ("Wetness", 0.0, 0.0, 1.0, strings.MATERIALS_WETNESS),
+    ("DetailWetness", 0.0, 0.0, 1.0, strings.MATERIALS_DETAIL_WETNESS),
+    ("Visibility", 1.0, 0.0, 1.0, strings.MATERIALS_VISIBILITY),
+    ("FilmStructure", 0.4, 0.0, 1.0, strings.MATERIALS_FILM_STRUCTURE),
+    ("ExtraColor", 0.0, 0.0, 1.0, strings.MATERIALS_EXTRA_COLOR),
     ("OxygenSaturation", 0.078, 0.0, 1.0,
-     tooltips.MATERIALS_OXYGENSATURATION),
-    ("DetailMetallic", 0.0, 0.0, 1.0, tooltips.MATERIALS_DETAILMETALLIC),
-    ("Thickness", 0.2, 0.0, 1.0, tooltips.MATERIALS_THICKNESS),
-    ("FilmThickness", 0.5, 0.0, 1.0, tooltips.MATERIALS_FILMTHICKNESS),
+     strings.MATERIALS_OXYGENSATURATION),
+    ("DetailMetallic", 0.0, 0.0, 1.0, strings.MATERIALS_DETAILMETALLIC),
+    ("Thickness", 0.2, 0.0, 1.0, strings.MATERIALS_THICKNESS),
+    ("FilmThickness", 0.5, 0.0, 1.0, strings.MATERIALS_FILMTHICKNESS),
 ]
 
 _PROFILE_FLOAT_PROPS = {
@@ -793,17 +791,7 @@ FLOAT_PROPS = [prop for prop in FLOAT_PROPS if prop[0] in _PROFILE_FLOAT_PROPS]
 
 
 def _ensure_props(mat):
-    """Switches are real booleans, selectors real ints, parameters floats.
-
-    Re-running over a material written by an older version of this script
-    rewrites any switch still stored as a float, so the type upgrade is not
-    stranded behind the "already present" check."""
-    # Retire coordinate-routing flags emitted by earlier builds. They do not
-    # control any Blender material path: the UV nodes use the mesh's actual
-    # layers, so retaining these ID properties only creates dead UI controls.
-    for name in ENGINE_ONLY_SWITCHES:
-        if name in mat:
-            del mat[name]
+    """Initialize boolean switches, integer selectors, and float parameters."""
     renamed_switch_properties = {}
     for name, members, default in SWITCH_CONTROLS:
         # Upgrade the old one-property-per-flag and unprefixed grouped layouts
@@ -813,14 +801,13 @@ def _ensure_props(mat):
         legacy_names.add(_legacy_switch_control_name(members))
         legacy = [bool(mat[old_name]) for old_name in legacy_names
                   if old_name in mat]
-        if name not in mat or not isinstance(mat[name], bool):
-            mat[name] = bool(mat[name]) if name in mat else (
-                any(legacy) if legacy else bool(default))
+        if name not in mat:
+            mat[name] = any(legacy) if legacy else bool(default)
         try:
             mat.id_properties_ui(name).update(
                 default=bool(default),
-                description=(tooltips.MATERIALS_STATIC_SWITCH if len(members) == 1
-                             else tooltips.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX +
+                description=(strings.MATERIALS_STATIC_SWITCH if len(members) == 1
+                             else strings.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX +
                              " + ".join(members)))
         except Exception:
             pass
@@ -841,8 +828,8 @@ def _ensure_props(mat):
                 if old_name is not None:
                     target.data_path = '["%s"]' % renamed_switch_properties[old_name]
     for name, default, mn, mx, desc in ENUM_PROPS:
-        if name not in mat or isinstance(mat[name], (bool, float)):
-            mat[name] = int(mat[name]) if name in mat else int(default)
+        if name not in mat:
+            mat[name] = int(default)
         try:
             mat.id_properties_ui(name).update(
                 min=mn, max=mx, soft_min=mn, soft_max=mx,
@@ -850,7 +837,7 @@ def _ensure_props(mat):
         except Exception:
             pass
     for name, default, mn, mx, desc in FLOAT_PROPS:
-        if name not in mat or isinstance(mat[name], (bool, int)):
+        if name not in mat:
             mat[name] = float(default)
         try:
             mat.id_properties_ui(name).update(
@@ -1035,12 +1022,10 @@ def _out_pos(name):
 
 # --------------------------------------------------------- menu abstraction --
 
-# Ladder geometry.  A Mix node draws its data-type and blend-mode dropdowns
-# whether or not the ladder uses them, so one rung measures roughly 140 x 220 --
-# the original 200px row pitch and 200px column pitch were both SMALLER than the
-# nodes they were spacing, which is why every ladder overlapped itself as well
-# as the next menu down.  Keep MENU_ROW_PITCH above ~230 and the column offsets
-# more than ~180 apart or the overlap comes straight back.
+# A Mix node draws its data-type and blend-mode dropdowns even when the
+# ladder does not use them, so each rung measures roughly 140 x 220.
+# Keep MENU_ROW_PITCH above ~230 and column offsets more than ~180 apart
+# to prevent rungs from overlapping each other or the next menu.
 MENU_ROW_PITCH = 280
 MENU_COL_VAL = 320
 MENU_COL_EQ = 620
@@ -1429,8 +1414,6 @@ def util_rnm():
                     "flat -> detail")
         _prop(dmix, "data_type", "VECTOR")
         _sv(dmix, "A", (0.0, 0.0, 1.0))
-        dnorm = _new(g, "ShaderNodeVectorMath", "detail_normalize", (-660, -220))
-        _prop(dnorm, "operation", "NORMALIZE")
         t = _new(g, "ShaderNodeVectorMath", "t", (-660, 220),
                  "t = base + (0,0,1)")
         _prop(t, "operation", "ADD")
@@ -1459,9 +1442,8 @@ def util_rnm():
         _prop(norm, "operation", "NORMALIZE")
         _link(g, gi, "Strength", dmix, "Factor")
         _link(g, gi, "Detail", dmix, "B")
-        _link(g, dmix, "Result", dnorm, 0)
         _link(g, gi, "Base", t, 0)
-        _link(g, dnorm, 0, dsep, 0)
+        _link(g, dmix, "Result", dsep, 0)
         _link(g, dsep, "X", nx, 0)
         _link(g, dsep, "Y", ny, 0)
         _link(g, nx, 0, u, "X")
@@ -1572,8 +1554,8 @@ def util_f0():
         F0 = clamp(x < 0.666667 ? x*0.06 : x*0.36 - 0.2, 0, 0.16)
         level = F0 / 0.08              (Blender: level 0.5 <-> F0 0.04)
 
-    The /0.08 divisor is the measured one from the hair script, which arrived at
-    0.046520 -> 0.5815.  An earlier draft of this file used /0.16 and was wrong."""
+    The /0.08 divisor matches the hair script's measured calibration:
+    0.046520 -> 0.5815."""
     def _b(g):
         _sock(g, "Specular IOR Level", "OUTPUT", "NodeSocketFloat")
         _sock(g, "F0", "OUTPUT", "NodeSocketFloat")
@@ -1622,8 +1604,8 @@ def grp_hair_strand(t2w_group_name="UE Tangent To World (mikktspace)",
         d = dot(V, strand);  if |d| < MIN: d = sign((2*noise-1) + d/MIN) * MIN
         N = normalize(V - d*strand)
 
-    The downstream DeferredLightPixelMain `_label53` branch is now decoded: it
-    is a three-lobe strand-aligned anisotropic GGX model, not Kajiya-Kay. It
+    The downstream DeferredLightPixelMain `_label53` branch uses a three-lobe
+    strand-aligned anisotropic GGX model, not Kajiya-Kay. It
     reconstructs the strand T from this view-tracking N and V, while GBufferD's
     authored full-RGB flow vector is consumed only through dot(flow, L).
     Blender 5.2 exposes no per-light L in a material tree, so exact highlight
@@ -2033,9 +2015,9 @@ def grp_segment_layers():
 
 def grp_layer_blend():
     """Layered_ / ShadingLayer_ -- Overlay the layer colour through its mask,
-    while roughness and metallic retain scalar mixes (PLAN tier 2). Corrects
-    an earlier wrong assumption: Fabric_ and Standard_ are NOT mutually
-    exclusive; Chocobo Body carries both."""
+    while roughness and metallic retain scalar mixes (PLAN tier 2).
+    Fabric_ and Standard_ are not mutually exclusive; Chocobo Body carries both.
+    """
     def _b(g):
         _sock(g, "Base Color", "OUTPUT", "NodeSocketColor")
         _sock(g, "Roughness", "OUTPUT", "NodeSocketFloat")
@@ -2135,8 +2117,7 @@ def grp_emissive():
     outside what a material JSON can show. Unclamped matters: it is what lets
     this drive HDR/bloom intensity per-instance without a separate material per
     state or per colour. Still PLAN tier 3 for the exact formula (plain
-    multiply is the working model, not shader-confirmed byte-for-byte) -- but
-    the per-object, not per-material, locality is now confirmed, not guessed.
+    multiply is the working model, not shader-confirmed byte-for-byte).
 
     Blender mechanism, and why it is NOT a driver: every other control in this
     file is a MATERIAL custom property read through an AVERAGE driver (see
@@ -2160,6 +2141,7 @@ def grp_emissive():
         _sock(g, "Emissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
         _sock(g, "ExtraEmissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
         _sock(g, "ExternalEmissive_", "INPUT", "NodeSocketFloat", 0.0, 0.0, 1.0)
+        _sock(g, "ExternalEmissiveContext", "INPUT", "NodeSocketColor", (0.5, 0.5, 0.5, 1.0))
         gi = _new(g, "NodeGroupInput", "Group Input", (-800, 0))
         go = _new(g, "NodeGroupOutput", "Group Output", (800, 0))
         e0 = _new(g, "ShaderNodeMix", "gate0", (-560, 200), "Emissive_ gate")
@@ -2192,7 +2174,7 @@ def grp_emissive():
         _link(g, e1, "Result", add, "B")
         _link(g, gi, "ExternalEmissive_", tint, "Factor")
         _link(g, add, "Result", tint, "A")
-        _link(g, objtint, "Color", tint, "B")
+        _link(g, gi, "ExternalEmissiveContext", tint, "B")
         _link(g, gi, "Emissive_", st, 0)
         _link(g, gi, "ExtraEmissive_", st, 1)
         _link(g, tint, "Result", go, "Emission")
@@ -2312,7 +2294,8 @@ ROLES = [
 # occlusion) use TEXCOORD_1.xy, the third packed coordinate. Detail itself is
 # the placement mask, sampled on the second UV set; the hair flow map is also
 # on UV1.
-ROLE_UV = {"WideBentNormal": 1, "DetailCoverage": 2, "DetailColor": 2, "DetailNormal": 2,
+ROLE_UV = {"WideBentNormal": 1, "WideOcclusion": 1,
+           "DetailCoverage": 2, "DetailColor": 2, "DetailNormal": 2,
            "DetailRoughness": 2, "Detail": 1, "DetailOcclusion": 2}
 
 SWITCH_FOR_ROLE = {
@@ -2382,6 +2365,7 @@ def _tex_slot(t, mat, role, kind, cs, default, frame, x, y, uvnodes,
                "%s   neutral / texture   [%s]" % (role, sw or "always"), frame)
     _prop(byp, "data_type", dt)
     _sv(byp, "A", default)
+    _sv(byp, "B", default)
     _sv(byp, "Factor", 0.0)
     _link(t, img, "Color", byp, "B")
     if sw:
@@ -2438,14 +2422,17 @@ def _resolve_uv_names(n=4):
 
 # =========================================================== HAIR PROFILE ===
 
-def build():
+def build(*, uv_names=None):
     """Build the dedicated SM7 hair-card material profile.
 
     This keeps the flow/strand and coverage paths used by Hair_ variants and
     omits the eye graph plus generic detail, layer, film, blood, and emissive
     paths whose controlling flags never occur on a hair carrier.
     """
-    uv_names, uv_notes = _resolve_uv_names(3)
+    if uv_names is None:
+        uv_names, uv_notes = _resolve_uv_names(3)
+    else:
+        uv_names, uv_notes = list(uv_names[:3]), []
     _UV_NOTES.extend(uv_notes)
     hair_tangent_to_world = util_tangent_to_world(uv_names[0])
     hair_group = grp_hair_strand(hair_tangent_to_world.name, uv_names[0])

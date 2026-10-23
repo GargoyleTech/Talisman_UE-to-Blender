@@ -3,7 +3,7 @@
 
 Usage: python build_addon_zip.py
 
-The zip contains a single top-level ``talisman/`` directory, which is
+The zip contains a single top-level ``Talisman_UE-to-Blender/`` directory, which is
 what Blender's "Install from Disk" expects -- a zip with loose files at its root
 would extract straight into scripts/addons/ instead of into its own folder.
 """
@@ -15,15 +15,18 @@ import zipfile
 from pathlib import Path
 import tomllib
 
+from build_bridge import validate_publish
+
 REPO = Path(__file__).resolve().parent
 SOURCE = REPO / "addon"
 MANIFEST = SOURCE / "blender_manifest.toml"
 DIST = REPO / "dist"
+ARCHIVE_ROOT = "Talisman_UE-to-Blender"
 
 # Build artifacts and editor cruft that must never reach an installed add-on.
 EXCLUDED_DIRECTORIES = {"__pycache__", ".vs", ".vscode", ".git"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".swp", ".tmp"}
-EXCLUDED_NAMES = {".DS_Store", "Thumbs.db"}
+EXCLUDED_NAMES = {".DS_Store", "Thumbs.db", "texture_hashes.csv"}
 
 
 def addon_version() -> str:
@@ -56,6 +59,7 @@ def main() -> None:
     if not (SOURCE / "__init__.py").is_file():
         raise SystemExit(f"No add-on found at {SOURCE}")
 
+    validate_publish(SOURCE / "bridge")
     manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
     package = manifest["id"]
     version = addon_version()
@@ -67,7 +71,7 @@ def main() -> None:
     files = included_files()
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in files:
-            archive.write(path, Path(package) / path.relative_to(SOURCE))
+            archive.write(path, Path(ARCHIVE_ROOT) / path.relative_to(SOURCE))
 
     size_mb = target.stat().st_size / 1024 / 1024
     print(f"{target.relative_to(REPO)}  ({len(files)} files, {size_mb:.1f} MB)")

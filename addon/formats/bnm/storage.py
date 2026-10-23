@@ -53,8 +53,7 @@ def _stored_records(owner: Any) -> list[dict[str, str]]:
             if isinstance(path, str) and isinstance(text, str):
                 records.append({"path": path, "text": text})
         elif isinstance(item, str):
-            # Accept an early/simple list-of-text-names form if one was saved
-            # during development before the richer source manifest existed.
+            # Accept saved source manifests represented as a simple list of Text names.
             records.append({"path": "", "text": item})
     return records
 

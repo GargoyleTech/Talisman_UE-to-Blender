@@ -4,6 +4,30 @@ import math
 
 import bpy
 
+from .import_cache import find_datablock, get_import_cache, remember_datablock
+
+
+def is_world_grid_material(path):
+    normalized = str(path).replace("\\", "/").strip("/").split(".", 1)[0].casefold()
+    return normalized == "engine/content/enginematerials/worldgridmaterial"
+
+
+def apply_world_grid_material(material, path):
+    """Replace Unreal's default grid material with a plain black diffuse."""
+    if not is_world_grid_material(path):
+        return False
+    if bpy.app.version < (5, 0, 0):
+        material.use_nodes = True
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (300, 0)
+    diffuse = nodes.new("ShaderNodeBsdfDiffuse")
+    diffuse.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    links.new(diffuse.outputs["BSDF"], output.inputs["Surface"])
+    material.diffuse_color = (0.0, 0.0, 0.0, 1.0)
+    return True
+
 
 def set_color_space(image, color_space):
     try:
@@ -57,17 +81,19 @@ def image_meets_texture_request(image, max_resolution=0, mip_offset=0):
 def material_for_texture_source(name, path, loader):
     """Reuse materials within the same game source, independently of quality."""
     namespace = getattr(loader, "texture_namespace", "")
-    material = next((item for item in bpy.data.materials
-                     if item.get("sqex_virtual_path", "").casefold() == path.casefold()
-                     and item.get("ue_texture_namespace", "") == namespace), None)
+    material = find_datablock("materials", "texture-source", (namespace, path.casefold()),
+                             lambda item: (item.get("ue_texture_namespace", item.get("ue_source_id", "")),
+                                           item.get("ue_virtual_path", "").casefold()), loader)
     if material is None:
         material = bpy.data.materials.get(name)
-        if material is not None and (material.get("ue_texture_namespace", "") != namespace
-                                    or material.get("sqex_virtual_path", "").casefold() != path.casefold()):
+        if material is not None and (material.get("ue_texture_namespace", material.get("ue_source_id", "")) != namespace
+                                    or material.get("ue_virtual_path", "").casefold() != path.casefold()):
             material = None
     if material is None:
         material = bpy.data.materials.new(name)
     material["ue_texture_namespace"] = namespace
+    material["ue_virtual_path"] = path
+    remember_datablock("materials", material, loader)
     return material
 
 
@@ -75,15 +101,31 @@ def refresh_material_textures(material, loader):
     """Cached shaders still need to request textures so later imports can upgrade them."""
     if material.node_tree is None:
         return material
+    # Manual callbacks refresh on every call. Mounted/loose import loaders
+    # memoize only within the current batch and texture-quality request;
+    # a later session can still upgrade shared images.
+    cache = get_import_cache(loader) if hasattr(loader, "texture_namespace") else None
+    stamp = (material.as_pointer(), getattr(loader, "texture_namespace", ""),
+             getattr(loader, "max_texture_resolution", 0), getattr(loader, "texture_mip_offset", 0),
+             getattr(loader, "import_textures", True), len(material.node_tree.nodes))
+    if cache is not None and cache.refreshed_materials.get(stamp) == material:
+        return material
     for node in material.node_tree.nodes:
         if node.type != "TEX_IMAGE":
             continue
         image = node.image
-        path = (image.get("sqex_virtual_path") if image is not None else None) or node.get("ue_texture_path")
+        path = (image.get("ue_virtual_path") if image is not None else None) or node.get("ue_texture_path")
         if path:
             loaded = loader(path)
             if loaded is not None:
+                if color_space := node.get("sqex_rmi_color_space"):
+                    set_color_space(loaded, color_space)
+                if node.image is None and "sqex_rmi_fallback_previous_mute" in node:
+                    node.mute = bool(node["sqex_rmi_fallback_previous_mute"])
+                    del node["sqex_rmi_fallback_previous_mute"]
                 node.image = loaded
+    if cache is not None:
+        cache.refreshed_materials[stamp] = material
     return material
 
 

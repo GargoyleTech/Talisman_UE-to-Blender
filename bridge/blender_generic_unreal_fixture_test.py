@@ -41,7 +41,8 @@ first = build_material("SharedName", "/Game/Shared.Shared", data, Images("source
 second = build_material("SharedName", "/Game/Shared.Shared", data, Images("source-b"))
 assert first != second
 assert build_material("SharedName", "/Game/Shared.Shared", data, Images("source-a")) == first
-assert len(first.node_tree.links) == 0
+assert len(first.node_tree.links) == 1  # Default surface, with no texture links.
+assert first.node_tree.links[0].from_node.type == "BSDF_PRINCIPLED"
 textures = [node for node in first.node_tree.nodes if node.type == "TEX_IMAGE"]
 assert len(textures) == 3
 assert sum(node.image is not None for node in textures) == 2
@@ -62,6 +63,7 @@ class PbrImages(Images):
             ],
             "roughness": [{"parameter": "AO_Rough_Metal", "channel": "G"}],
             "alpha": [{"parameter": "AO_Rough_Metal", "channel": "A"}],
+            "emission": ["AbsentEmission", "EmissionColor", "ColorFallback"],
         }
 
 
@@ -70,6 +72,7 @@ pbr = build_material("PbrFixture", "/Game/Pbr.Pbr", {"textures": [
     {"path": "/Game/ColorFallback.ColorFallback", "labels": ["ColorFallback"]},
     {"path": "/Game/Normal.Normal", "labels": ["Normal"]},
     {"path": "/Game/AO_Rough_Metal.AO_Rough_Metal", "labels": ["AO_Rough_Metal"]},
+    {"path": "/Game/Emission.Emission", "labels": ["EmissionColor"]},
 ]}, PbrImages())
 pbr_node = next(node for node in pbr.node_tree.nodes if node.name == "Profile PBR")
 assert pbr_node.inputs["Base Color"].is_linked
@@ -82,7 +85,12 @@ assert pbr_node.inputs["Alpha"].is_linked
 assert pbr_node.inputs["Metallic"].links[0].from_socket.name == "Blue"
 assert pbr_node.inputs["Roughness"].links[0].from_socket.name == "Green"
 assert pbr_node.inputs["Alpha"].links[0].from_socket.name == "Alpha"
+assert pbr_node.inputs["Emission Color"].links[0].from_node.label == "EmissionColor"
+assert pbr_node.inputs["Emission Color"].links[0].from_socket.name == "Color"
+assert pbr_node.inputs["Emission Strength"].default_value == 1.0
 assert pbr.get("ue_pbr_mapping")
+assert not first.node_tree.nodes["Profile PBR"].inputs["Emission Color"].is_linked
+assert first.node_tree.nodes["Profile PBR"].inputs["Emission Strength"].default_value == 0.0
 
 
 # Only asterisks are special; patterns must match the whole parameter name.
@@ -116,6 +124,7 @@ wildcard_images.pbr_mapping = {
     "metalness": [{"parameter": "AO*Metal", "channel": "B"}],
     "roughness": [{"parameter": "*Rough*", "channel": "G"}],
     "alpha": [{"parameter": "*", "channel": "A"}],
+    "emission": ["Absent*", "  cOlOr*  ", "ColorFallback"],
 }
 wildcard = build_material("WildcardFixture", "/Game/Wildcard.Wildcard", {"textures": [
     {"path": "/Game/Primary.Primary", "labels": ["UnrelatedAlias", "ColorPrimary"]},
@@ -130,11 +139,16 @@ assert wildcard_node.inputs["Metallic"].links[0].from_socket.name == "Blue"
 assert wildcard_node.inputs["Roughness"].links[0].from_socket.name == "Green"
 assert wildcard_node.inputs["Alpha"].links[0].from_node.label == "UnrelatedAlias, ColorPrimary"
 assert wildcard_node.inputs["Alpha"].links[0].from_socket.name == "Alpha"
+assert wildcard_node.inputs["Emission Color"].links[0].from_node.label == "UnrelatedAlias, ColorPrimary"
+assert wildcard_node.inputs["Emission Strength"].default_value == 1.0
 assert json.loads(wildcard["ue_texture_warnings"]) == []
 
-wildcard_images.pbr_mapping = {"albedo": ["Missing*"]}
+wildcard_images.pbr_mapping = {"albedo": ["Missing*"], "emission": ["MissingEmission*"]}
 unmatched = build_material("UnmatchedFixture", "/Game/Unmatched.Unmatched", data, wildcard_images)
-assert not unmatched.node_tree.links
+assert len(unmatched.node_tree.links) == 1
+assert unmatched.node_tree.links[0].from_node.type == "BSDF_PRINCIPLED"
+assert not unmatched.node_tree.nodes["Profile PBR"].inputs["Emission Color"].is_linked
+assert unmatched.node_tree.nodes["Profile PBR"].inputs["Emission Strength"].default_value == 0.0
 assert any("'Missing*'" in warning for warning in json.loads(unmatched["ue_texture_warnings"]))
 
 

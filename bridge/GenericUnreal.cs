@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets;
 using CUE4Parse.UE4.Assets.Exports;
@@ -17,6 +18,8 @@ using CUE4Parse.UE4.Versions;
 /// <summary>Conventional Unreal package access without title adapters.</summary>
 internal static class GenericUnreal
 {
+    private static readonly ConditionalWeakTable<DefaultFileProvider, MaterialInventoryCache> MaterialCaches = new();
+    public static object MaterialCacheStats(DefaultFileProvider provider) => MaterialCaches.GetOrCreateValue(provider).Stats();
     public const string ProfilePrefix = "generic:";
 
     public static bool IsProfile(string? profile) =>
@@ -80,18 +83,87 @@ internal static class GenericUnreal
         return resolved;
     }
 
+    public static T ResolveExport<T>(IPackage package, string objectPath) where T : UObject
+    {
+        var path = objectPath.Trim().Replace('\\', '/');
+        if (path.Contains('\''))
+            path = path[(path.IndexOf('\'') + 1)..].TrimEnd('\'');
+        var dot = path.LastIndexOf('.');
+        if (dot > path.LastIndexOf('/') &&
+            !path.EndsWith(".uasset", StringComparison.OrdinalIgnoreCase) &&
+            !path.EndsWith(".umap", StringComparison.OrdinalIgnoreCase))
+        {
+            // A cooked UMAP can contain many generated meshes. Preserve the
+            // requested object name instead of substituting its first mesh.
+            var name = path[(dot + 1)..];
+            // IPackage.GetExport(name) enumerates deserialized exports. A level
+            // can have thousands of unrelated actors before the requested mesh
+            // or material. Filter names/outer paths using header metadata first.
+            if (package is IoPackage or Package)
+            {
+                for (var index = 0; index < package.ExportMapLength; index++)
+                {
+                    var exportName = package is IoPackage io
+                        ? io.CreateFNameFromMappedName(io.ExportMap[index].ObjectName).Text
+                        : ((Package)package).ExportMap[index].ObjectName.Text;
+                    if (!string.Equals(exportName, name, StringComparison.OrdinalIgnoreCase)) continue;
+                    var resolved = package.ResolvePackageIndex(new FPackageIndex(package, index + 1));
+                    if (resolved is null || !string.Equals(resolved.GetPathName(), path, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (package.GetExport(index) is T named) return named;
+                }
+            }
+            else
+            {
+                var named = package.GetExport<T>(name, StringComparison.OrdinalIgnoreCase);
+                if (string.Equals(named.GetPathName(), path, StringComparison.OrdinalIgnoreCase)) return named;
+            }
+            throw new InvalidOperationException($"The package contains no {typeof(T).Name} export at '{path}'.");
+        }
+        return package.GetExports().OfType<T>().FirstOrDefault()
+            ?? throw new InvalidOperationException($"The package contains no {typeof(T).Name} export.");
+    }
+
     public static string? ComponentType(UObject export)
     {
-        // Spline meshes require vertex deformation, not a rigid placement.
-        if (export.ExportType.Contains("SplineMeshComponent", StringComparison.Ordinal)) return null;
+        // Heightfield terrain is converted independently. Never place its
+        // generated Nanite backing component a second time as a rigid mesh.
+        if (export.ExportType == "LandscapeNaniteComponent") return null;
+        if (export is CUE4Parse.UE4.Assets.Exports.Component.Landscape.ULandscapeComponent) return "LandscapeComponent";
+        // Keep the deformation span for a path-curve import. It must never
+        // reach the rigid StaticMesh placement path before deformation exists.
+        if (export.ExportType.EndsWith("SplineMeshComponent", StringComparison.Ordinal)) return "SplineMeshComponent";
+        // Authored path splines are independent of the meshes deformed along
+        // them. Native subclasses (e.g. Hi-Fi Rush's TngSplineComponent) still
+        // serialize ordinary SplineCurves even when decoded as plain UObject.
+        if (export.ExportType.EndsWith("SplineComponent", StringComparison.Ordinal)) return "SplineComponent";
+        // Hogwarts Legacy's PathRuntime.PathComponent carries the ordinary
+        // local SplineCurves payload, despite not having a SplineComponent suffix.
+        // Keep this alias exact: AI/pathfinding components are not authored curves.
+        if (export.ExportType == "PathComponent") return "SplineComponent";
+        if (export.ExportType == "EndSplineBrushComponent") return "SplineComponent";
         if (export is UInstancedStaticMeshComponent) return "FoliageInstancedStaticMeshComponent";
         if (export is UStaticMeshComponent) return "StaticMeshComponent";
         if (export is USkinnedMeshComponent) return "SkeletalMeshComponent";
+        // Native game subclasses may be unregistered in CUE4Parse and arrive
+        // as plain UObject (e.g. HbkStaticMeshComponent). Their mesh references,
+        // templates and transforms still follow the base component contract.
+        // Unknown instanced subclasses need their native transform stream;
+        // treating those as one static mesh would silently lose placements.
+        if (export.ExportType.EndsWith("StaticMeshComponent", StringComparison.Ordinal) &&
+            !export.ExportType.EndsWith("InstancedStaticMeshComponent", StringComparison.Ordinal))
+            return "StaticMeshComponent";
+        if (export.ExportType.EndsWith("SkeletalMeshComponent", StringComparison.Ordinal) ||
+            export.ExportType.EndsWith("SkinnedMeshComponent", StringComparison.Ordinal))
+            return "SkeletalMeshComponent";
         return export.ExportType switch
         {
+            "SQEX_SplineRootComponent" => "SceneComponent",
+            "EndTextRenderComponent" => "TextRenderComponent",
             "StaticMeshComponent" or "SkeletalMeshComponent" or "PointLightComponent" or
-            "SpotLightComponent" or "BoxReflectionCaptureComponent" or "SphereReflectionCaptureComponent" or
-            "LevelStreamingAlwaysLoaded" or "LevelStreamingDynamic" => export.ExportType,
+            "SpotLightComponent" or "RectLightComponent" or "TextRenderComponent" or
+            "DecalComponent" or "DirectionalLightComponent" or "CameraComponent" or "CineCameraComponent" or
+            "BoxReflectionCaptureComponent" or "SphereReflectionCaptureComponent" or
+            "LevelStreamingAlwaysLoaded" or "LevelStreamingDynamic" or "LevelStreamingKismet" => export.ExportType,
             _ => null,
         };
     }
@@ -228,19 +300,16 @@ internal static class GenericUnreal
     public static Dictionary<string, object?> MaterialTextures(
         DefaultFileProvider provider, string assetPath, string? objectPath)
     {
-        var package = provider.LoadPackage(assetPath);
-        var material = package.GetExports().FirstOrDefault(export =>
-            (export is UMaterialInterface || export.ExportType.Contains("Material", StringComparison.OrdinalIgnoreCase)) &&
-            (string.IsNullOrWhiteSpace(objectPath) ||
-             string.Equals(export.GetPathName(), objectPath, StringComparison.OrdinalIgnoreCase)));
-        if (material is null)
-            throw new InvalidOperationException("Package contains no matching material export.");
-
+        var cache = MaterialCaches.GetOrCreateValue(provider);
         var references = new Dictionary<string, (string Path, HashSet<string> Labels)>(StringComparer.OrdinalIgnoreCase);
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var warnings = new List<string>();
-        var queue = new Queue<UObject>();
-        queue.Enqueue(material);
+        var queue = new Queue<string>();
+        // Resolved references already know their exact package/export index.
+        // Keep them only for this request: resolving nested parents by path can
+        // otherwise reload an entire level after dependency loads evict it.
+        var loaders = new Dictionary<string, Func<UObject?>>(StringComparer.OrdinalIgnoreCase);
+        var graph = new Dictionary<string, MaterialInventoryCache.Inventory>(StringComparer.OrdinalIgnoreCase);
 
         void Add(string? path, string? label = null)
         {
@@ -251,57 +320,122 @@ internal static class GenericUnreal
             references[path] = entry;
         }
 
-        void Inspect(ResolvedObject? resolved)
+        MaterialInventoryCache.Inventory ReadOwner(IPackage owner)
         {
-            if (resolved is null) return;
-            var type = resolved.Class?.Name.Text ?? "";
-            if (type.StartsWith("Texture", StringComparison.OrdinalIgnoreCase))
-                Add(resolved.GetPathName());
-            else if (type.Contains("MaterialFunction", StringComparison.OrdinalIgnoreCase) &&
-                     resolved.Load() is { } function)
-                queue.Enqueue(function);
-        }
-
-        while (queue.Count > 0 && visited.Count < 256)
-        {
-            var current = queue.Dequeue();
-            if (!visited.Add(current.GetPathName())) continue;
-            try
-            {
-                foreach (var parameter in current.GetOrDefault<FTextureParameterValue[]>("TextureParameterValues", []))
-                    Add(parameter.ParameterValue?.ResolvedObject?.GetPathName(), parameter.Name);
-            }
-            catch (Exception ex) { warnings.Add($"Texture parameters in {current.Name}: {ex.Message}"); }
-            try
-            {
-                if (current.GetOrDefault<FPackageIndex>("Parent")?.Load() is { } parent)
-                    queue.Enqueue(parent);
-            }
-            catch (Exception ex) { warnings.Add($"Parent of {current.Name}: {ex.Message}"); }
-            if (current is UMaterial baseMaterial)
-                foreach (var texture in baseMaterial.ReferencedTextures)
-                    if (texture is not null) Add(texture.GetPathName());
-
-            // Class metadata identifies textures without loading their bulk data.
-            var owner = current.Owner;
-            if (owner is null) continue;
+            var textures = new List<MaterialInventoryCache.Texture>();
+            var dependencies = new List<string>();
+            var errors = new List<string>();
             for (var index = 0; index < owner.ImportMapLength; index++)
             {
-                try { Inspect(owner.ResolvePackageIndex(new FPackageIndex(owner, -index - 1))); }
-                catch (Exception ex) { warnings.Add($"Import {index} in {owner.Name}: {ex.Message}"); }
+                try
+                {
+                    var resolved = owner.ResolvePackageIndex(new FPackageIndex(owner, -index - 1));
+                    if (resolved is null) continue;
+                    var type = resolved.Class?.Name.Text ?? "";
+                    if (type.StartsWith("Texture", StringComparison.OrdinalIgnoreCase))
+                        textures.Add(new(resolved.GetPathName()));
+                    else if (type.Contains("MaterialFunction", StringComparison.OrdinalIgnoreCase))
+                    {
+                        dependencies.Add(resolved.GetPathName());
+                        loaders.TryAdd(resolved.GetPathName(), () => resolved.Load());
+                    }
+                }
+                catch (Exception ex) { errors.Add($"Import {index} in {owner.Name}: {ex.Message}"); }
             }
             try
             {
                 foreach (var export in owner.GetExports())
-                    if (export is UTexture texture) Add(texture.GetPathName());
+                    if (export is UTexture texture) textures.Add(new(texture.GetPathName()));
             }
-            catch (Exception ex) { warnings.Add($"Embedded textures in {owner.Name}: {ex.Message}"); }
+            catch (Exception ex) { errors.Add($"Embedded textures in {owner.Name}: {ex.Message}"); }
+            return new(owner.Name, "package", textures.ToArray(), dependencies.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), errors.ToArray());
+        }
+
+        MaterialInventoryCache.Inventory ReadObject(UObject current)
+        {
+            var textures = new List<MaterialInventoryCache.Texture>();
+            var dependencies = new List<string>();
+            var errors = new List<string>();
+            try
+            {
+                foreach (var parameter in current.GetOrDefault<FTextureParameterValue[]>("TextureParameterValues", []))
+                    if (parameter.ParameterValue?.ResolvedObject?.GetPathName() is { } path)
+                        textures.Add(new(path, parameter.Name));
+            }
+            catch (Exception ex) { errors.Add($"Texture parameters in {current.Name}: {ex.Message}"); }
+            try
+            {
+                if (current.GetOrDefault<FPackageIndex>("Parent")?.ResolvedObject is { } parent)
+                {
+                    dependencies.Add(parent.GetPathName());
+                    loaders.TryAdd(parent.GetPathName(), () => parent.Load());
+                }
+            }
+            catch (Exception ex) { errors.Add($"Parent of {current.Name}: {ex.Message}"); }
+            if (current is UMaterial baseMaterial)
+                foreach (var texture in baseMaterial.ReferencedTextures)
+                    if (texture?.ResolvedObject is { } reference) textures.Add(new(reference.GetPathName()));
+            if (current.Owner is { } owner)
+            {
+                var inventory = cache.GetOrAdd("package:" + owner.Name, () => ReadOwner(owner));
+                textures.AddRange(inventory.Textures);
+                dependencies.AddRange(inventory.Dependencies);
+                errors.AddRange(inventory.Warnings);
+            }
+            return new(current.Name.ToString(), current.ExportType, textures.ToArray(),
+                dependencies.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), errors.ToArray());
+        }
+
+        UObject LoadDependency(string path)
+        {
+            if (loaders.TryGetValue(path, out var load) && load() is { } resolved) return resolved;
+            // Landscape instances and their parents can be nested exports in a
+            // UMAP. CUE4Parse's LoadPackageObject splits at the last dot, which
+            // mistakes the actor/outer path for a package in that case.
+            var package = provider.LoadPackage(ResolveAsset(provider, path));
+            return ResolveExport<UObject>(package, path);
+        }
+
+        MaterialInventoryCache.Inventory root;
+        if (string.IsNullOrWhiteSpace(objectPath) || !cache.TryGet("object:" + objectPath, out root!))
+        {
+            var package = provider.LoadPackage(assetPath);
+            var material = string.IsNullOrWhiteSpace(objectPath)
+                ? package.GetExports().FirstOrDefault(export => export is UMaterialInterface ||
+                    export.ExportType.Contains("Material", StringComparison.OrdinalIgnoreCase))
+                : ResolveExport<UObject>(package, objectPath);
+            if (material is null || !(material is UMaterialInterface || material.ExportType.Contains("Material", StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(objectPath) && !string.Equals(material.GetPathName(), objectPath, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("Package contains no matching material export.");
+            objectPath = material.GetPathName();
+            root = cache.GetOrAdd("object:" + objectPath, () => ReadObject(material));
+        }
+        queue.Enqueue(objectPath);
+        while (queue.Count > 0 && visited.Count < 256)
+        {
+            var path = queue.Dequeue();
+            if (!visited.Add(path)) continue;
+            try
+            {
+                if (!cache.TryGet("resolved:" + path, out var inventory))
+                {
+                    inventory = path.Equals(objectPath, StringComparison.OrdinalIgnoreCase) ? root :
+                        cache.GetOrAdd("object:" + path, () => ReadObject(LoadDependency(path)));
+                    graph[path] = inventory;
+                }
+                foreach (var texture in inventory.Textures) Add(texture.Path, texture.Label);
+                warnings.AddRange(inventory.Warnings);
+                foreach (var dependency in inventory.Dependencies)
+                    if (!visited.Contains(dependency)) queue.Enqueue(dependency);
+            }
+            catch (Exception ex) { warnings.Add($"Material dependency {path}: {ex.Message}"); }
         }
         if (queue.Count > 0) warnings.Add("Material dependency traversal stopped after 256 objects.");
+        cache.CacheResolvedGraph(graph);
         return new Dictionary<string, object?>
         {
-            ["name"] = material.Name.ToString(),
-            ["type"] = material.ExportType,
+            ["name"] = root.Name,
+            ["type"] = root.Type,
             ["textures"] = references.Values.OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase)
                 .Select(entry => new { path = entry.Path, labels = entry.Labels.OrderBy(label => label).ToArray() }).ToArray(),
             ["warnings"] = warnings,

@@ -44,7 +44,7 @@ def armature_for(obj):
 def visual_for(obj, kind):
     if obj.type == kind:
         return obj
-    matches = [child for child in obj.children_recursive if child.type == kind]
+    matches = [child for child in obj.children_recursive if child.type == kind and not child.get('ue_light_helper')]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -121,7 +121,7 @@ class Resolver:
                 Vector((0, 0, 0)), Euler((0, 0, 0)), self.collection, Vector((1, 1, 1)), game_features=False)
         path = props.get("StaticMesh")
         if path and self.import_models:
-            obj = bpy.data.objects.new(actor_name + "." + name, self.assets.static(path.get("ObjectPath") or ""))
+            obj = bpy.data.objects.new(path["ObjectPath"].rsplit("/", 1)[-1].split(".", 1)[0], self.assets.static(path["ObjectPath"]))
             self.collection.objects.link(obj)
             return obj
         anchor = self._empty(actor_name + "." + name)
@@ -147,7 +147,11 @@ class Resolver:
             visual = bpy.data.objects.new(anchor.name + ".Visual", data)
             self.collection.objects.link(visual)
             visual.parent = anchor
-            visual.matrix_local = FORWARD_FIX
+            visual.matrix_local = FORWARD_FIX if camera or light_type in {'SPOT', 'AREA'} else Matrix.Identity(4)
+            if light_type:
+                lights.apply_ue_light_object_properties(visual)
+                lights.apply_source_texture(visual, self.mounted)
+                lights.apply_component_visibility(visual, props)
         return anchor
 
     def template(self, path, object_path):
@@ -186,6 +190,9 @@ class Resolver:
             obj["ue_component_name"] = alias
             obj["ue_component_path"] = record.get("ObjectPath") or ""
             obj["ue_source_id"] = self.mounted.cache_namespace
+            from .visibility import apply_default_visibility
+            apply_default_visibility(obj, getattr(self.mounted, "hidden_object_patterns", ()), name,
+                                     path, object_path, alias)
             created[record.get("ObjectPath")] = obj
             if record.get("SourceTemplatePath"):
                 created[record["SourceTemplatePath"]] = obj
@@ -212,6 +219,8 @@ class Resolver:
                 root.matrix_local = initial
         if not created:
             self.graph.warn(f"No serialized scene components for {name}; created a transform placeholder.")
+        from .visibility import apply_default_visibility
+        apply_default_visibility(root, getattr(self.mounted, "hidden_object_patterns", ()), name, path, object_path)
         return actor
 
     def resolve(self, instance, binding_id):

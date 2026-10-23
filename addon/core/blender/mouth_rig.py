@@ -8,7 +8,7 @@ Unlike world-space parenting, this does not apply the head transform twice.
 
 from __future__ import annotations
 
-from ...language import tooltips
+from ...language import strings
 
 from contextlib import contextmanager
 import json
@@ -258,10 +258,10 @@ def generate_mouth_rig(context, armature, *, create_lip_controls=True):
             control.lock_location = (True, True, True)
             control.lock_scale = (True, True, True)
             control.bone.color.palette = "THEME04"
-            _property(control, "influence", 1.0, tooltips.SCENE_TOOLS_INFLUENCE)
-            _property(control, "lip_follow", 0.9, tooltips.SCENE_TOOLS_LIP_FOLLOW)
-            _property(control, "corner_follow", 0.35, tooltips.SCENE_TOOLS_CORNER_FOLLOW)
-            _property(control, "jaw_side_follow", 0.35, tooltips.SCENE_TOOLS_JAW_SIDE_FOLLOW)
+            _property(control, "influence", 1.0, strings.SCENE_TOOLS_INFLUENCE)
+            _property(control, "lip_follow", 0.9, strings.SCENE_TOOLS_LIP_FOLLOW)
+            _property(control, "corner_follow", 0.35, strings.SCENE_TOOLS_CORNER_FOLLOW)
+            _property(control, "jaw_side_follow", 0.35, strings.SCENE_TOOLS_JAW_SIDE_FOLLOW)
 
             widget_mesh = bpy.data.meshes.new(f"WGT_{armature.name}_Jaw")
             manifest["widget_mesh"] = widget_mesh.name

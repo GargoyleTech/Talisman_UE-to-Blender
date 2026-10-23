@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 
+def normalize_optional_input(value: str) -> str:
+    """Treat an explicit not-applicable marker as an omitted key or mapping."""
+    value = (value or "").strip()
+    return "" if value.casefold() == "n/a" else value
+
+
 @dataclass(frozen=True)
 class GamePaths:
     """Resolved filesystem inputs consumed by the package gargoyle."""
@@ -14,6 +20,10 @@ class GamePaths:
     oodle_dll: str = ""
     usmap_path: str = ""
     aes_key: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "usmap_path", normalize_optional_input(self.usmap_path))
+        object.__setattr__(self, "aes_key", normalize_optional_input(self.aes_key))
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,7 @@ class GameProfile:
         # titles, so every game importer intentionally shares this one
         # add-on preference rather than maintaining per-game copies.
         oodle_dll = resolve("oodle_dll")
-        usmap_path = resolve(self.usmap_property)
-        aes_key = value(self.aes_key_property).strip()
+        usmap_value = normalize_optional_input(value(self.usmap_property))
+        usmap_path = abspath(usmap_value) if usmap_value else ""
+        aes_key = normalize_optional_input(value(self.aes_key_property))
         return GamePaths(install_root, oodle_dll, usmap_path, aes_key)

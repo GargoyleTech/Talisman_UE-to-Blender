@@ -14,9 +14,8 @@ prefs.rebirth_usmap_path = r"C:\Users\Ghouls\Downloads\Rebirth_v05.usmap"
 
 from talisman import game_packages
 
-# The SkeletalMesh importers now hand their selected mesh's own ReferenceSkeleton
-# straight to the reducer.  Verify the shared reducer retains only that bone and
-# its ancestor chain, and drops sockets whose parent no longer remains.
+# Verify the shared reducer retains the selected mesh's referenced bone
+# and its ancestor chain, and drops sockets whose parent is excluded.
 fixture = {
     "bones": [
         {"name": "Root", "parentIndex": -1},

@@ -16,11 +16,16 @@ import bpy
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import addon
-from addon.language import tooltips
+from addon.language import strings
 
 
 def check_registered_descriptions():
     # Registration needs no game or bridge process for this tooltip fixture.
+    addon.generic_unreal_importer._VERSION_ITEMS[:] = [
+        ("GAME_UE4_26", "UE4_26", "GAME_UE4_26", 0x041A0000),
+        ("GAME_UE4_27", "UE4_27", "GAME_UE4_27", 0x041B0000),
+        ("GAME_HogwartsLegacy", "HogwartsLegacy", "GAME_HogwartsLegacy", 0x041B0003),
+    ]
     addon.generic_unreal_importer._VERSIONS_LOADED = True
     addon.register()
     rebirth = addon.game_packages
@@ -31,14 +36,14 @@ def check_registered_descriptions():
     static = rna(rebirth.FF7R_REBIRTH_OT_import_static_mesh_game_packages)
     skeletal = rna(rebirth.FF7R_REBIRTH_OT_import_skeletal_mesh_game_packages)
     skeleton = rna(rebirth.FF7R_REBIRTH_OT_import_skeleton_game_packages)
-    assert static.description == tooltips.REBIRTH_STATIC_MESH_DESCRIPTION
-    assert static.properties["scale_factor"].description == tooltips.SHARED_SCALE_FACTOR
+    assert static.description == strings.REBIRTH_STATIC_MESH_DESCRIPTION
+    assert static.properties["scale_factor"].description == strings.SHARED_SCALE_FACTOR
     for cls in (static, skeletal):
         prop = cls.properties["offset_opposite_faces"]
-        assert prop.description == tooltips.SHARED_OFFSET_OPPOSITE_FACES
-        assert prop.enum_items["BAKED"].description == tooltips.SHARED_OFFSET_FACES_BAKED
-    assert skeletal.properties["attachment_sockets"].description == tooltips.SHARED_SKELETAL_ATTACHMENT_SOCKETS
-    assert skeleton.properties["attachment_sockets"].description == tooltips.REBIRTH_SKELETAL_MESH_ATTACHMENT_SOCKETS
+        assert prop.description == strings.SHARED_OFFSET_OPPOSITE_FACES
+        assert prop.enum_items["BAKED"].description == strings.SHARED_OFFSET_FACES_BAKED
+    assert skeletal.properties["attachment_sockets"].description == strings.SHARED_SKELETAL_ATTACHMENT_SOCKETS
+    assert skeleton.properties["attachment_sockets"].description == strings.REBIRTH_SKELETAL_MESH_ATTACHMENT_SOCKETS
     remake = rna(addon.remake_static_mesh.FF7R_REMAKE_OT_import_static_mesh_game_packages)
     assert "Remake" in remake.description
     assert "{definition_" not in remake.description
@@ -47,7 +52,8 @@ def check_registered_descriptions():
     # the same tooltip in the generic importer and every title.
     generic = rna(addon.generic_unreal_importer.SQEX_OT_import_generic_unreal_skeletal_mesh)
     assert generic.properties["import_kdi"].is_hidden
-    assert generic.properties["attachment_sockets"].description == tooltips.SHARED_SKELETAL_ATTACHMENT_SOCKETS
+    assert generic.properties["attachment_sockets"].description == strings.SHARED_SKELETAL_ATTACHMENT_SOCKETS
+    assert rna(addon.ui_preferences.SQEX_OT_reset_generic_unreal_profile).description == strings.PREFERENCES_RESET_GENERIC_PROFILE
 
 
 def check_generated_properties():
@@ -57,18 +63,18 @@ def check_generated_properties():
         material = bpy.data.materials.new("TooltipFixture_" + profile)
         builder._ensure_props(material)
         assert material.id_properties_ui("Shading Model").as_dict()["description"] == (
-            tooltips.MATERIALS_SHADING_MODEL
+            strings.MATERIALS_SHADING_MODEL
         )
         name, members, _default = builder.SWITCH_CONTROLS[0]
-        expected = (tooltips.MATERIALS_STATIC_SWITCH if len(members) == 1 else
-                    tooltips.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX + " + ".join(members))
+        expected = (strings.MATERIALS_STATIC_SWITCH if len(members) == 1 else
+                    strings.MATERIALS_GROUPED_STATIC_SWITCH_PREFIX + " + ".join(members))
         assert material.id_properties_ui(name).as_dict()["description"] == expected
         bpy.data.materials.remove(material)
 
     obj = bpy.data.objects.new("TooltipRigFixture", None)
-    addon.mouth_rig._property(obj, "influence", 1.0, tooltips.SCENE_TOOLS_INFLUENCE)
+    addon.mouth_rig._property(obj, "influence", 1.0, strings.SCENE_TOOLS_INFLUENCE)
     assert obj.id_properties_ui("influence").as_dict()["description"] == (
-        tooltips.SCENE_TOOLS_INFLUENCE
+        strings.SCENE_TOOLS_INFLUENCE
     )
     bpy.data.objects.remove(obj)
 
@@ -85,9 +91,9 @@ def check_catalog_reload():
         language = importlib.util.module_from_spec(spec)
         sys.modules[package] = language
         spec.loader.exec_module(language)
-        master = importlib.import_module(package + ".tooltips")
+        master = importlib.import_module(package + ".strings")
         consumer = master
-        category = destination / "shared_import.py"
+        category = destination / "tooltip_import.py"
         with category.open("a", encoding="utf-8") as output:
             output.write('\nSHARED_SCALE_FACTOR = "Edited translation fixture"\n')
         importlib.invalidate_caches()

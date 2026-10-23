@@ -1,15 +1,69 @@
-"""Keep discovered Unreal textures as unlinked, labelled image nodes."""
+"""Build a default surface and link discovered textures only when mapped."""
 
 import json
 import re
 
 import bpy
 
+from ...core.blender.import_cache import find_datablock, remember_datablock
+
 from ...core.blender.material_nodes import scalar_channel_socket as _scalar_channel_socket, make_bsdf, make_normal_map
 
 
 def _parameter_key(value):
     return str(value or "").strip().casefold()
+
+
+def _merge_texture_labels(node, labels, *, rename=True):
+    """Keep every parameter alias when inventory entries share a texture."""
+    names = list(dict.fromkeys(json.loads(node.get("ue_parameter_names", "[]")) + labels))
+    node["ue_parameter_names"] = json.dumps(names, ensure_ascii=False)
+    label = ", ".join(names) or node["ue_texture_path"].rsplit("/", 1)[-1].split(".")[0]
+    if rename:
+        node.name = label
+    node.label = ("Volume slice atlas: " if node.get("ue_texture_layout") == "VOLUME_ATLAS" else "") + label
+
+
+def _deduplicate_inventory_nodes(material):
+    """Repair cached inventories without rebuilding their shader connections."""
+    tree = material.node_tree
+    if tree is None:
+        return
+    nodes_by_texture = {}
+    replacements = {}
+    for node in tree.nodes:
+        if node.type != "TEX_IMAGE" or not node.get("ue_texture_path") or "ue_parameter_names" not in node:
+            continue
+        # Separate sampling/UV setups can be intentional edits to an imported
+        # material. Only consolidate equivalent inventory nodes with no UV links.
+        if any(socket.is_linked for socket in node.inputs):
+            continue
+        texture = ("image", node.image.as_pointer()) if node.image is not None else (
+            "path", node["ue_texture_path"].casefold())
+        sampling = (node.interpolation, node.projection, node.projection_blend, node.extension, node.mute,
+                    tuple(node.inputs["Vector"].default_value),
+                    tuple(node.texture_mapping.translation), tuple(node.texture_mapping.rotation),
+                    tuple(node.texture_mapping.scale), node.texture_mapping.vector_type)
+        frames = tuple(getattr(node.image_user, name, None) for name in (
+            "frame_duration", "frame_start", "frame_offset", "use_cyclic", "use_auto_refresh",
+            "multilayer_layer", "multilayer_pass", "multilayer_view", "tile"))
+        key = (texture, sampling, frames)
+        existing = nodes_by_texture.get(key)
+        if existing is None:
+            nodes_by_texture[key] = node
+        else:
+            _merge_texture_labels(existing, json.loads(node["ue_parameter_names"]), rename=False)
+            replacements[node.as_pointer()] = existing
+    if not replacements:
+        return
+    # Scan links once, rather than walking every socket's links for large inventories.
+    for link in list(tree.links):
+        existing = replacements.get(link.from_node.as_pointer())
+        if existing is not None:
+            tree.links.new(existing.outputs[link.from_socket.name], link.to_socket)
+    for node in list(tree.nodes):
+        if node.as_pointer() in replacements:
+            tree.nodes.remove(node)
 
 
 def _parameter_candidates(value):
@@ -42,10 +96,15 @@ def _match_parameter_node(parameter_nodes, parameter):
 
 def _apply_pbr_mapping(material, nodes, output, parameter_nodes, mapping, warnings):
     """Build a conventional Principled graph from explicitly mapped parameters."""
+    links = material.node_tree.links
+    principled = make_bsdf(material.node_tree, links, output)
+    principled.name = principled.label = "Profile PBR"
+    principled.location = (120, 0)
+
     if not mapping:
         return
     selected = {}
-    for slot in ("albedo", "normal", "metalness", "roughness", "alpha"):
+    for slot in ("albedo", "normal", "metalness", "roughness", "alpha", "emission"):
         candidates = _parameter_candidates(mapping.get(slot))
         if not candidates:
             continue
@@ -67,14 +126,14 @@ def _apply_pbr_mapping(material, nodes, output, parameter_nodes, mapping, warnin
     if not selected:
         return
 
-    links = material.node_tree.links
-    principled = make_bsdf(material.node_tree, links, output)
-    principled.name = principled.label = "Profile PBR"
-    principled.location = (120, 0)
-
     albedo = selected.get("albedo")
     if albedo is not None:
         links.new(albedo[0].outputs["Color"], principled.inputs["Base Color"])
+
+    emission = selected.get("emission")
+    if emission is not None:
+        links.new(emission[0].outputs["Color"], principled.inputs["Emission Color"])
+        principled.inputs["Emission Strength"].default_value = 1.0
 
     normal = selected.get("normal")
     if normal is not None:
@@ -105,22 +164,22 @@ def _apply_pbr_mapping(material, nodes, output, parameter_nodes, mapping, warnin
 def build_material(material_name, material_path, material_data, image_loader):
     source_id = image_loader.cache_namespace
     texture_namespace = getattr(image_loader, "texture_namespace", source_id)
-    material = next((
-        item for item in bpy.data.materials
-        if item.get("ue_source_id") == source_id
-        and item.get("ue_texture_namespace", source_id) == texture_namespace
-        and item.get("sqex_virtual_path", "").casefold() == material_path.casefold()
-    ), None)
+    material = find_datablock("materials", "generic-material", (source_id, texture_namespace, material_path.casefold()),
+                             lambda item: (item.get("ue_source_id"),
+                                           item.get("ue_texture_namespace", item.get("ue_source_id")),
+                                           item.get("ue_virtual_path", "").casefold()), image_loader)
     if material is None:
         material = bpy.data.materials.new(material_name)
     if material.get("ue_texture_inventory_complete"):
         from ...core.blender.material_nodes import refresh_material_textures
-        return refresh_material_textures(material, image_loader)
+        refresh_material_textures(material, image_loader)
+        _deduplicate_inventory_nodes(material)
+        return material
     if bpy.app.version < (5, 0, 0):
         material.use_nodes = True
     material["ue_source_id"] = source_id
     material["ue_texture_namespace"] = texture_namespace
-    material["sqex_virtual_path"] = material_path
+    material["ue_virtual_path"] = material_path
     material["ue_material_type"] = material_data.get("type") or ""
     nodes = material.node_tree.nodes
     nodes.clear()
@@ -128,25 +187,54 @@ def build_material(material_name, material_path, material_data, image_loader):
     output.location = (420, 0)
     warnings = list(material_data.get("warnings") or [])
     parameter_nodes = {}
+    nodes_by_path = {}
+    nodes_by_image = {}
+    texture_count = 0
     for warning in warnings:
         print(f"[Unreal material WARNING] {material_path}: {warning}")
-    for index, texture in enumerate(material_data.get("textures") or []):
+    for texture in material_data.get("textures") or []:
         path = texture.get("path") or ""
         if not path:
             continue
         labels = texture.get("labels") or []
+        key = path.casefold()
+        node = nodes_by_path.get(key)
+        image = None
+        if node is None:
+            image = image_loader(path)
+            if image is not None:
+                node = nodes_by_image.get(image.as_pointer())
+        if node is not None:
+            nodes_by_path[key] = node
+            _merge_texture_labels(node, labels)
+            for label in labels:
+                parameter_nodes.setdefault(_parameter_key(label), node)
+            continue
         node = nodes.new("ShaderNodeTexImage")
-        node.name = node.label = ", ".join(labels) or path.rsplit("/", 1)[-1].split(".")[0]
-        node.location = ((index % 4) * 280 - 1120, -(index // 4) * 340)
+        node.location = ((texture_count % 4) * 280 - 1120, -(texture_count // 4) * 340)
+        texture_count += 1
         node.width = 240
         node["ue_texture_path"] = path
-        node["ue_parameter_names"] = json.dumps(labels, ensure_ascii=False)
+        nodes_by_path[key] = node
+        node.image = image
+        if image is not None:
+            nodes_by_image[image.as_pointer()] = node
+        _merge_texture_labels(node, labels)
         for label in labels:
             parameter_nodes.setdefault(_parameter_key(label), node)
-        node.image = image_loader(path)
+        info = getattr(image_loader, "texture_info", {}).get(path.casefold(), {})
         if node.image is None:
             node["ue_texture_unavailable"] = True
-            warnings.append(f"Could not decode texture: {path}")
+            reason = info.get("reason")
+            if reason:
+                node["ue_texture_unavailable_reason"] = reason
+                node["ue_texture_type"] = info.get("textureType", "")
+                warnings.append(f"{path}: {reason}")
+            else:
+                warnings.append(f"Could not decode texture: {path}")
+        elif node.image.get("ue_texture_layout") == "VOLUME_ATLAS":
+            node["ue_texture_layout"] = "VOLUME_ATLAS"
+            node.label = "Volume slice atlas: " + node.label
     _apply_pbr_mapping(
         material,
         nodes,
@@ -157,4 +245,5 @@ def build_material(material_name, material_path, material_data, image_loader):
     )
     material["ue_texture_warnings"] = json.dumps(warnings, ensure_ascii=False)
     material["ue_texture_inventory_complete"] = True
+    remember_datablock("materials", material, image_loader)
     return material

@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 import tomllib
 
+from build_bridge import validate_publish
+
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "addon"
@@ -35,6 +37,7 @@ def main() -> None:
     if not args.blender_executable:
         parser.error("provide --blender-executable or add blender to PATH")
 
+    validate_publish(SOURCE / "bridge")
     manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -42,7 +45,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="talisman-extension-build-") as temporary:
         package_source = Path(temporary) / "source"
         blender_resources = Path(temporary) / "blender-user-resources"
-        shutil.copytree(SOURCE, package_source)
+        shutil.copytree(SOURCE, package_source, ignore=shutil.ignore_patterns("texture_hashes.csv"))
         shutil.copy2(ROOT / "LICENSE", package_source / "LICENSE")
         shutil.copy2(ROOT / "NOTICE.md", package_source / "NOTICE.md")
         environment = os.environ.copy()

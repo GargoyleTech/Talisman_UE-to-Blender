@@ -11,7 +11,7 @@ import bpy
 
 from ...core.blender.reporting import SQEX_LoggedOperator, report
 from ...games import package_browser
-from ...language import tooltips
+from ...language import strings
 from ...ui.mesh_importer import (
     CORE_SKELETAL_OPTIONS, GAME_SKELETAL_OPTIONS,
     SKELETAL_OPTION_LABELS, SKELETAL_OPTION_DESCRIPTIONS, draw_package_mesh_options,
@@ -30,14 +30,14 @@ def mesh_properties(mesh_kind, *, game_options=(), defaults=None):
     properties = {
         "virtual_path": bpy.props.StringProperty(name="Asset Path", options={"HIDDEN"}),
         "scale_factor": bpy.props.FloatProperty(
-            name="Scale", description=tooltips.SHARED_SCALE_FACTOR,
+            name="Scale", description=strings.SHARED_SCALE_FACTOR,
             default=defaults.get("scale_factor", 0.01), min=0.000001, max=100.0),
         "face_y_forward": bpy.props.EnumProperty(
-            name="Face Forward", description=tooltips.SHARED_FACE_Y_FORWARD,
+            name="Face Forward", description=strings.SHARED_FACE_Y_FORWARD,
             items=options.FACE_FORWARD_ITEMS,
             default=defaults.get("face_y_forward", options.FACE_FORWARD_UNREAL)),
         "offset_opposite_faces": bpy.props.EnumProperty(
-            name="Offset Faces", description=tooltips.SHARED_OFFSET_OPPOSITE_FACES,
+            name="Offset Faces", description=strings.SHARED_OFFSET_OPPOSITE_FACES,
             items=options.OFFSET_FACES_ITEMS,
             default=defaults.get("offset_opposite_faces", options.OFFSET_FACES_NONE)),
     }
@@ -48,10 +48,10 @@ def mesh_properties(mesh_kind, *, game_options=(), defaults=None):
     properties.update({
         "build_skeleton": bpy.props.BoolProperty(
             name="Build Skeleton from Package", default=defaults.get("build_skeleton", True),
-            description=tooltips.SHARED_SKELETAL_BUILD_SKELETON),
+            description=strings.SHARED_SKELETAL_BUILD_SKELETON),
         "bind_active_armature": bpy.props.BoolProperty(
             name="Bind Active Armature", default=defaults.get("bind_active_armature", True),
-            description=tooltips.SHARED_SKELETAL_BIND_ACTIVE_ARMATURE),
+            description=strings.SHARED_SKELETAL_BIND_ACTIVE_ARMATURE),
         "attachment_sockets": bpy.props.EnumProperty(
             name=SKELETAL_OPTION_LABELS["attachment_sockets"],
             description=SKELETAL_OPTION_DESCRIPTIONS["attachment_sockets"],

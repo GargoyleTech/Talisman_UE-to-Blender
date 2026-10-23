@@ -7,7 +7,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from addon.games.rebirth.materials import rmi_surface
-from addon.formats.ue_map import lights, map_import
+from addon.formats.ue_map import lights, map_import, light_photometry
 
 dump = Path(r'O:\Games\Rebirth Tools\FModel\Output\Exports\End\Content\Level\Game\Field\2350-GOLDS\Layout\2350-GOLDS_SQGhost_Light.json')
 data = json.loads(dump.read_text(encoding='utf-8'))
@@ -30,12 +30,17 @@ for sparse in (False, True):
             if parent:
                 parent['ObjectPath'] = parent['ObjectName'].split("'")[1]
     map_import.import_map_entries(entries, 'hdr_test.json', 1.0, 1.0)
-    light = bpy.data.objects['Light_17B12.SpotLight'].data
-    assert math.isclose(light.energy, 10000.0)
-    expected = (124.0 / 255.0, 0.0, 1.0)
+    bpy.context.view_layer.update()
+    obj = bpy.data.objects['Light_17B12.SpotLight']
+    light = obj.data
+    print('HDR_LIGHT_AUTHORING', obj[lights.UE_INTENSITY_PROP], light['ue_intensity_source'], light.energy, flush=True)
+    expected_power = light_photometry.radiant_power('SPOT', obj[lights.UE_INTENSITY_PROP],
+        light['ue_intensity_units'], outer=math.radians(40), radius=0.05)
+    assert math.isclose(light.energy, expected_power, rel_tol=1e-6)
+    expected = (light_photometry.srgb_to_linear(124.0 / 255.0), 0.0, 1.0)
     assert all(math.isclose(a, b, rel_tol=1e-6) for a, b in zip(light.color, expected))
     assert not light.use_temperature
-    assert any(node.label == lights.UE_LIGHT_FALLOFF_NODE_LABEL
+    assert any(node.type == 'GROUP' and node.node_tree.name == lights.UE_LIGHT_ATTENUATION_GROUP_NAME
                for node in light.node_tree.nodes)
     mesh = bpy.data.objects['Light_17B12']
     expected_emissive = (1538.6997, 0.0, 15470.784)
@@ -45,11 +50,11 @@ for sparse in (False, True):
           light.energy, tuple(light.color), tuple(mesh['ExternalEmissiveContext']))
 
 # Light_17B6 serializes only InnerFullConeAngle=60.  Its missing outer value
-# is UE's default 90-degree cone, so the remaining third is edge falloff.
+# is the FF7 default 90-degree cone; the node mask provides edge falloff.
 cone_test = bpy.data.lights.new('MissingOuterConeTest', 'SPOT')
 lights.apply_spot_cone_properties(cone_test, {'InnerFullConeAngle': 60.0})
 assert math.isclose(cone_test.spot_size, math.radians(90.0), abs_tol=1e-6)
-assert math.isclose(cone_test.spot_blend, 1.0 / 3.0, abs_tol=1e-6)
+assert math.isclose(cone_test.spot_blend, 0.0, abs_tol=1e-6)
 print('SPOT_CONE_FALLBACK_PASS', math.degrees(cone_test.spot_size), cone_test.spot_blend)
 
 # Mesh import selects a declared non-neutral context before neutral material
@@ -76,27 +81,3 @@ context_mesh.materials.append(camera_only)
 assert rmi_surface.initialize_external_emissive_context(context_obj)
 assert context_obj['sw EmissiveCameraOnly'] is True
 print('EXTERNAL_EMISSIVE_CONTEXT_PASS', tuple(context_obj['ExternalEmissiveContext']))
-
-# Existing saved RMI groups are migrated in place so their linked materials do
-# not need regeneration merely to rename the object attribute.
-emissive_group = bpy.data.node_groups.new('FF7R Emissive', 'ShaderNodeTree')
-legacy_attribute = emissive_group.nodes.new('ShaderNodeAttribute')
-legacy_attribute.attribute_name = 'ExternalEmissiveTint'
-rmi_surface._migrate_external_emissive_attribute()
-assert legacy_attribute.attribute_name == 'ExternalEmissiveContext'
-print('EXTERNAL_EMISSIVE_MIGRATION_PASS')
-
-# Existing per-variant RMI materials receive the camera-ray branch in place.
-legacy_material = bpy.data.materials.new('LegacyRMI')
-legacy_tree = legacy_material.node_tree
-legacy_tree.nodes.clear()
-legacy_strength = legacy_tree.nodes.new('ShaderNodeMath')
-legacy_strength.name = 'EmissionStrength'
-legacy_bsdf = legacy_tree.nodes.new('ShaderNodeBsdfPrincipled')
-legacy_bsdf.name = 'Principled BSDF'
-legacy_tree.links.new(legacy_strength.outputs[0], legacy_bsdf.inputs['Emission Strength'])
-rmi_surface._migrate_camera_only_emission(legacy_material)
-assert legacy_tree.nodes.get('EmissionCameraOnly') is not None
-assert any(link.to_socket == legacy_bsdf.inputs['Emission Strength']
-           and link.from_node.name == 'EmissionCameraOnly' for link in legacy_tree.links)
-print('EMISSIVE_CAMERA_ONLY_MIGRATION_PASS')

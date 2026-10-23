@@ -1,6 +1,6 @@
-"""The retained opposite-face cleanup tool from the legacy Square Enix Actions add-on."""
+"""Find and offset overlapping, opposite-facing mesh faces."""
 
-from ...language import tooltips
+from ...language import strings
 
 from collections import defaultdict
 
@@ -15,12 +15,12 @@ class MESH_OT_find_opposite_faces(SQEX_LoggedOperator):
 
     bl_idname = "mesh.find_opposite_faces"
     bl_label = "Find Opposite Faces"
-    bl_description = tooltips.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_DESCRIPTION
+    bl_description = strings.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_DESCRIPTION
     bl_options = {"REGISTER", "UNDO"}
 
     subsurface_weight: bpy.props.FloatProperty(
         name="Subsurface Weight",
-        description=tooltips.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_SUBSURFACE_WEIGHT,
+        description=strings.SCENE_TOOLS_MESH_OT_FIND_OPPOSITE_FACES_SUBSURFACE_WEIGHT,
         default=0.0,
         min=0.0,
         max=1.0,
@@ -52,7 +52,7 @@ class MESH_OT_find_opposite_faces(SQEX_LoggedOperator):
 
     @staticmethod
     def setup_material_nodes(obj, vertex_group_name):
-        """Expose the vertex-group mask to Square Enix Principled materials, as before."""
+        """Expose the vertex-group mask to Square Enix Principled materials."""
         if not obj.data.materials:
             return
 

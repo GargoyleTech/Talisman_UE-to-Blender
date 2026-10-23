@@ -1,9 +1,11 @@
 """Options and persisted metadata used by package mesh importers."""
 
-from ...language import tooltips
+from ...language import strings
 
 from ...core.blender.skeletons import FACE_FORWARD_BLENDER, FACE_FORWARD_UNREAL
 from ..kdi.drivers import (
+    COORDINATE_PROFILE_SOURCE_AXES as COORDINATE_PROFILE_SOURCE_AXES,
+    coordinate_profile_axis_order as coordinate_profile_axis_order,
     COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90 as COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90,
     COORDINATE_PROFILE_REFERENCE as COORDINATE_PROFILE_REFERENCE,
 )
@@ -15,12 +17,12 @@ OFFSET_FACES_NONE = "NONE"
 OFFSET_FACES_BAKED = "BAKED"
 OFFSET_FACES_MODIFIER = "MODIFIER"
 OFFSET_FACES_ITEMS = (
-    (OFFSET_FACES_NONE, "None", tooltips.SHARED_OFFSET_FACES_NONE),
-    (OFFSET_FACES_BAKED, "Baked", tooltips.SHARED_OFFSET_FACES_BAKED),
+    (OFFSET_FACES_NONE, "None", strings.SHARED_OFFSET_FACES_NONE),
+    (OFFSET_FACES_BAKED, "Baked", strings.SHARED_OFFSET_FACES_BAKED),
     (
         OFFSET_FACES_MODIFIER,
         "Modifier",
-        tooltips.SHARED_OFFSET_FACES_MODIFIER,
+        strings.SHARED_OFFSET_FACES_MODIFIER,
     ),
 )
 
@@ -31,17 +33,17 @@ ATTACHMENT_SOCKETS_ITEMS = (
     (
         ATTACHMENT_SOCKETS_NONE,
         "None",
-        tooltips.SHARED_ATTACHMENT_SOCKETS_NONE,
+        strings.SHARED_ATTACHMENT_SOCKETS_NONE,
     ),
     (
         ATTACHMENT_SOCKETS_EMPTIES,
         "Empties",
-        tooltips.SHARED_ATTACHMENT_SOCKETS_EMPTIES,
+        strings.SHARED_ATTACHMENT_SOCKETS_EMPTIES,
     ),
     (
         ATTACHMENT_SOCKETS_BONES,
         "Bones",
-        tooltips.SHARED_ATTACHMENT_SOCKETS_BONES,
+        strings.SHARED_ATTACHMENT_SOCKETS_BONES,
     ),
 )
 
@@ -49,12 +51,12 @@ FACE_FORWARD_ITEMS = (
     (
         FACE_FORWARD_UNREAL,
         "+X (Unreal)",
-        tooltips.SHARED_FACE_FORWARD_UNREAL,
+        strings.SHARED_FACE_FORWARD_UNREAL,
     ),
     (
         FACE_FORWARD_BLENDER,
         "-Y (Blender)",
-        tooltips.SHARED_FACE_FORWARD_BLENDER,
+        strings.SHARED_FACE_FORWARD_BLENDER,
     ),
 )
 

@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 import bpy
 
+from ...core.blender.import_cache import live_datablock
+
 from ...core.blender.material_nodes import (
     image_node as _image_node, image_normal_map as _normal_map, make_bsdf,
     material_for_texture_source, refresh_material_textures,
@@ -128,14 +130,14 @@ def build_material(
     """Build the documented Crisis Core texture parameter subset in Blender."""
     cache_key = material_path.casefold() + "::" + getattr(image_loader, "texture_namespace", "")
     cached = _MATERIAL_CACHE.get(cache_key)
-    if cached is not None and cached.name in bpy.data.materials:
+    if live_datablock("materials", cached):
         return refresh_material_textures(cached, image_loader)
 
     textures, vectors, scalars = _parameter_values(material_data)
     material = material_for_texture_source(material_name, material_path, image_loader)
     if bpy.app.version < (5, 0, 0):
         material.use_nodes = True
-    material["sqex_virtual_path"] = material_path
+    material["ue_virtual_path"] = material_path
     material["ff7r_crisis_core_material"] = True
     material["ff7r_texture_albedo"] = textures.get("texturealbedo", "")
     material["ff7r_texture_normal"] = textures.get("texturenormal", "")

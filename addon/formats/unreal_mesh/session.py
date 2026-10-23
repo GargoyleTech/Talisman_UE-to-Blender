@@ -9,10 +9,15 @@ import tempfile
 
 import bpy
 
-from ...core.blender.material_nodes import load_packed_image, image_meets_texture_request
+from ...core.blender.import_cache import find_datablock, live_datablock, remember_datablock
+
+from ...core.blender.material_nodes import (
+    load_packed_image, image_meets_texture_request, set_channel_packed_alpha,
+)
 
 from ...core.bridge import gargoyle_command, gargoyle_executable_path
 from ...core.profiles import GamePaths, GameProfile
+from .binary_geometry import load_binary_geometry
 from ..unreal_package.session import PackageAssetSession
 
 
@@ -69,8 +74,9 @@ def tag_armature(armature, mounted, payload, virtual_path, scale_factor):
 
 
 class GenericSession(PackageAssetSession):
-    def __init__(self, paths: GamePaths, version: str, *, pbr_mapping=None,
-                 max_texture_resolution=0, texture_mip_offset=0, import_textures=True):
+    def __init__(self, paths: GamePaths, version: str, *, pbr_mapping=None, hidden_object_patterns=(),
+                 max_texture_resolution=0, texture_mip_offset=0, import_textures=True,
+                 nanite_mode="AUTO", max_nanite_triangles=2_000_000, nanite_cache_mb=256):
         super().__init__(paths.install_root, paths.oodle_dll, paths.usmap_path,
                          profile=make_profile(version), aes_key=paths.aes_key,
                          max_texture_resolution=max_texture_resolution, texture_mip_offset=texture_mip_offset,
@@ -78,12 +84,47 @@ class GenericSession(PackageAssetSession):
         self.paths = paths
         self.game_version = version
         self.pbr_mapping = dict(pbr_mapping or {})
+        self.hidden_object_patterns = tuple(hidden_object_patterns)
         self.cache_namespace = source_id(paths, version, self.pbr_mapping)
         self.texture_namespace = self.cache_namespace
         if not import_textures:
             self.texture_namespace += ":no-textures"
         self._stderr_file = None
         self.failed_materials = 0
+        self.texture_info = {}
+        self.nanite_mode = nanite_mode.upper()
+        self.max_nanite_triangles = max(0, int(max_nanite_triangles))
+        self.nanite_cache_mb = max(0, min(16384, int(nanite_cache_mb)))
+        if self.nanite_mode not in {"AUTO", "NATIVE", "FALLBACK"}:
+            raise ValueError("Unknown Nanite geometry mode.")
+        self.geometry_namespace = hashlib.sha256(json.dumps([
+            self.cache_namespace, self.nanite_mode, self.max_nanite_triangles,
+        ]).encode()).hexdigest()
+        self.nanite_fallbacks = {}
+        self.geometry_counts = {}
+
+    def static_mesh(self, asset_path):
+        # Temporary files are removed after the typed arrays have been loaded;
+        # callers can retain the arrays independently of the bridge/session.
+        with tempfile.TemporaryDirectory(prefix="talisman_geometry_") as directory:
+            payload = self.request({
+                "action": "static_mesh", "assetPath": asset_path,
+                "naniteMode": self.nanite_mode, "maxNaniteTriangles": self.max_nanite_triangles,
+                "naniteCacheMiB": self.nanite_cache_mb, "geometryOutput": directory,
+            }).get("staticMesh") or {}
+            if self.nanite_mode != "FALLBACK" and payload.get("geometryMode") != self.nanite_mode:
+                raise RuntimeError("The bundled bridge does not support the requested Nanite mode. Rebuild or reinstall the matching add-on and bridge.")
+            payload = load_binary_geometry(payload, directory)
+        if reason := payload.get("naniteFallbackReason"):
+            self.nanite_fallbacks[asset_path] = reason
+            print(f"[Nanite fallback] {asset_path}: {reason}")
+        source = payload.get("geometrySource", "CONVENTIONAL")
+        self.geometry_counts[source] = self.geometry_counts.get(source, 0) + 1
+        return payload
+
+    def geometry_summary(self):
+        return (f"{self.geometry_counts.get('NANITE', 0):,} native Nanite meshes; "
+                f"{len(self.nanite_fallbacks):,} automatic Nanite fallbacks.")
 
     def _start_process(self):
         self._stderr_file = tempfile.TemporaryFile(mode="w+b")
@@ -152,17 +193,17 @@ class GenericSession(PackageAssetSession):
             return None
         key = game_path.casefold()
         if key in self.cache:
-            return self.cache[key]
-        for image in bpy.data.images:
-            if (image.get("ue_source_id") == self.cache_namespace
-                    and image.get("ue_texture_namespace") == self.texture_namespace
-                    and image.get("sqex_virtual_path", "").casefold() == key):
-                existing = image
-                break
-        else:
-            existing = None
+            image = self.cache[key]
+            if image is None or (live_datablock("images", image) and image_meets_texture_request(
+                    image, self.max_texture_resolution, self.texture_mip_offset)):
+                return image
+            del self.cache[key]
+        existing = find_datablock("images", "generic-texture", (self.cache_namespace, self.texture_namespace, key),
+                                  lambda item: (item.get("ue_source_id"), item.get("ue_texture_namespace"),
+                                                item.get("ue_virtual_path", "").casefold()), self)
         if existing is not None and image_meets_texture_request(
                 existing, self.max_texture_resolution, self.texture_mip_offset):
+            set_channel_packed_alpha(existing)
             self.cache[key] = existing
             return existing
         image = None
@@ -176,11 +217,16 @@ class GenericSession(PackageAssetSession):
                     **self.texture_request_options,
                 })
                 info = response.get("dds") or {}
+                self.texture_info[key] = info
+                if info.get("status") == "unavailable":
+                    raise RuntimeError(info.get("reason") or "This texture has no stored image pixels.")
                 image = load_packed_image(info.get("output") or output, name, metadata={
                     "ue_source_id": self.cache_namespace,
-                    "sqex_virtual_path": game_path,
+                    "ue_virtual_path": game_path,
                     "ue_pixel_format": info.get("pixelFormat", ""),
                     "ue_image_format": info.get("fileExtension", "dds"),
+                    "ue_texture_type": info.get("textureType", "Texture2D"),
+                    "ue_texture_layout": info.get("textureLayout", "2D"),
                     "ue_texture_namespace": self.texture_namespace,
                     "ue_texture_mip_index": info.get("mipIndex", -1),
                     "ue_max_texture_resolution": self.max_texture_resolution,
@@ -189,7 +235,12 @@ class GenericSession(PackageAssetSession):
                     "ue_texture_source_height": info.get("sourceHeight", info.get("height", 1)),
                 }, color_space="sRGB" if info.get("srgb") else "Non-Color",
                     max_resolution=self.max_texture_resolution, existing=existing)
+                # Unreal commonly stores a material mask in the color texture's
+                # alpha. Keep RGB independent instead of treating that mask as
+                # image coverage (which turns zero-alpha skin regions black).
+                set_channel_packed_alpha(image)
             self.cache[key] = image
+            remember_datablock("images", image, self)
             self.loaded += 1
             return image
         except Exception as exc:

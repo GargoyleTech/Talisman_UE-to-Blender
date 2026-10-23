@@ -1,20 +1,18 @@
 """Package StaticMesh integration for the researched FF7R RMI_Surface port.
 
-The authored RMI node builder and its variant trimmer remain in the companion
-``material related/blender`` research project.  Loading them from their source
-location avoids maintaining a divergent copy of a 3,000-line generated shader
-builder in this add-on.  This module is called by the direct package
+This module loads the bundled surface, eye and hair builders and their variant
+trimmer. It is called by the direct package
 StaticMesh and SkeletalMesh importers -- and, through PackageStaticMeshResolver,
 by the package UMAP importer's StaticMesh actors, since they share the same
 importer.  Both mesh types reach it the same way, because the gargoyle reports a
 section's material the same way for either (SkeletalMaterials vs
-StaticMaterials).  Loose MEC UMAPs, JSON imports, and non-RMI material instances
-retain their existing material paths.
+StaticMaterials). Loose MEC UMAPs, JSON imports, and non-RMI material instances
+use their own material builders.
 """
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 import importlib.util
 import json
@@ -25,6 +23,8 @@ from typing import Any, Callable
 import bpy
 
 from ....core.blender.material_nodes import set_color_space as _set_image_color_space, refresh_material_textures
+from ....core.blender.import_cache import get_import_cache, remember_datablock
+from ....core.package_utils import addon_package_name
 
 
 _MODULES: tuple[dict[str, Any], Any, dict[str, list[str]]] | None = None
@@ -38,7 +38,6 @@ _LIMBAL_BONE_NAME = "C_Limbal"
 _EYE_PATH_LABEL = "eye path (SM 9)"
 EXTERNAL_EMISSIVE_CONTEXT_PROP = "ExternalEmissiveContext"
 _EXTERNAL_EMISSIVE_SWITCH = "ExternalEmissive_"
-_LEGACY_EXTERNAL_EMISSIVE_PROP = "ExternalEmissiveTint"
 EMISSIVE_CAMERA_ONLY_PROP = "sw EmissiveCameraOnly"
 _LEGACY_EMISSIVE_CAMERA_ONLY_PROP = "EmissiveCameraOnly"
 _EMISSIVE_SWITCH = "Emissive_"
@@ -60,21 +59,8 @@ def _migrate_switch_status_properties(material: bpy.types.Material) -> None:
             del material[old_name]
 
 
-def _migrate_external_emissive_attribute() -> None:
-    """Upgrade existing shared RMI emissive groups without rebuilding materials."""
-    group = bpy.data.node_groups.get("FF7R Emissive")
-    if group is None:
-        return
-    for node in group.nodes:
-        if (node.bl_idname == "ShaderNodeAttribute"
-                and getattr(node, "attribute_name", "") == _LEGACY_EXTERNAL_EMISSIVE_PROP):
-            node.attribute_name = EXTERNAL_EMISSIVE_CONTEXT_PROP
-            node.label = node.label.replace(_LEGACY_EXTERNAL_EMISSIVE_PROP,
-                                            EXTERNAL_EMISSIVE_CONTEXT_PROP)
-
-
 def _migrate_camera_only_emission(material: bpy.types.Material) -> None:
-    """Add or update the camera-only emission branch on an existing master."""
+    """Update the camera-only emission attribute on an existing material."""
     tree = getattr(material, "node_tree", None)
     if tree is None:
         return
@@ -82,43 +68,6 @@ def _migrate_camera_only_emission(material: bpy.types.Material) -> None:
     if existing_attribute is not None:
         existing_attribute.attribute_name = EMISSIVE_CAMERA_ONLY_PROP
         existing_attribute.label = f'object["{EMISSIVE_CAMERA_ONLY_PROP}"]'
-    if tree.nodes.get("EmissionCameraOnly") is not None:
-        return
-    strength = tree.nodes.get("EmissionStrength")
-    bsdf = tree.nodes.get("Principled BSDF")
-    output = bsdf.inputs.get("Emission Strength") if bsdf is not None else None
-    if strength is None or output is None:
-        return
-    for link in list(output.links):
-        if link.from_node == strength:
-            tree.links.remove(link)
-    attr = tree.nodes.new("ShaderNodeAttribute")
-    attr.name = "EmissiveCameraOnlyAttribute"
-    attr.label = f'object["{EMISSIVE_CAMERA_ONLY_PROP}"]'
-    attr.attribute_type = "OBJECT"
-    attr.attribute_name = EMISSIVE_CAMERA_ONLY_PROP
-    attr.location = (strength.location.x + 180, strength.location.y - 220)
-    camera = tree.nodes.new("ShaderNodeLightPath")
-    camera.name = "EmissiveCameraRay"
-    camera.label = "Is Camera Ray"
-    camera.location = (strength.location.x + 180, strength.location.y - 370)
-    restricted = tree.nodes.new("ShaderNodeMath")
-    restricted.name = "EmissionCameraRayStrength"
-    restricted.label = "emission strength × camera ray"
-    restricted.operation = "MULTIPLY"
-    restricted.location = (strength.location.x + 420, strength.location.y - 130)
-    selector = tree.nodes.new("ShaderNodeMix")
-    selector.name = "EmissionCameraOnly"
-    selector.label = "camera-only emission"
-    selector.data_type = "FLOAT"
-    selector.clamp_factor = True
-    selector.location = (strength.location.x + 620, strength.location.y)
-    tree.links.new(strength.outputs[0], restricted.inputs[0])
-    tree.links.new(camera.outputs["Is Camera Ray"], restricted.inputs[1])
-    tree.links.new(attr.outputs["Fac"], selector.inputs["Factor"])
-    tree.links.new(strength.outputs[0], selector.inputs["A"])
-    tree.links.new(restricted.outputs[0], selector.inputs["B"])
-    tree.links.new(selector.outputs["Result"], output)
 
 
 def _external_emissive_context(props: dict[str, Any]) -> tuple[float, float, float] | None:
@@ -177,7 +126,7 @@ def initialize_external_emissive_context(obj: bpy.types.Object) -> bool:
         del obj[_LEGACY_EMISSIVE_CAMERA_ONLY_PROP]
         try:
             obj.id_properties_ui(EMISSIVE_CAMERA_ONLY_PROP).update(
-                description=tooltips.MATERIALS_EMISSIVE_CAMERA_ONLY
+                description=strings.MATERIALS_EMISSIVE_CAMERA_ONLY
             )
         except Exception:
             pass
@@ -201,7 +150,7 @@ def initialize_external_emissive_context(obj: bpy.types.Object) -> bool:
         obj[EMISSIVE_CAMERA_ONLY_PROP] = True
         try:
             obj.id_properties_ui(EMISSIVE_CAMERA_ONLY_PROP).update(
-                description=tooltips.MATERIALS_EMISSIVE_CAMERA_ONLY
+                description=strings.MATERIALS_EMISSIVE_CAMERA_ONLY
             )
         except Exception:
             pass
@@ -428,8 +377,8 @@ def _colour(value: Any) -> tuple[float, float, float, float] | None:
         result = tuple(float(channel) for channel in channels[:4])
     except (TypeError, ValueError):
         return None
-    # FColor is byte based; FLinearColor is already 0..1.
-    if max(result) > 1.0:
+    # FColor has integer bytes; FLinearColor can contain HDR floats above 1.
+    if all(isinstance(channel, int) for channel in channels[:4]) and max(result) > 1.0:
         result = tuple(channel / 255.0 for channel in result)
     return result
 
@@ -447,8 +396,8 @@ def _renderer_constant_texture(texture_path: str) -> tuple[float, float, float, 
     These are baked colour constants, not image assets that need exporting --
     the 8 hex digits are the four RGBA bytes of a solid-colour texture the
     renderer substitutes at that format. The gargoyle cannot create a DDS for
-    their uncompressed payload, and more importantly Blender should represent
-    them as a constant node rather than sampling a texture.
+    their uncompressed payload. Store them on the texture Mix's B socket,
+    or on an RGB node if the user enables image-node replacement.
 
     Only the ``_sRGB`` suffix is gamma-encoded. ``_BC4`` (single-channel masks)
     and ``_BC5`` (tangent-space normal maps) are UE UNORM formats that are
@@ -537,6 +486,30 @@ def _make_colour_node(tree: bpy.types.NodeTree, image_node: bpy.types.Node, colo
         tree.links.new(constant.outputs["Color"], socket)
 
 
+def _set_slot_colour(material, role, kind, colour):
+    mix = material.node_tree.nodes.get("USE_" + role)
+    if mix is None or mix.bl_idname != "ShaderNodeMix":
+        raise RuntimeError(f"RMI texture slot {role!r} has no fallback Mix")
+    # Resolve the enabled socket explicitly; Mix has several hidden A/B pairs.
+    identifier = "B_Float" if kind == "val" else "B_Color"
+    socket = next(socket for socket in mix.inputs if socket.identifier == identifier)
+    socket.default_value = colour[0] if kind == "val" else colour
+
+
+def _set_slot_fallback(material, node, kind, colour, *, replace_image):
+    """A muted image has no bypass output: its consumer uses its own default."""
+    if replace_image:
+        # Scalar UE samplers read red; avoid RGB-to-float luminance conversion
+        # changing that value when the optional RGB representation is selected.
+        constant = (colour[0], colour[0], colour[0], 1.0) if kind == "val" else colour
+        _make_colour_node(material.node_tree, node, constant)
+    else:
+        # Remember variant muting separately so a successful cache retry can
+        # restore an active image without enabling an unused variant slot.
+        node["sqex_rmi_fallback_previous_mute"] = node.mute
+        node.mute = True
+
+
 def _bundled_gaze_normal(texture_path: str) -> bpy.types.Image | None:
     """Use the lossless deblocked shared-eye normal for its exact game path."""
     normalized_path = texture_path.replace("\\", "/").split(".", 1)[0].casefold()
@@ -560,7 +533,7 @@ def _bundled_gaze_normal(texture_path: str) -> bpy.types.Image | None:
         image = bpy.data.images.load(str(asset_path), check_existing=True)
         image.name = "Common_Eye_Player_NG [FF7R deblocked]"
         image.colorspace_settings.name = "Non-Color"
-        image["sqex_virtual_path"] = texture_path
+        image["ue_virtual_path"] = texture_path
         image["ff7r_override_source"] = "Common_Eye_Player_NG BC5"
         image["ff7r_override_filter"] = "lossless 16-bit, 5x5 binomial"
         image.pack()
@@ -578,15 +551,72 @@ def _variant_name(props: dict[str, Any]) -> str:
     return name if name.startswith("RMI_Surface_") else ""
 
 
-def _ensure_master(master: Any) -> bpy.types.Material:
+def refresh_hologram_material(material: bpy.types.Material) -> bool:
+    """Upgrade only recognized surface output wiring; preserve artist edits."""
+    if material.get("_RMI_Profile", "surface") != "surface":
+        return False
+    surface, _variant, _truth = _modules()
+    refresh = getattr(surface, "refresh_hologram_alpha", None)
+    return bool(refresh and refresh(material))
+
+
+def _refresh_wide_occlusion_uv(material: bpy.types.Material) -> None:
+    """Keep saved/import-cached WideOcclusion samplers on Coordinate1."""
+    tree = material.node_tree
+    if tree is None:
+        return
+    texture = tree.nodes.get("TEX_WideOcclusion")
+    uv = tree.nodes.get("UV1")
+    if (texture is None or texture.bl_idname != "ShaderNodeTexImage"
+            or uv is None or uv.bl_idname != "ShaderNodeUVMap"):
+        return  # Constant slots do not sample a UV map.
+    if uv.uv_map != "Coordinate1":
+        uv.uv_map = "Coordinate1"
+    vector = texture.inputs["Vector"]
+    if not any(link.from_node == uv for link in vector.links):
+        tree.links.new(uv.outputs["UV"], vector)
+    if not texture.mute and uv.mute:
+        uv.mute = False
+
+
+def _ensure_master(master: Any, *, import_cache=None) -> bpy.types.Material:
     material = bpy.data.materials.get(master.MAT_NAME)
+    if material is not None:
+        # Upgrade intact saved templates in place before structural validation,
+        # preserving shared group interfaces and socket identities.
+        refresh_hologram_material(material)
+        _refresh_wide_occlusion_uv(material)
     profile_name = getattr(master, "PROFILE_NAME", "surface")
     profile_revision = getattr(master, "PROFILE_REVISION", 0)
-    if (material is None or material.node_tree is None
-            or material.node_tree.nodes.get("TEX_Color") is None
-            or material.get("_RMI_Profile") != profile_name
-            or material.get("_RMI_Profile_Revision") != profile_revision):
-        material = master.build()
+    # Package meshes use these names regardless of the active object. Materials
+    # are built before the imported mesh is selected (often with an armature
+    # active), so the standalone builders' context-based discovery is unsafe.
+    uv_names = tuple(f"Coordinate{index}" for index in range(4))
+    uv_count = {"surface": 4, "hair": 3, "eye": 2}[profile_name]
+    valid = (material is not None and material.node_tree is not None
+             and material.node_tree.nodes.get("TEX_Color") is not None
+             and material.get("_RMI_Profile") == profile_name
+             and material.get("_RMI_Profile_Revision") == profile_revision
+             # Invalidate incompatible templates. Existing material copies keep their
+             # graphs and shared group interfaces.
+             and all(material.node_tree.nodes.get(name) is not None
+                     for name in getattr(master, "REQUIRED_MASTER_NODES", ()))
+             and all(any(
+                 link.from_node.name == source and link.from_socket.name == output
+                 and link.to_node.name == target and link.to_socket.name == socket
+                 for link in material.node_tree.links)
+                 for source, output, target, socket in
+                 getattr(master, "REQUIRED_MASTER_LINKS", ()))
+             and all(
+                 (node := material.node_tree.nodes.get(f"UV{index}")) is not None
+                 and node.uv_map == uv_names[index]
+                 for index in range(uv_count)))
+    if valid and import_cache is not None:
+        stamp = ("rmi-master", material.as_pointer(), profile_name, profile_revision)
+        if import_cache.completed.get(stamp) == material:
+            return material
+    if not valid:
+        material = master.build(uv_names=uv_names)
     else:
         # Keep saved masters live after a switch-key rename: this updates both
         # their visible ID properties and the Value-node driver targets.
@@ -594,12 +624,34 @@ def _ensure_master(master: Any) -> bpy.types.Material:
     # The master is a template, never assigned to a mesh. Keep it across saves
     # so importing another package after reopening does not recreate it.
     material.use_fake_user = True
-    _migrate_external_emissive_attribute()
-    for candidate in bpy.data.materials:
-        _migrate_switch_status_properties(candidate)
-        if candidate == material or "sqex_rmi_variant" in candidate:
-            _migrate_camera_only_emission(candidate)
+    if import_cache is None or not import_cache.completed.get("rmi-migrations"):
+        for candidate in bpy.data.materials:
+            _migrate_switch_status_properties(candidate)
+            if candidate == material or "sqex_rmi_variant" in candidate:
+                _migrate_camera_only_emission(candidate)
+                refresh_hologram_material(candidate)
+                _refresh_wide_occlusion_uv(candidate)
+        if import_cache is not None:
+            import_cache.completed["rmi-migrations"] = True
+    else:
+        _migrate_switch_status_properties(material)
+        _migrate_camera_only_emission(material)
+        refresh_hologram_material(material)
+        _refresh_wide_occlusion_uv(material)
+    if import_cache is not None:
+        stamp = ("rmi-master", material.as_pointer(), profile_name, profile_revision)
+        import_cache.completed[stamp] = material
     return material
+
+
+def _import_all_material_switches() -> bool:
+    addon = bpy.context.preferences.addons.get(addon_package_name(__package__))
+    return bool(addon and getattr(addon.preferences, "rebirth_import_all_material_switches", False))
+
+
+def _replace_empty_image_textures() -> bool:
+    addon = bpy.context.preferences.addons.get(addon_package_name(__package__))
+    return bool(addon and getattr(addon.preferences, "rebirth_replace_empty_image_textures", False))
 
 
 def build_material(
@@ -608,7 +660,7 @@ def build_material(
         material_data: dict[str, Any],
         image_loader: Callable[[str], bpy.types.Image | None],
 ) -> bpy.types.Material | None:
-    """Create and populate a trimmed RMI material for one package material.
+    """Populate an RMI material using the preferred switch-retention policy.
 
     Returns ``None`` for non-RMI material instances, which lets the existing
     placeholder material behavior remain intact for unrelated game shaders.
@@ -623,8 +675,12 @@ def build_material(
         print(f"  RMI material '{material_name}' skipped: unknown variant '{variant_name}'.")
         return None
     master = _master_for_switches(switches)
+    keep_all_switches = _import_all_material_switches()
+    replace_empty_images = _replace_empty_image_textures()
     texture_namespace = getattr(image_loader, "texture_namespace", "")
-    cache_key = f"{material_path.casefold()}::{variant_name}::{texture_namespace}"
+    cache_key = (f"{material_path.casefold()}::{variant_name}::{texture_namespace}"
+                 f"::all-switches={int(keep_all_switches)}"
+                 f"::replace-empty-images={int(replace_empty_images)}")
     cached = _MATERIAL_CACHE.get(cache_key)
     if cached is not None:
         try:
@@ -636,16 +692,21 @@ def build_material(
             # its freed RNA struct is itself what raises here.
             still_valid = False
         if still_valid:
+            # Cached graphs can predate this output branch. Do not reapply
+            # variants: live switch/texture/tint edits must survive reuse.
+            refresh_hologram_material(cached)
+            _refresh_wide_occlusion_uv(cached)
             return refresh_material_textures(cached, image_loader)
         del _MATERIAL_CACHE[cache_key]
 
-    master_material = _ensure_master(master)
+    master_material = _ensure_master(master, import_cache=get_import_cache(image_loader))
     material = master_material.copy()
     material.use_fake_user = False
     material.name = material_name
-    material["sqex_virtual_path"] = material_path
+    material["ue_virtual_path"] = material_path
     material["ue_texture_namespace"] = texture_namespace
-    variant_helper.apply_variant(material, master, variant_name, set(switches))
+    variant_helper.apply_variant(material, master, variant_name, set(switches),
+                                 keep_all_switches=keep_all_switches)
 
     texture_values, colour_values, scalar_values = _role_values(props)
     assigned_images = assigned_colours = 0
@@ -656,10 +717,13 @@ def build_material(
         texture_path = _role_match(texture_values, role)
         colour = _role_match(colour_values, role)
         texture_constant = _renderer_constant_texture(texture_path) if texture_path else None
-        if texture_constant is not None and node.bl_idname == "ShaderNodeTexImage":
-            _make_colour_node(material.node_tree, node, texture_constant)
-            assigned_colours += 1
-        elif texture_path:
+        fallback = texture_constant if texture_constant is not None else colour
+        if fallback is None:
+            fallback = _role_default_colour(kind, default)
+        _set_slot_colour(material, role, kind, fallback)
+        if texture_path and texture_constant is None:
+            node["ue_texture_path"] = texture_path
+            node["sqex_rmi_color_space"] = color_space
             image = _bundled_gaze_normal(texture_path) if role == "GazeNormal" else None
             if image is None:
                 image = image_loader(texture_path)
@@ -667,24 +731,13 @@ def build_material(
                 _set_image_color_space(image, color_space)
                 node.image = image
                 assigned_images += 1
-            elif node.bl_idname == "ShaderNodeTexImage":
-                _make_colour_node(material.node_tree, node, _role_default_colour(kind, default))
-                assigned_colours += 1
-        elif colour is not None and node.bl_idname == "ShaderNodeTexImage":
-            _make_colour_node(material.node_tree, node, colour)
-            assigned_colours += 1
-        elif node.bl_idname == "ShaderNodeTexImage":
-            # Not every role gets overridden anywhere in a game instance's
-            # Parent chain -- e.g. DetailCoverage is never set on
-            # PC0011_00_BodyB or any of its ancestors because the game always
-            # points it at a neutral renderer-constant texture (FFFFFFFF_BC4
-            # = 1.0) that never varies per character. Cooked Material assets
-            # strip the per-parameter name from their CachedExpressionData
-            # texture defaults, so that neutral value cannot be read back
-            # from game data at all -- fall back to this role's own
-            # reverse-engineered neutral default instead of leaving the node
-            # with no image and no constant.
-            _make_colour_node(material.node_tree, node, _role_default_colour(kind, default))
+                continue
+        if node.bl_idname == "ShaderNodeTexImage":
+            # Prefer the UE constant/colour. Some cooked parent defaults lose
+            # their parameter names, so only those use the researched ROLES
+            # neutral. The slot switch still selects neutral A versus this B.
+            _set_slot_fallback(material, node, kind, fallback,
+                               replace_image=replace_empty_images)
             assigned_colours += 1
 
     # Preserve named scalar overrides in the port's material custom properties.
@@ -702,5 +755,6 @@ def build_material(
     material["ff7r_rmi_texture_images"] = assigned_images
     material["ff7r_rmi_color_constants"] = assigned_colours
     _MATERIAL_CACHE[cache_key] = material
+    remember_datablock("materials", material, image_loader)
     print(f"  RMI '{material.name}': {variant_name}; {assigned_images} image(s), {assigned_colours} color constant(s).")
     return material

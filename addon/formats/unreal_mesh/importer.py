@@ -1,6 +1,6 @@
 """Generic Unreal mesh operators and source hooks for the shared UMAP operator."""
 
-from ...language import tooltips
+from ...language import strings
 
 import os
 
@@ -9,11 +9,12 @@ import bpy
 from ...core.blender.reporting import SQEX_LoggedOperator, report
 from ...core.package_utils import addon_package_name
 from ...core.blender.skeletons import _bones_from_gargoyle, build_armature_from_bones
-from ...core.profiles import GamePaths
+from ...core.profiles import GamePaths, normalize_optional_input
 from ...games import package_browser
 from .. import unreal_package as meshes
 from . import maps, materials, session
 from ...ui.textures import texture_options
+from ...ui.nanite import NANITE_OPTION_NAMES, nanite_properties, nanite_options
 from ..unreal_package.importer import (
     MESH_OPTION_NAMES, SKELETAL_OPTION_NAMES, MeshBrowserState, PackageMeshSource,
     PackageMeshOperator, mesh_properties, make_package_mesh_importer,
@@ -24,6 +25,7 @@ from ..ue_map.package_importer import (
     PackageMapSource, make_package_map_importer,
 )
 from ..ue_map.streaming import StreamingMapQueue
+from ..ue_map.landscapes import import_options as landscape_options
 
 
 _VERSION_ITEMS = [("GAME_UE4_27", "UE4_27", "GAME_UE4_27", 0x041B0000)]
@@ -81,11 +83,13 @@ def _profile_items(_operator, context):
         (
             profile.profile_id,
             profile.name or "Unnamed CUE4Parse Profile",
-            tooltips.GENERIC_PROFILE_SETTINGS,
+            strings.GENERIC_PROFILE_SETTINGS,
             index,
         )
         for index, profile in enumerate(profiles)
-    ] or [("", "No CUE4Parse Profiles", tooltips.GENERIC_ADD_PROFILE, 0)]
+    ] or [("", "No CUE4Parse Profiles", strings.GENERIC_ADD_PROFILE, 0)]
+    # Keep the original enum numbers so sorting cannot change saved selections.
+    _PROFILE_ITEMS.sort(key=lambda item: (item[1].casefold(), item[0]))
     return _PROFILE_ITEMS
 
 
@@ -105,16 +109,16 @@ def _configuration_properties():
             name="CUE4Parse Profile",
             items=_profile_items,
             default=0,
-            description=tooltips.GENERIC_IMPORT_CUE4PARSE_PROFILE,
+            description=strings.GENERIC_IMPORT_CUE4PARSE_PROFILE,
         ),
         "path_filter": bpy.props.StringProperty(
             name="Index Path Filter",
-            description=tooltips.GENERIC_IMPORT_PATH_FILTER,
+            description=strings.GENERIC_IMPORT_PATH_FILTER,
         ),
         "mesh_kind": bpy.props.EnumProperty(name="Asset Type", items=(
-            ("STATIC", "StaticMesh", tooltips.GENERIC_IMPORT_MESH_KIND_STATIC),
-            ("SKELETAL", "SkeletalMesh", tooltips.GENERIC_IMPORT_MESH_KIND_SKELETAL),
-            ("UMAP", "UMAP", tooltips.GENERIC_IMPORT_MESH_KIND_UMAP),
+            ("STATIC", "StaticMesh", strings.GENERIC_IMPORT_MESH_KIND_STATIC),
+            ("SKELETAL", "SkeletalMesh", strings.GENERIC_IMPORT_MESH_KIND_SKELETAL),
+            ("UMAP", "UMAP", strings.GENERIC_IMPORT_MESH_KIND_UMAP),
         )),
     }
 
@@ -122,11 +126,12 @@ def _configuration_properties():
 def _paths(context, operator, *, validate=True):
     preferences, generic_profiles = _profiles(context)
     profile = _selected_profile(context, operator)
+    usmap_path = normalize_optional_input(profile.usmap_path)
     paths = GamePaths(
         bpy.path.abspath(profile.game_path) if profile.game_path else "",
         bpy.path.abspath(preferences.oodle_dll) if preferences.oodle_dll else "",
-        bpy.path.abspath(profile.usmap_path) if profile.usmap_path else "",
-        profile.aes_key.strip(),
+        bpy.path.abspath(usmap_path) if usmap_path else "",
+        profile.aes_key,
     )
     if not validate:
         return paths
@@ -146,6 +151,11 @@ def _game_version(context, operator):
     return _selected_profile(context, operator).game_version
 
 
+def _hidden_object_patterns(context, operator):
+    return tuple(item.pattern.strip() for item in _selected_profile(context, operator).hidden_object_patterns
+                 if item.pattern.strip())
+
+
 def _pbr_mapping(context, operator):
     """Snapshot a profile's ordered texture-parameter PBR match lists."""
     profile = _selected_profile(context, operator)
@@ -156,6 +166,7 @@ def _pbr_mapping(context, operator):
         ("metalness", "pbr_metalness_parameter", "pbr_metalness_channel"),
         ("roughness", "pbr_roughness_parameter", "pbr_roughness_channel"),
         ("alpha", "pbr_alpha_parameter", "pbr_alpha_channel"),
+        ("emission", None, None),
     ):
         slot_matches = sorted(
             (match for match in profile.pbr_slot_matches if match.slot == slot),
@@ -173,7 +184,7 @@ def _pbr_mapping(context, operator):
             ]
         # Keep old saved profiles usable if Blender has not yet run the
         # one-time migration that places their original value in the list.
-        if not matches:
+        if not matches and parameter_property:
             parameter = getattr(profile, parameter_property).strip()
             if parameter:
                 matches = [
@@ -208,7 +219,7 @@ def _mesh_paths(index, kind):
 class SQEX_OT_index_generic_unreal(SQEX_LoggedOperator):
     bl_idname = "wm.sqex_index_generic_unreal"
     bl_label = "Load / Refresh Asset List"
-    bl_description = tooltips.GENERIC_INDEX_DESCRIPTION
+    bl_description = strings.GENERIC_INDEX_DESCRIPTION
     bl_options = {"INTERNAL"}
 
     def execute(self, context):
@@ -290,6 +301,8 @@ def _execute_meshes(self, context):
             paths,
             game_version,
             pbr_mapping=_pbr_mapping(context, self),
+            hidden_object_patterns=_hidden_object_patterns(context, self),
+            **nanite_options(self),
         ) as mounted:
             mounted.profile_id = self.cue4parse_profile
             for virtual_path in virtual_paths:
@@ -355,8 +368,10 @@ def _execute_meshes(self, context):
                     for slot in obj.material_slots:
                         if slot.material is not None and not slot.material.get("ue_texture_inventory_complete"):
                             slot.material = materials.build_material(
-                                slot.material.name, slot.material.get("sqex_virtual_path", ""), {}, mounted,
+                                slot.material.name, slot.material.get("ue_virtual_path", ""), {}, mounted,
                             )
+                    from .visibility import apply_default_visibility
+                    apply_default_visibility(obj, mounted.hidden_object_patterns, virtual_path)
                     imported += 1
                 except Exception as exc:
                     if new_armature is not None:
@@ -371,14 +386,16 @@ def _execute_meshes(self, context):
                     print(f"[Unreal import ERROR] {failures[-1]}")
             texture_failures = mounted.failed
             material_failures = mounted.failed_materials
+            geometry_note = mounted.geometry_summary() if self.mesh_kind == "STATIC" else ""
+            nanite_fallbacks = len(mounted.nanite_fallbacks)
         if not imported:
             raise RuntimeError(failures[0] if failures else "No assets were imported.")
     except Exception as exc:
         report(self, {"ERROR"}, f"Unreal import failed: {exc}")
         return {"CANCELLED"}
-    report(self, {"WARNING"} if failures or texture_failures or material_failures else {"INFO"},
+    report(self, {"WARNING"} if failures or texture_failures or material_failures or nanite_fallbacks else {"INFO"},
            f"Imported {imported:,} Unreal mesh(es); {len(failures):,} asset failures, "
-           f"{texture_failures:,} unavailable textures, {material_failures:,} unreadable materials. See console for details.")
+           f"{texture_failures:,} unavailable textures, {material_failures:,} unreadable materials. {geometry_note} See console for details.")
     return {"FINISHED"}
 
 
@@ -423,7 +440,9 @@ def _execute_package_umaps(operator, context):
     missing_assets = set()
     with session.GenericSession(
         paths, _game_version(context, operator), pbr_mapping=_pbr_mapping(context, operator),
+        hidden_object_patterns=_hidden_object_patterns(context, operator),
         import_textures=operator.import_textures, **texture_options(operator),
+        **nanite_options(operator),
     ) as mounted:
         mounted.profile_id = operator.cue4parse_profile
         assets = maps.MapAssets(context, mounted, operator.scale_factor,
@@ -445,6 +464,11 @@ def _execute_package_umaps(operator, context):
                     always_cast_shadows=operator.always_cast_shadows,
                     import_point_lights=operator.import_point_lights,
                     import_spot_lights=operator.import_spot_lights, actor_payload=actor_payload,
+                    import_rect_lights=operator.import_rect_lights,
+                    import_directional_lights=operator.import_directional_lights,
+                    bake_light_parameters=operator.bake_light_parameters,
+                    import_splines=operator.import_splines,
+                    **landscape_options(operator),
                 )
                 created_total += created
                 missing_assets.update(missing)
@@ -453,12 +477,14 @@ def _execute_package_umaps(operator, context):
                 failures.append(f"{virtual_path}: {exc}")
                 print(f"[Unreal UMAP import ERROR] {failures[-1]}")
         texture_failures, material_failures = mounted.failed, mounted.failed_materials
+        geometry_note = mounted.geometry_summary()
+        nanite_fallbacks = len(mounted.nanite_fallbacks)
     if not imported:
         raise RuntimeError(failures[0] if failures else "No maps were imported.")
-    report(operator, {"WARNING"} if failures or texture_failures or material_failures or missing_assets else {"INFO"},
+    report(operator, {"WARNING"} if failures or texture_failures or material_failures or missing_assets or nanite_fallbacks else {"INFO"},
            f"Imported {imported:,} Unreal UMAP(s), {created_total:,} placements, "
            f"{len(missing_assets):,} missing mesh assets; {len(failures):,} asset failures, "
-           f"{texture_failures:,} unavailable textures, {material_failures:,} unreadable materials. See console for details.")
+           f"{texture_failures:,} unavailable textures, {material_failures:,} unreadable materials. {geometry_note} See console for details.")
     return {"FINISHED"}
 
 
@@ -479,11 +505,12 @@ _GENERIC_SKELETAL_SOURCE = PackageMeshSource(
 )
 _generic_mesh_configuration = _configuration_properties()
 _generic_mesh_configuration.pop("mesh_kind")
+_generic_mesh_configuration.update(nanite_properties())
 SQEX_OT_import_generic_unreal_static_mesh = make_package_mesh_importer(
     class_name="SQEX_OT_import_generic_unreal_static_mesh",
     bl_idname="import_scene.sqex_generic_unreal_static_mesh", module_name=__name__, mesh_kind="STATIC",
     source=_GENERIC_STATIC_SOURCE, configuration_properties=_generic_mesh_configuration,
-    persisted_configuration=("cue4parse_profile", "path_filter"),
+    persisted_configuration=("cue4parse_profile", "path_filter", *NANITE_OPTION_NAMES),
 )
 _generic_skeletal_configuration = _configuration_properties()
 _generic_skeletal_configuration.pop("mesh_kind")
@@ -498,14 +525,16 @@ SQEX_OT_import_generic_unreal_skeletal_mesh = make_package_mesh_importer(
 _GENERIC_UMAP_SOURCE = PackageMapSource(
     "Generic Unreal", _generic_browser_state, _execute_package_umaps,
     defaults=_generic_import_defaults, configure=_draw_generic_configuration,
+    show_nanite=lambda operator, context: not _game_version(context, operator).removeprefix("GAME_").startswith("UE4"),
 )
 _generic_map_configuration = _configuration_properties()
 _generic_map_configuration.pop("mesh_kind")
+_generic_map_configuration.update(nanite_properties(default_mode="FALLBACK"))
 SQEX_OT_import_generic_unreal_umap = make_package_map_importer(
     class_name="SQEX_OT_import_generic_unreal_umap",
     bl_idname="import_scene.sqex_generic_unreal_umap", module_name=__name__,
     source=_GENERIC_UMAP_SOURCE, configuration_properties=_generic_map_configuration,
-    persisted_configuration=("cue4parse_profile", "path_filter"),
+    persisted_configuration=("cue4parse_profile", "path_filter", *NANITE_OPTION_NAMES),
 )
 
 
@@ -527,6 +556,7 @@ class SQEX_OT_import_generic_unreal_mesh(SQEX_LoggedOperator):
     _persisted_props = tuple(dict.fromkeys((
         "cue4parse_profile", "path_filter", *MAP_OPTION_NAMES, "import_lights",
         *MESH_OPTION_NAMES, *SKELETAL_OPTION_NAMES,
+        *NANITE_OPTION_NAMES, "import_splines",
     )))
 
     @property
@@ -555,7 +585,9 @@ class SQEX_OT_import_generic_unreal_mesh(SQEX_LoggedOperator):
 
 SQEX_OT_import_generic_unreal_mesh.__annotations__ = {
     **mesh_properties("SKELETAL", defaults=_GENERIC_MESH_DEFAULTS),
-    **_configuration_properties(), **map_properties(),
+    **_configuration_properties(), **map_properties(), **nanite_properties(),
+    "import_splines": bpy.props.BoolProperty(
+        name="Import splines", default=True, description=strings.MAP_IMPORT_SPLINES),
     "import_lights": bpy.props.BoolProperty(name="Import Lights", default=True, options={"HIDDEN"}),
 }
 

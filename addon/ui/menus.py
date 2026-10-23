@@ -9,12 +9,14 @@ from ..formats.kdi import nodetree as kdi_nodetree
 from ..formats.mec import importer as mec_importer
 from ..games.crisis_core.importers import static_mesh as crisis_core_static_mesh
 from ..games.crisis_core.importers import animations as crisis_core_animations
+from ..games.crisis_core.importers import cutscenes as crisis_core_cutscenes
 from ..games.crisis_core import profile as crisis_core_profile
 from ..games.kingdom_hearts_0_2.importers import static_mesh as kingdom_hearts_0_2_static_mesh
 from ..games.kingdom_hearts_0_2 import profile as kingdom_hearts_0_2_profile
 from ..games.kingdom_hearts_iii.importers import static_mesh as kingdom_hearts_iii_static_mesh
 from ..games.kingdom_hearts_iii import profile as kingdom_hearts_iii_profile
 from ..games.rebirth.importers import animations
+from ..games.rebirth.importers import niagara as rebirth_niagara
 from ..games.rebirth.importers import packages as game_packages
 from ..games.rebirth import profile as rebirth_profile
 from ..games.remake.importers import static_mesh as remake_static_mesh
@@ -38,7 +40,7 @@ def _game_install_path_is_configured(context, profile) -> bool:
 
 class TOPBAR_MT_file_import_ue_talisman(Menu):
     bl_idname = "TOPBAR_MT_file_import_ue_talisman"
-    bl_label = "Talisman"
+    bl_label = "Talisman (Unreal Engine)"
 
     def draw(self, _context):
         layout = self.layout
@@ -68,16 +70,20 @@ class TOPBAR_MT_file_import_ue_talisman_ff7r(Menu):
             context, remake_profile.PROFILE
         )
         remake_importers.operator(
+            remake_static_mesh.FF7R_REMAKE_OT_import_skeletal_mesh_game_packages.bl_idname,
+            text="Skeletal Mesh",
+        )
+        remake_importers.operator(
+            remake_static_mesh.FF7R_REMAKE_OT_import_static_mesh_game_packages.bl_idname,
+            text="Static Mesh",
+        )
+        remake_importers.operator(
             remake_static_mesh.FF7R_REMAKE_OT_import_umap_game_packages.bl_idname,
             text="UMAP",
         )
         remake_importers.operator(
-            remake_static_mesh.FF7R_REMAKE_OT_import_skeletal_mesh_game_packages.bl_idname,
-            text="Skeletal mesh",
-        )
-        remake_importers.operator(
-            remake_static_mesh.FF7R_REMAKE_OT_import_static_mesh_game_packages.bl_idname,
-            text="Static mesh",
+            remake_cutscenes.FF7R_REMAKE_OT_import_cutscene_game_packages.bl_idname,
+            text="Cutscene",
         )
         remake_importers.operator(
             remake_animations.FF7R_REMAKE_OT_apply_animation_game_packages.bl_idname,
@@ -87,10 +93,6 @@ class TOPBAR_MT_file_import_ue_talisman_ff7r(Menu):
             remake_static_mesh.FF7R_REMAKE_OT_import_kdi_game_packages.bl_idname,
             text="KineDriver",
         )
-        remake_importers.operator(
-            remake_cutscenes.FF7R_REMAKE_OT_import_cutscene_game_packages.bl_idname,
-            text="Cutscene",
-        )
 
         _category_heading(layout, "Rebirth")
         rebirth_importers = layout.column()
@@ -98,14 +100,15 @@ class TOPBAR_MT_file_import_ue_talisman_ff7r(Menu):
             context, rebirth_profile.PROFILE
         )
         for operator, label in (
-            (game_packages.FF7R_REBIRTH_OT_import_skeletal_mesh_game_packages, "Skeletal mesh"),
-            (game_packages.FF7R_REBIRTH_OT_import_static_mesh_game_packages, "Static mesh"),
+            (game_packages.FF7R_REBIRTH_OT_import_skeletal_mesh_game_packages, "Skeletal Mesh"),
+            (game_packages.FF7R_REBIRTH_OT_import_static_mesh_game_packages, "Static Mesh"),
+            (game_packages.FF7R_REBIRTH_OT_import_mec_game_packages, "UMAP"),
+            (game_packages.FF7R_REBIRTH_OT_import_cutscene_game_packages, "Cutscene"),
             (game_packages.FF7R_REBIRTH_OT_import_skeleton_game_packages, "Skeleton only"),
             (animations.FF7R_REBIRTH_OT_apply_animation_game_packages, "Animation"),
-            (game_packages.FF7R_REBIRTH_OT_import_mec_game_packages, "UMAP"),
-            (game_packages.FF7R_REBIRTH_OT_import_nearby_mec_terrain, "Nearby UMAP terrain (Experimental)"),
-            (game_packages.FF7R_REBIRTH_OT_import_cutscene_game_packages, "Cutscene"),
             (game_packages.FF7R_REBIRTH_OT_import_kdi_game_packages, "KineDriver"),
+            (rebirth_niagara.FF7R_REBIRTH_OT_import_niagara_game_packages, "Niagara (Mesh resources)"),
+            (game_packages.FF7R_REBIRTH_OT_import_nearby_mec_terrain, "Nearby UMAP terrain (Experimental)"),
         ):
             rebirth_importers.operator(operator.bl_idname, text=label)
 
@@ -125,16 +128,20 @@ class TOPBAR_MT_file_import_ue_talisman_ff7r(Menu):
             context, crisis_core_profile.PROFILE
         )
         crisis_core_importers.operator(
+            crisis_core_static_mesh.FF7R_CRISIS_CORE_OT_import_skeletal_mesh_game_packages.bl_idname,
+            text="Skeletal Mesh",
+        )
+        crisis_core_importers.operator(
+            crisis_core_static_mesh.FF7R_CRISIS_CORE_OT_import_static_mesh_game_packages.bl_idname,
+            text="Static Mesh",
+        )
+        crisis_core_importers.operator(
             crisis_core_static_mesh.FF7R_CRISIS_CORE_OT_import_umap_game_packages.bl_idname,
             text="UMAP",
         )
         crisis_core_importers.operator(
-            crisis_core_static_mesh.FF7R_CRISIS_CORE_OT_import_skeletal_mesh_game_packages.bl_idname,
-            text="Skeletal mesh",
-        )
-        crisis_core_importers.operator(
-            crisis_core_static_mesh.FF7R_CRISIS_CORE_OT_import_static_mesh_game_packages.bl_idname,
-            text="Static mesh",
+            crisis_core_cutscenes.FF7R_CRISIS_CORE_OT_import_cutscene_game_packages.bl_idname,
+            text="Cutscene",
         )
         crisis_core_importers.operator(
             crisis_core_animations.FF7R_CRISIS_CORE_OT_import_animation_game_packages.bl_idname,
@@ -156,20 +163,20 @@ class TOPBAR_MT_file_import_ue_talisman_kingdom_hearts(Menu):
             context, kingdom_hearts_iii_profile.PROFILE
         )
         kingdom_hearts_iii_importers.operator(
+            kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_skeletal_mesh_game_packages.bl_idname,
+            text="Skeletal Mesh",
+        )
+        kingdom_hearts_iii_importers.operator(
+            kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_static_mesh_game_packages.bl_idname,
+            text="Static Mesh",
+        )
+        kingdom_hearts_iii_importers.operator(
             kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_umap_game_packages.bl_idname,
             text="UMAP (Geometry)",
         )
         kingdom_hearts_iii_importers.operator(
             kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_matinee_cutscene_game_packages.bl_idname,
             text="Cutscene (Matinee)",
-        )
-        kingdom_hearts_iii_importers.operator(
-            kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_skeletal_mesh_game_packages.bl_idname,
-            text="Skeletal mesh",
-        )
-        kingdom_hearts_iii_importers.operator(
-            kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_static_mesh_game_packages.bl_idname,
-            text="Static mesh",
         )
         kingdom_hearts_iii_importers.operator(
             kingdom_hearts_iii_static_mesh.SQEX_KH3_OT_import_animation_game_packages.bl_idname,
@@ -186,20 +193,20 @@ class TOPBAR_MT_file_import_ue_talisman_kingdom_hearts(Menu):
             context, kingdom_hearts_0_2_profile.PROFILE
         )
         kingdom_hearts_0_2_importers.operator(
+            kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_skeletal_mesh_game_packages.bl_idname,
+            text="Skeletal Mesh",
+        )
+        kingdom_hearts_0_2_importers.operator(
+            kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_static_mesh_game_packages.bl_idname,
+            text="Static Mesh",
+        )
+        kingdom_hearts_0_2_importers.operator(
             kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_umap_game_packages.bl_idname,
             text="UMAP (Geometry)",
         )
         kingdom_hearts_0_2_importers.operator(
             kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_matinee_cutscene_game_packages.bl_idname,
             text="Cutscene (Matinee)",
-        )
-        kingdom_hearts_0_2_importers.operator(
-            kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_skeletal_mesh_game_packages.bl_idname,
-            text="Skeletal mesh",
-        )
-        kingdom_hearts_0_2_importers.operator(
-            kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_static_mesh_game_packages.bl_idname,
-            text="Static mesh",
         )
         kingdom_hearts_0_2_importers.operator(
             kingdom_hearts_0_2_static_mesh.SQEX_KH02_OT_import_animation_game_packages.bl_idname,
@@ -219,24 +226,24 @@ class TOPBAR_MT_file_import_ue_talisman_generic(Menu):
         layout = self.layout
         layout.operator_context = "INVOKE_REGION_WIN"
         layout.operator(
-            generic_unreal_importer.SQEX_OT_import_generic_unreal_static_mesh.bl_idname,
-            text="Static mesh",
+            generic_unreal_importer.SQEX_OT_import_generic_unreal_skeletal_mesh.bl_idname,
+            text="Skeletal Mesh",
         )
         layout.operator(
-            generic_unreal_importer.SQEX_OT_import_generic_unreal_skeletal_mesh.bl_idname,
-            text="Skeletal mesh",
+            generic_unreal_importer.SQEX_OT_import_generic_unreal_static_mesh.bl_idname,
+            text="Static Mesh",
         )
         layout.operator(
             generic_unreal_importer.SQEX_OT_import_generic_unreal_umap.bl_idname,
             text="UMAP",
         )
         layout.operator(
-            generic_unreal_animations.SQEX_OT_import_generic_unreal_animation.bl_idname,
-            text="Animation",
-        )
-        layout.operator(
             generic_sequences.SQEX_OT_import_generic_unreal_sequence.bl_idname,
             text="Cutscene (LevelSequence)",
+        )
+        layout.operator(
+            generic_unreal_animations.SQEX_OT_import_generic_unreal_animation.bl_idname,
+            text="Animation",
         )
 
 

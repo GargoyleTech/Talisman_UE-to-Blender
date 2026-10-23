@@ -73,6 +73,8 @@ class SQEX_LoggedOperator(bpy.types.Operator):
             all_settings = json.loads(prefs.last_import_settings_json or "{}")
         except (ValueError, TypeError):
             return
+        if not isinstance(all_settings, dict):
+            return
         stored = all_settings.get(self.bl_idname)
         if not isinstance(stored, dict):
             return
@@ -81,8 +83,10 @@ class SQEX_LoggedOperator(bpy.types.Operator):
                 continue
             try:
                 setattr(self, prop_name, stored[prop_name])
-            except (TypeError, ValueError):
-                pass  # a removed enum value, a type change across versions, etc.
+            except (AttributeError, TypeError, ValueError):
+                # Removed enum items and old property types must not prevent
+                # the remaining options from being restored.
+                continue
 
     def _save_last_import_settings(self, context) -> None:
         """Remember this run's settings, if it was reached via `invoke()`."""
@@ -95,11 +99,22 @@ class SQEX_LoggedOperator(bpy.types.Operator):
             all_settings = json.loads(prefs.last_import_settings_json or "{}")
         except (ValueError, TypeError):
             all_settings = {}
+        if not isinstance(all_settings, dict):
+            all_settings = {}
         all_settings[self.bl_idname] = {
             prop_name: _json_setting_value(getattr(self, prop_name))
             for prop_name in self._persisted_props
         }
-        prefs.last_import_settings_json = json.dumps(all_settings)
+        serialized = json.dumps(all_settings)
+        if prefs.last_import_settings_json != serialized:
+            prefs.last_import_settings_json = serialized
+            # Python assignments to AddonPreferences do not mark preferences
+            # dirty. Let Blender's normal preference saving retain the change.
+            context.preferences.is_dirty = True
+
+    def cancel(self, context) -> None:
+        """Retain dialog choices when an importer or file selector is closed."""
+        self._save_last_import_settings(context)
 
     # Blender invokes its RNA ``Operator.report`` implementation directly,
     # bypassing a Python override on this base class.  Operator code must use

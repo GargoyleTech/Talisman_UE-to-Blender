@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..language import tooltips
+from ..language import strings
 
 import bpy
 from bpy.props import StringProperty
@@ -29,13 +29,13 @@ class OBJECT_OT_add_rmi_surface_material(SQEX_LoggedOperator):
     bl_idname = "object.sqex_add_rmi_surface_material"
     bl_label = "Add Square Enix RMI Surface Material"
     bl_description = (
-        tooltips.SCENE_TOOLS_ADD_RMI_SURFACE_MATERIAL_DESCRIPTION
+        strings.SCENE_TOOLS_ADD_RMI_SURFACE_MATERIAL_DESCRIPTION
     )
     bl_options = {"REGISTER", "UNDO"}
 
     variant: StringProperty(
         name="Variant",
-        description=tooltips.SCENE_TOOLS_ADD_RMI_SURFACE_MATERIAL_VARIANT,
+        description=strings.SCENE_TOOLS_ADD_RMI_SURFACE_MATERIAL_VARIANT,
         default="",
         search=_search_rmi_variants,
         search_options={"SUGGESTION", "SORT"},
@@ -92,7 +92,7 @@ class ARMATURE_OT_connect_parent_tail_to_bone(SQEX_LoggedOperator):
     bl_idname = "armature.connect_parent_tail_to_bone"
     bl_label = "Move Parent Tail Here and Connect"
     bl_description = (
-        tooltips.SCENE_TOOLS_CONNECT_PARENT_TAIL_TO_BONE_DESCRIPTION
+        strings.SCENE_TOOLS_CONNECT_PARENT_TAIL_TO_BONE_DESCRIPTION
     )
     bl_options = {"REGISTER", "UNDO"}
 

@@ -996,7 +996,9 @@ def create_reflection_capture_probes(
         if not isinstance(props, dict):
             props = {}
 
-        outer_name = entry.get("Outer") if isinstance(entry.get("Outer"), str) else ""
+        outer = entry.get("Outer")
+        outer_name = outer if isinstance(outer, str) else (
+            str(outer.get("ObjectPath") or "").rsplit(".", 1)[-1] if isinstance(outer, dict) else "")
         component_type = entry.get("Type", "SphereReflectionCaptureComponent")
         component_name = entry.get("Name", component_type)
         probe_name = outer_name or component_name
@@ -1042,6 +1044,7 @@ def create_reflection_capture_probes(
 
         influence_radius = _float_or_default(props.get("InfluenceRadius", 0.0))
         probe_obj["ue_influence_radius"] = influence_radius
+        probe_obj["source_type"] = component_type
         probe_obj["ue_influence_radius_units"] = "centimeters"
         probe_obj["sqex_source_json"] = filepath
         if outer_name:

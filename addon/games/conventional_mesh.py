@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..language import tooltips
+from ..language import strings
 
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -18,6 +18,7 @@ from ..core.package_utils import addon_package_name
 from ..core.profiles import GameProfile
 from ..formats import unreal_package as shared_packages
 from ..formats.unreal_package.indexing import MeshAssetIndex, AnimationAssetIndex
+from ..formats.unreal_package.skeleton_data import mesh_bind_skeleton
 from ..formats.unreal_package.importer import (
     MeshBrowserState, PackageMeshSource, make_package_mesh_importer,
 )
@@ -169,7 +170,7 @@ def build_package_armature(
             print(
                 f"{definition.game_name} linked Skeleton '{skeleton_path}' could not be loaded; using the mesh reference skeleton: {exc}"
             )
-    source_skeleton = skeleton or payload.get("inlineSkeleton") or {}
+    source_skeleton = mesh_bind_skeleton(payload, skeleton)
     skeleton = source_skeleton
     if operator.import_mesh_referenced_bones_only:
         skeleton, _, _ = shared_packages._restrict_skeleton_to_referenced_bones(
@@ -201,7 +202,7 @@ def build_package_armature(
         preserve_ue_axis_order=operator.preserve_ue_axis_order,
     )
     armature[shared_packages.KDI_COORDINATE_PROFILE_PROPERTY] = (
-        shared_packages.COORDINATE_PROFILE_REFERENCE
+        shared_packages.COORDINATE_PROFILE_SOURCE_AXES
         if operator.preserve_ue_axis_order
         else shared_packages.COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
     )
@@ -281,7 +282,7 @@ def make_static_mesh_importer(
     return make_package_mesh_importer(
         class_name=class_name, module_name=module_name, bl_idname=bl_idname, mesh_kind="STATIC",
         default_virtual_path=definition.default_virtual_path,
-        description=tooltips.SHARED_STATIC_MESH_IMPORT.format(
+        description=strings.SHARED_STATIC_MESH_IMPORT.format(
             definition_profile_engine_label=definition.profile.engine_label,
             definition_game_name=definition.game_name),
         source=PackageMeshSource(
@@ -411,7 +412,7 @@ def make_skeletal_mesh_importer(*, class_name, module_name, bl_idname, definitio
     return make_package_mesh_importer(
         class_name=class_name, module_name=module_name, bl_idname=bl_idname, mesh_kind="SKELETAL",
         default_virtual_path=definition.default_skeletal_mesh_path,
-        description=tooltips.SHARED_SKELETAL_MESH_IMPORT.format(definition_game_name=definition.game_name),
+        description=strings.SHARED_SKELETAL_MESH_IMPORT.format(definition_game_name=definition.game_name),
         source=PackageMeshSource(
             definition.game_name, browser_state, execute,
             game_options=definition.supported_skeletal_options,

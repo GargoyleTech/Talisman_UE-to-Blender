@@ -10,15 +10,21 @@ import hashlib
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import bpy
 
 from ...core.blender.material_nodes import load_packed_image, image_meets_texture_request
+from ...core.blender.import_cache import (
+    ImportCache, find_datablock, import_cache_scope, live_datablock, remember_datablock,
+)
 
 from ...core.bridge import gargoyle_command
 from ...core.profiles import GamePaths
 from .paths import _texture_package_path
+from .binary_geometry import load_binary_geometry
+from ..ue_map.instance_geometry import load_map_instances
 
 
 def _gargoyle_command(
@@ -175,9 +181,17 @@ class PackageAssetSession:
         self.bnm_asset_cache: dict[str, dict] = {}
         self.loaded = 0
         self.failed = 0
+        self._import_datablocks = ImportCache()
+        self._datablock_scope = None
+        self.request_seconds = {}
+        self.request_counts = {}
+        self.bridge_restarts = 0
 
     def __enter__(self):
+        self._import_datablocks = ImportCache()
         self._start_process()
+        self._datablock_scope = import_cache_scope(self._import_datablocks)
+        self._datablock_scope.__enter__()
         return self
 
     def _start_process(self):
@@ -216,19 +230,25 @@ class PackageAssetSession:
                 self.process = None
 
     def __exit__(self, _exc_type, _exc, _traceback):
-        self._stop_process()
+        try:
+            self._stop_process()
+        finally:
+            if self._datablock_scope is not None:
+                self._datablock_scope.__exit__(_exc_type, _exc, _traceback)
+                self._datablock_scope = None
         if self.loaded or self.failed:
             print(
                 f"Package textures: {self.loaded} packed image(s), {self.failed} failed"
             )
 
-    def release_batch_memory(self) -> dict:
-        """Release transient package data and recycle a gargoyle that remains large."""
+    def release_batch_memory(self, *, force=False) -> dict:
+        """Collect under memory pressure, or force cleanup, and recycle if needed."""
         threshold_bytes = self.UMAP_RESTART_WORKING_SET_MB * 1024 * 1024
         response = self.request(
             {
                 "action": "release_batch_memory",
                 "restartThresholdBytes": threshold_bytes,
+                "force": force,
             }
         )
         memory = response.get("memory") or {}
@@ -240,9 +260,24 @@ class PackageAssetSession:
             )
             self._stop_process()
             self._start_process()
+            self.bridge_restarts += 1
         return memory
 
     def request(self, payload: dict, *, report_errors: bool = True) -> dict:
+        start = time.perf_counter()
+        try:
+            return self._request(payload, report_errors=report_errors)
+        finally:
+            action = payload.get("action", "texture")
+            self.request_seconds[action] = self.request_seconds.get(action, 0.0) + time.perf_counter() - start
+            self.request_counts[action] = self.request_counts.get(action, 0) + 1
+
+    def performance_summary(self):
+        """Import-scoped timings for diagnostics; no request/asset payloads retained."""
+        return {"bridgeSeconds": dict(self.request_seconds), "bridgeRequests": dict(self.request_counts),
+                "bridgeRestarts": self.bridge_restarts}
+
+    def _request(self, payload: dict, *, report_errors: bool = True) -> dict:
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("The package bridge is not running.")
         self.process.stdin.write(json.dumps(payload) + "\n")
@@ -308,12 +343,13 @@ class PackageAssetSession:
         )
 
     def static_mesh(self, asset_path: str) -> dict:
-        return (
-            self.request({"action": "static_mesh", "assetPath": asset_path}).get(
-                "staticMesh"
-            )
-            or {}
-        )
+        return self._mesh_geometry("static_mesh", "staticMesh", asset_path)
+
+    def _mesh_geometry(self, action, field, asset_path, *, report_errors=True):
+        with tempfile.TemporaryDirectory(prefix="talisman_geometry_") as directory:
+            payload = self.request({"action": action, "assetPath": asset_path,
+                                    "geometryOutput": directory}, report_errors=report_errors).get(field) or {}
+            return load_binary_geometry(payload, directory)
 
     def material_instance(self, asset_path: str) -> dict:
         cache_key = asset_path.casefold()
@@ -334,13 +370,8 @@ class PackageAssetSession:
         )
 
     def skeletal_mesh(self, asset_path: str, *, report_errors: bool = True) -> dict:
-        return (
-            self.request(
-                {"action": "skeletal_mesh", "assetPath": asset_path},
-                report_errors=report_errors,
-            ).get("skeletalMesh")
-            or {}
-        )
+        return self._mesh_geometry("skeletal_mesh", "skeletalMesh", asset_path,
+                                   report_errors=report_errors)
 
     def skeleton_bone_usage(self, asset_path: str, search_path: str) -> dict:
         return (
@@ -368,16 +399,23 @@ class PackageAssetSession:
         )
 
     def umap_actors(self, asset_path: str) -> dict:
-        return (
-            self.request({"action": "umap_actors", "assetPath": asset_path}).get(
-                "umapActors"
-            )
-            or {}
-        )
+        return self._map_data("umap_actors", asset_path)[1]
+
+    def landscape_mesh(self, info: dict, lod: int = 0) -> dict:
+        from ..ue_map.landscapes import load_landscape
+        with tempfile.TemporaryDirectory(prefix="talisman_landscape_") as directory:
+            response = self.request({"action": "landscape", "assetPath": info["sourceMap"],
+                                     "objectPath": info["objectPath"], "lod": lod, "landscapeOutput": directory})
+            return load_landscape(response.get("landscape") or {}, directory)
 
     def umap_data(self, asset_path: str) -> tuple[list[str | None], dict]:
-        response = self.request({"action": "umap_data", "assetPath": asset_path})
-        return response.get("importNames") or [], response.get("umapActors") or {}
+        return self._map_data("umap_data", asset_path)
+
+    def _map_data(self, action, asset_path):
+        with tempfile.TemporaryDirectory(prefix="talisman_instances_") as directory:
+            response = self.request({"action": action, "assetPath": asset_path, "instanceOutput": directory})
+            actors = load_map_instances(response.get("umapActors") or {}, directory)
+            return response.get("importNames") or [], actors
 
     def streaming_probe(self, asset_path: str) -> dict:
         return (
@@ -405,6 +443,40 @@ class PackageAssetSession:
             or {}
         )
 
+    def color_lut(self, game_path):
+        """Load a full-resolution HDR color cube as a packed 2D slice atlas."""
+        if not self.import_textures:
+            return None
+        import numpy as np
+        key = game_path.casefold()
+        existing = next((image for image in bpy.data.images
+                         if image.get("ue_lut_path", "").casefold() == key
+                         and image.get("ue_texture_namespace") == self.texture_namespace), None)
+        if existing is not None:
+            return existing
+        asset_path, name = _texture_package_path(game_path, profile=self.profile)
+        with tempfile.TemporaryDirectory(prefix="talisman_lut_") as directory:
+            output = os.path.join(directory, "lut.rgba")
+            info = self.request({"action": "color_lut", "assetPath": asset_path,
+                                 "lutOutput": output})["colorLut"]
+            size = int(info["size"])
+            pixels = np.fromfile(output, dtype="<f4")
+        if pixels.size != size ** 3 * 4 or not np.isfinite(pixels).all():
+            raise ValueError("Invalid HDR LUT sample data")
+        # X is red, Y green, Z blue. Put blue slices beside one another.
+        atlas = pixels.reshape(size, size, size, 4).transpose(1, 0, 2, 3).copy()
+        atlas[..., 3] = 1.0  # Texture3D's unused alpha is zero in shipped LUTs.
+        image = bpy.data.images.new(name + " LUT", width=size * size, height=size,
+                                    alpha=True, float_buffer=True)
+        image.colorspace_settings.name = "Non-Color"
+        image.pixels.foreach_set(atlas.ravel())
+        image["ue_lut_size"] = size
+        image["ue_lut_path"] = game_path
+        image["ue_texture_namespace"] = self.texture_namespace
+        image.use_fake_user = True
+        image.pack()
+        return image
+
     @property
     def texture_request_options(self):
         return {"maxTextureResolution": self.max_texture_resolution,
@@ -415,15 +487,15 @@ class PackageAssetSession:
             return None
         cache_key = game_path.casefold()
         if cache_key in self.cache:
-            return self.cache[cache_key]
+            image = self.cache[cache_key]
+            if image is None or (live_datablock("images", image) and image_meets_texture_request(
+                    image, self.max_texture_resolution, self.texture_mip_offset)):
+                return image
+            del self.cache[cache_key]
 
-        for image in bpy.data.images:
-            if (image.get("sqex_virtual_path", "").casefold() == cache_key
-                    and image.get("ue_texture_namespace") == self.texture_namespace):
-                existing = image
-                break
-        else:
-            existing = None
+        existing = find_datablock("images", "package-texture", (self.texture_namespace, cache_key),
+                                  lambda item: (item.get("ue_texture_namespace"),
+                                                item.get("ue_virtual_path", "").casefold()), self)
 
         if existing is not None and image_meets_texture_request(
                 existing, self.max_texture_resolution, self.texture_mip_offset):
@@ -451,15 +523,15 @@ class PackageAssetSession:
                 }
             )
             dds_info = response.get("dds") or {}
-            if int(dds_info.get("byteLength") or 0) <= 128:
+            if int(dds_info.get("byteLength") or 0) <= 0:
                 raise RuntimeError(
-                    f"CUE4Parse returned no usable DDS payload for {dds_info.get('pixelFormat', 'unknown format')}"
+                    f"CUE4Parse returned no usable image payload for {dds_info.get('pixelFormat', 'unknown format')}"
                 )
             image = load_packed_image(
-                temp_path,
+                dds_info.get("output") or temp_path,
                 image_name,
                 metadata={
-                    "sqex_virtual_path": game_path,
+                    "ue_virtual_path": game_path,
                     "ff7r_pixel_format": dds_info.get("pixelFormat", ""),
                     "ue_texture_namespace": self.texture_namespace,
                     "ue_texture_mip_index": dds_info.get("mipIndex", -1),
@@ -472,6 +544,7 @@ class PackageAssetSession:
                 existing=existing,
             )
             self.cache[cache_key] = image
+            remember_datablock("images", image, self)
             self.loaded += 1
             return image
         except Exception as exc:

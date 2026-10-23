@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....language import tooltips
+from ....language import strings
 
 import hashlib
 import json
@@ -18,7 +18,6 @@ from ....core.package_utils import addon_package_name
 from ....core.profiles import GamePaths
 from ....formats.kdi.drivers import (
     AXIS_ORDER_ITEMS,
-    COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90,
     COORDINATE_PROFILE_REFERENCE,
 )
 from ... import package_browser
@@ -380,11 +379,7 @@ def _import_kh_kdi_asset_drivers(
         shared_packages.KDI_COORDINATE_PROFILE_PROPERTY,
         COORDINATE_PROFILE_REFERENCE,
     )
-    default_axis_order = (
-        "YZX"
-        if coordinate_profile == COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
-        else "XZY"
-    )
+    default_axis_order = shared_packages.coordinate_profile_axis_order(coordinate_profile)
     with tempfile.TemporaryDirectory(prefix="sqex_kh_kdi_") as temp_dir:
         kdi_path = os.path.join(temp_dir, os.path.basename(virtual_path) + ".json")
         with open(kdi_path, "w", encoding="utf-8") as stream:
@@ -456,14 +451,10 @@ def make_kdi_importer(
             )
             return {"CANCELLED"}
         self._load_last_import_settings(context)
-        if armature.get(shared_packages.KDI_COORDINATE_PROFILE_PROPERTY) == (
-            COORDINATE_PROFILE_PACKAGE_SKELETON_ROLL_90
-        ):
-            self.translation_axis_order = "YZX"
-            self.scale_axis_order = "YZX"
-        else:
-            self.translation_axis_order = "XZY"
-            self.scale_axis_order = "XZY"
+        axis_order = shared_packages.coordinate_profile_axis_order(armature.get(
+            shared_packages.KDI_COORDINATE_PROFILE_PROPERTY, COORDINATE_PROFILE_REFERENCE))
+        self.translation_axis_order = axis_order
+        self.scale_axis_order = axis_order
         package_browser.activate(
             context, definition.kdi_browser, paths, dialog_operator=self.bl_idname
         )
@@ -535,7 +526,7 @@ def make_kdi_importer(
                 "virtual_path": bpy.props.StringProperty(
                     name="Package KineDriver",
                     description=(
-                        tooltips.KINGDOM_HEARTS_KDI_SEARCH_PATH.format(definition_game_name=definition.game_name)
+                        strings.KINGDOM_HEARTS_KDI_SEARCH_PATH.format(definition_game_name=definition.game_name)
                     ),
                     search=search_virtual_kdis,
                     search_options={"SORT"},
@@ -546,13 +537,13 @@ def make_kdi_importer(
                 ),
                 "translation_axis_order": bpy.props.EnumProperty(
                     name="Translation axis mapping",
-                    description=tooltips.KDI_TRANSLATION_AXIS_ORDER,
+                    description=strings.KDI_TRANSLATION_AXIS_ORDER,
                     items=AXIS_ORDER_ITEMS,
                     default="XZY",
                 ),
                 "scale_axis_order": bpy.props.EnumProperty(
                     name="Scale axis mapping",
-                    description=tooltips.KDI_SCALE_AXIS_ORDER,
+                    description=strings.KDI_SCALE_AXIS_ORDER,
                     items=AXIS_ORDER_ITEMS,
                     default="XZY",
                 ),
@@ -560,7 +551,7 @@ def make_kdi_importer(
             "bl_idname": bl_idname,
             "bl_label": f"KineDriver from {definition.game_name} Packages",
             "bl_description": (
-                tooltips.KINGDOM_HEARTS_KDI_IMPORT.format(definition_game_name=definition.game_name)
+                strings.KINGDOM_HEARTS_KDI_IMPORT.format(definition_game_name=definition.game_name)
             ),
             "bl_options": {"REGISTER", "UNDO"},
             "_persisted_props": (

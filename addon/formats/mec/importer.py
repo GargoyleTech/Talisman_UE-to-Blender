@@ -1,6 +1,6 @@
 """MassiveEnvironmentComponent .umap importer for the combined FF7R addon."""
 
-from ...language import tooltips
+from ...language import strings
 
 import os
 import json
@@ -9,6 +9,7 @@ import bpy
 from ...core.blender import render_settings
 from ...core.blender.reporting import SQEX_LoggedOperator, report
 from ...core.package_utils import addon_package_name
+from ...core.blender.import_cache import scoped_import
 from .parser import (
     BinReader,
     build_import_hash_table,
@@ -60,6 +61,7 @@ def _get_texture_index(
     return tex_index
 
 
+@scoped_import
 def import_umap_paths(
         context,
         paths,
@@ -144,10 +146,19 @@ def import_umap_paths(
             skipped += 1
             continue
 
-        umap_data  = open(umap_path,  'rb').read()
-        ubulk_data = open(ubulk_path, 'rb').read() if os.path.isfile(ubulk_path) else b''
-        combined   = umap_data + ubulk_data
-        umap_len   = len(umap_data)
+        umap_len = os.path.getsize(umap_path)
+        ubulk_len = os.path.getsize(ubulk_path) if os.path.isfile(ubulk_path) else 0
+        # Read straight into the parser's combined buffer, avoiding two retained
+        # input byte strings plus a full concatenation of large MEC payloads.
+        combined = bytearray(umap_len + ubulk_len)
+        with open(umap_path, 'rb') as source:
+            if source.readinto(memoryview(combined)[:umap_len]) != umap_len:
+                raise OSError(f"Incomplete UMAP read: {umap_path}")
+        if ubulk_len:
+            with open(ubulk_path, 'rb') as source:
+                if source.readinto(memoryview(combined)[umap_len:]) != ubulk_len:
+                    raise OSError(f"Incomplete bulk read: {ubulk_path}")
+        umap_data = memoryview(combined)[:umap_len]
         reader     = BinReader(combined)
 
         try:
@@ -301,7 +312,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
     bl_idname = "import_scene.ff7r_rebirth_mec_umap"
     bl_label = "FF7R Massive Environment UMAP (.umap)"
     bl_description = (
-        tooltips.LOOSE_MAP_DESCRIPTION
+        strings.LOOSE_MAP_DESCRIPTION
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -313,27 +324,27 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
     fallback_tex_root: bpy.props.StringProperty(
         name="Texture Root",
         description=(
-            tooltips.LOOSE_MAP_FALLBACK_TEX_ROOT
+            strings.LOOSE_MAP_FALLBACK_TEX_ROOT
         ),
         default="",
         subtype='DIR_PATH',
     )
     fallback_tex_ext: bpy.props.StringProperty(
         name="Texture extension",
-        description=tooltips.LOOSE_MAP_FALLBACK_TEX_EXT,
+        description=strings.LOOSE_MAP_FALLBACK_TEX_EXT,
         default="dds",
     )
 
     import_originals: bpy.props.BoolProperty(
         name="Import originals at origin",
-        description=tooltips.LOOSE_MAP_IMPORT_ORIGINALS,
+        description=strings.LOOSE_MAP_IMPORT_ORIGINALS,
         default=False,
     )
 
     create_map_origin: bpy.props.BoolProperty(
         name="Create map origin",
         description=(
-            tooltips.LOOSE_MAP_CREATE_MAP_ORIGIN
+            strings.LOOSE_MAP_CREATE_MAP_ORIGIN
         ),
         default=True,
     )
@@ -341,7 +352,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
     offset_opposite_faces: bpy.props.BoolProperty(
         name="Offset opposite overlapping faces",
         description=(
-            tooltips.LOOSE_MAP_OFFSET_OPPOSITE_FACES
+            strings.LOOSE_MAP_OFFSET_OPPOSITE_FACES
         ),
         default=True,
     )
@@ -349,25 +360,25 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
     import_sway: bpy.props.BoolProperty(
         name="Import wind sway as shape keys",
         description=(
-            tooltips.LOOSE_MAP_IMPORT_SWAY
+            strings.LOOSE_MAP_IMPORT_SWAY
         ),
         default=True,
     )
 
     lod_mode: bpy.props.EnumProperty(
         name="LoD level",
-        description=tooltips.LOOSE_MAP_LOD_MODE,
+        description=strings.LOOSE_MAP_LOD_MODE,
         items=(
-            ("QUALITY", "Quality", tooltips.LOOSE_MAP_LOD_MODE_QUALITY),
-            ("LEVEL", "Level", tooltips.LOOSE_MAP_LOD_MODE_LEVEL),
-            ("ALL", "All LoDs", tooltips.LOOSE_MAP_LOD_MODE_ALL),
+            ("QUALITY", "Quality", strings.LOOSE_MAP_LOD_MODE_QUALITY),
+            ("LEVEL", "Level", strings.LOOSE_MAP_LOD_MODE_LEVEL),
+            ("ALL", "All LoDs", strings.LOOSE_MAP_LOD_MODE_ALL),
         ),
         default="QUALITY",
     )
 
     lod_quality: bpy.props.FloatProperty(
         name="Quality",
-        description=tooltips.LOOSE_MAP_LOD_QUALITY,
+        description=strings.LOOSE_MAP_LOD_QUALITY,
         default=1.0,
         min=0.0,
         max=1.0,
@@ -376,7 +387,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
 
     lod_level: bpy.props.IntProperty(
         name="Level",
-        description=tooltips.LOOSE_MAP_LOD_LEVEL,
+        description=strings.LOOSE_MAP_LOD_LEVEL,
         default=0,
         min=-13,
         max=0,
@@ -386,7 +397,7 @@ class FF7R_REBIRTH_OT_import_mec_umap(SQEX_LoggedOperator):
 
     scale_factor: bpy.props.FloatProperty(
         name="Scale",
-        description=tooltips.LOOSE_MAP_SCALE_FACTOR,
+        description=strings.LOOSE_MAP_SCALE_FACTOR,
         default=0.01,
         min=0.0001, max=100.0,
         soft_min=0.001, soft_max=10.0,

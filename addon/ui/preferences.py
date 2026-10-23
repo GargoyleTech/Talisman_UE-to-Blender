@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from ..language import tooltips
+from ..language import strings
 
 from pathlib import Path
+import textwrap
 
 import bpy
 
@@ -26,9 +27,20 @@ _detected_crisis_core_usmap = Path.home() / "Downloads" / "Crisis Core.usmap"
 
 
 _DEFAULT_GENERIC_UNREAL_PROFILES = (
-    ("fnaf_security_breach", "Five Nights at Freddy's: Security Breach"),
-    ("fnaf_secret_of_the_mimic", "Five Nights at Freddy's: Secret of the Mimic"),
+    # Stable ID, label, CUE4Parse profile, mappings default, AES default.
+    ("fnaf_security_breach", "Five Nights at Freddy's: Security Breach", "GAME_UE4_27", "n/a", ""),
+    ("fnaf_secret_of_the_mimic", "Five Nights at Freddy's: Secret of the Mimic", "GAME_UE4_27", "n/a", ""),
+    ("amid_evil", "AMID EVIL", "GAME_UE4_27", "n/a", "n/a"),
+    ("anomalous", "Anomalous", "GAME_UE4_27", "n/a", "n/a"),
+    ("hi_fi_rush", "Hi-Fi RUSH", "GAME_UE4_27", "n/a", ""),
+    ("hogwarts_legacy", "Hogwarts Legacy", "GAME_HogwartsLegacy", "n/a", "n/a"),
+    ("moss", "Moss", "GAME_UE4_27", "n/a", "n/a"),
+    ("cosmic_shake", "SpongeBob SquarePants: The Cosmic Shake", "GAME_UE4_27", "n/a", "n/a"),
+    ("ghostrunner", "Ghostrunner", "GAME_UE4_26", "n/a", ""),
+    ("last_flag", "Last Flag", "GAME_UE5_5", "", "n/a"),
+    ("marvel_rivals", "Marvel Rivals", "GAME_MarvelRivals", "", ""),
 )
+_DEFAULT_FNAF_PROFILE_IDS = frozenset(("fnaf_security_breach", "fnaf_secret_of_the_mimic"))
 _DEFAULT_FNAF_PBR_SLOT_MATCHES = (
     ("albedo", "Base_Color", "R"),
     ("albedo", "BaseColor01", "R"),
@@ -47,6 +59,17 @@ _DEFAULT_FNAF_PBR_SLOT_MATCHES = (
     ("roughness", "ORM", "G"),
     ("roughness", "ORM_1", "G"),
 )
+_DEFAULT_GENERIC_PBR_SLOT_MATCHES = {
+    **dict.fromkeys(_DEFAULT_FNAF_PROFILE_IDS, _DEFAULT_FNAF_PBR_SLOT_MATCHES),
+    "last_flag": (
+        ("albedo", "Base Color Texture", "R"),
+        ("albedo", "Base Color", "R"),
+        ("normal", "Normal Texture", "R"),
+        ("normal", "Normal", "R"),
+        ("metalness", "ORM Texture", "B"),
+        ("roughness", "ORM Texture", "G"),
+    ),
+}
 _LEGACY_OODLE_PROPERTIES = (
     "remake_oodle_dll",
     "rebirth_oodle_dll",
@@ -55,17 +78,18 @@ _LEGACY_OODLE_PROPERTIES = (
     "kingdom_hearts_0_2_oodle_dll",
 )
 _CHANNEL_ITEMS = (
-    ("R", "Red", tooltips.PREFERENCES_CHANNEL_R),
-    ("G", "Green", tooltips.PREFERENCES_CHANNEL_G),
-    ("B", "Blue", tooltips.PREFERENCES_CHANNEL_B),
-    ("A", "Alpha", tooltips.PREFERENCES_CHANNEL_A),
+    ("R", "Red", strings.PREFERENCES_CHANNEL_R),
+    ("G", "Green", strings.PREFERENCES_CHANNEL_G),
+    ("B", "Blue", strings.PREFERENCES_CHANNEL_B),
+    ("A", "Alpha", strings.PREFERENCES_CHANNEL_A),
 )
 _PBR_SLOT_ITEMS = (
-    ("albedo", "Albedo", tooltips.PREFERENCES_PBR_SLOT_ALBEDO),
-    ("normal", "Normal", tooltips.PREFERENCES_PBR_SLOT_NORMAL),
-    ("metalness", "Metalness", tooltips.PREFERENCES_PBR_SLOT_METALNESS),
-    ("roughness", "Roughness", tooltips.PREFERENCES_PBR_SLOT_ROUGHNESS),
-    ("alpha", "Alpha", tooltips.PREFERENCES_PBR_SLOT_ALPHA),
+    ("albedo", "Albedo", strings.PREFERENCES_PBR_SLOT_ALBEDO),
+    ("normal", "Normal", strings.PREFERENCES_PBR_SLOT_NORMAL),
+    ("metalness", "Metalness", strings.PREFERENCES_PBR_SLOT_METALNESS),
+    ("roughness", "Roughness", strings.PREFERENCES_PBR_SLOT_ROUGHNESS),
+    ("alpha", "Alpha", strings.PREFERENCES_PBR_SLOT_ALPHA),
+    ("emission", "Emission Color", strings.PREFERENCES_PBR_SLOT_EMISSION),
 )
 _PBR_SLOT_LABELS = {slot: label for slot, label, _description in _PBR_SLOT_ITEMS}
 _PBR_SCALAR_SLOTS = frozenset(("metalness", "roughness", "alpha"))
@@ -128,7 +152,8 @@ class SQEX_OT_select_usmap(Operator, ImportHelper):
         target = self._target()
         if target is None:
             return {"CANCELLED"}
-        self.filepath = bpy.path.abspath(getattr(target, self.property_name))
+        value = game_profiles.normalize_optional_input(getattr(target, self.property_name))
+        self.filepath = bpy.path.abspath(value) if value else ""
         self.filter_glob = "*.usmap"
         return ImportHelper.invoke(self, context, event)
 
@@ -137,6 +162,29 @@ class SQEX_OT_select_usmap(Operator, ImportHelper):
         if target is None:
             return {"CANCELLED"}
         setattr(target, self.property_name, self.filepath)
+        return {"FINISHED"}
+
+
+class SQEX_OT_generate_rebirth_texture_hashes(Operator):
+    bl_idname = "preferences.sqex_generate_rebirth_texture_hashes"
+    bl_label = "Generate Texture Hash Lookup"
+    bl_description = strings.PREFERENCES_GENERATE_REBIRTH_TEXTURE_HASHES
+    bl_options = {"INTERNAL"}
+
+    def execute(self, _context):
+        from ..formats.mec import texture_hashes
+        if texture_hashes.running():
+            texture_hashes.cancel()
+            return {"FINISHED"}
+        preferences = _addon_preferences()
+        if preferences is None:
+            self.report({"ERROR"}, "Talisman preferences are unavailable.")
+            return {"CANCELLED"}
+        try:
+            texture_hashes.start(preferences)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -178,14 +226,12 @@ def _ensure_pbr_slot_matches(profile):
         profile.pbr_slot_match_channels_initialized = True
 
 
-def _seed_default_fnaf_pbr_slot_matches(profile):
-    """Add the verified FNaF mapping only to an otherwise unmapped preset."""
-    if (
-        profile.profile_id not in {profile_id for profile_id, _name in _DEFAULT_GENERIC_UNREAL_PROFILES}
-        or profile.pbr_slot_matches
-    ):
+def _seed_default_pbr_slot_matches(profile):
+    """Add a preset's verified mappings only when no user mapping exists."""
+    defaults = _DEFAULT_GENERIC_PBR_SLOT_MATCHES.get(profile.profile_id, ())
+    if not defaults or profile.pbr_slot_matches:
         return
-    for priority, (slot, parameter, channel) in enumerate(_DEFAULT_FNAF_PBR_SLOT_MATCHES):
+    for priority, (slot, parameter, channel) in enumerate(defaults):
         match = profile.pbr_slot_matches.add()
         match.slot = slot
         match.parameter = parameter
@@ -193,6 +239,27 @@ def _seed_default_fnaf_pbr_slot_matches(profile):
         # Priority is only compared within the same slot, so use a single
         # increasing sequence and preserve the order visible in the editor.
         match.priority = priority
+
+
+def _apply_generic_profile_template(profile, template):
+    """Restore a profile's editable fields from the current shipped template."""
+    profile_id, name, version, usmap, aes = template
+    profile.profile_id = profile_id
+    profile.name = name
+    profile.game_path = ""
+    profile.game_version = version
+    profile.usmap_path = usmap
+    profile.aes_key = aes
+    profile.hidden_object_patterns.clear()
+    profile.pbr_slot_matches.clear()
+    for _slot, property_name in _PBR_SLOT_LEGACY_PROPERTIES:
+        profile.property_unset(property_name)
+    for property_name in _PBR_SLOT_LEGACY_CHANNEL_PROPERTIES.values():
+        profile.property_unset(property_name)
+    profile.pbr_slot_matches_initialized = False
+    profile.pbr_slot_match_channels_initialized = False
+    _ensure_pbr_slot_matches(profile)
+    _seed_default_pbr_slot_matches(profile)
 
 
 def _slot_match_indexes(profile, slot):
@@ -211,12 +278,11 @@ def _slot_match_indexes(profile, slot):
 
 
 def ensure_generic_unreal_profiles(preferences=None):
-    """Create the shipped generic profiles once, without restoring deleted ones."""
+    """Add newly shipped templates once, preserving edits and deleted presets."""
     preferences = preferences or _addon_preferences()
     if preferences is None:
         return ()
-    # Preserve an existing setup when upgrading from the former per-title
-    # Oodle fields. The obsolete fields are not re-registered.
+    # Preserve existing Oodle settings by migrating per-title fields.
     if not preferences.oodle_dll:
         for property_name in _LEGACY_OODLE_PROPERTIES:
             try:
@@ -232,19 +298,33 @@ def ensure_generic_unreal_profiles(preferences=None):
         if not profile.profile_id or profile.profile_id in used_ids:
             profile.profile_id = f"custom_{number}"
         used_ids.add(profile.profile_id)
-    if not preferences.generic_unreal_profiles_initialized:
-        for profile_id, name in _DEFAULT_GENERIC_UNREAL_PROFILES:
-            if profile_id in used_ids:
-                continue
+    seen = set(filter(None, preferences.generic_unreal_profile_templates_seen.split(",")))
+    seeded = seen.copy()
+    if preferences.generic_unreal_profiles_initialized:
+        # Older preferences only recorded the initial FNaF template batch.
+        seeded.update(_DEFAULT_FNAF_PROFILE_IDS)
+    by_id = {profile.profile_id: profile for profile in profiles}
+    for template in _DEFAULT_GENERIC_UNREAL_PROFILES:
+        profile_id, _name, _version, usmap, aes = template
+        profile = by_id.get(profile_id)
+        if profile is None and profile_id not in seeded:
             profile = profiles.add()
-            profile.profile_id = profile_id
-            profile.name = name
-            profile.game_version = "GAME_UE4_27"
-            used_ids.add(profile_id)
+            _apply_generic_profile_template(profile, template)
+        if profile is not None and profile_id not in seen:
+            # Mark only empty, known-unneeded inputs; never replace user data.
+            if usmap == "n/a" and not profile.usmap_path.strip():
+                profile.usmap_path = usmap
+            if aes == "n/a" and not profile.aes_key.strip():
+                profile.aes_key = aes
+        seen.add(profile_id)
+    history = ",".join(sorted(seen))
+    if preferences.generic_unreal_profile_templates_seen != history:
+        preferences.generic_unreal_profile_templates_seen = history
+    if not preferences.generic_unreal_profiles_initialized:
         preferences.generic_unreal_profiles_initialized = True
     for profile in profiles:
         _ensure_pbr_slot_matches(profile)
-        _seed_default_fnaf_pbr_slot_matches(profile)
+        _seed_default_pbr_slot_matches(profile)
     return profiles
 
 
@@ -265,7 +345,9 @@ def _generic_profile_editor_items(_operator, _context):
     _GENERIC_PROFILE_EDITOR_ITEMS = [
         (profile.profile_id, profile.name or "Unnamed CUE4Parse Profile", "", index)
         for index, profile in enumerate(profiles)
-    ] or [("", "No Profiles", tooltips.PREFERENCES_GENERIC_PROFILE_EDITOR_ITEMS, 0)]
+    ] or [("", "No Profiles", strings.PREFERENCES_GENERIC_PROFILE_EDITOR_ITEMS, 0)]
+    # Sort display labels without reordering profiles or their enum numbers.
+    _GENERIC_PROFILE_EDITOR_ITEMS.sort(key=lambda item: (item[1].casefold(), item[0]))
     return _GENERIC_PROFILE_EDITOR_ITEMS
 
 
@@ -275,7 +357,7 @@ class SQEX_PG_generic_unreal_slot_match(PropertyGroup):
     slot: bpy.props.EnumProperty(items=_PBR_SLOT_ITEMS, options={"HIDDEN"})
     parameter: StringProperty(
         name="Texture Parameter",
-        description=tooltips.PREFERENCES_SLOT_MATCH_PARAMETER,
+        description=strings.PREFERENCES_SLOT_MATCH_PARAMETER,
         default="",
     )
     channel: bpy.props.EnumProperty(
@@ -286,18 +368,25 @@ class SQEX_PG_generic_unreal_slot_match(PropertyGroup):
     priority: bpy.props.IntProperty(default=0, options={"HIDDEN"})
 
 
+class SQEX_PG_generic_unreal_hide_pattern(PropertyGroup):
+    pattern: StringProperty(
+        name="Name Pattern",
+        description="Hide objects whose uasset, actor or component name matches this pattern (case-insensitive; * and ? wildcards supported)",
+    )
+
+
 class SQEX_PG_generic_unreal_profile(PropertyGroup):
     """A reusable CUE4Parse mount configuration for generic UE4 importers."""
 
     profile_id: StringProperty(options={"HIDDEN"})
     name: StringProperty(
         name="Profile Name",
-        description=tooltips.PREFERENCES_PROFILE_NAME,
+        description=strings.PREFERENCES_PROFILE_NAME,
         default="New CUE4Parse Profile",
     )
     game_path: StringProperty(
         name="Game / Package Folder",
-        description=tooltips.PREFERENCES_PROFILE_GAME_PATH,
+        description=strings.PREFERENCES_PROFILE_GAME_PATH,
         subtype="DIR_PATH",
         default="",
     )
@@ -305,32 +394,39 @@ class SQEX_PG_generic_unreal_profile(PropertyGroup):
         name="CUE4Parse Game Version",
         items=_generic_profile_game_version_items,
         default=0x041B0000,
-        description=tooltips.PREFERENCES_PROFILE_GAME_VERSION,
+        description=strings.PREFERENCES_PROFILE_GAME_VERSION,
     )
     usmap_path: StringProperty(
         name="Mappings (.usmap)",
-        description=tooltips.PREFERENCES_PROFILE_USMAP_PATH,
+        description=strings.PREFERENCES_PROFILE_USMAP_PATH,
         default="",
     )
     aes_key: StringProperty(
         name="AES Key",
-        description=tooltips.PREFERENCES_PROFILE_AES_KEY,
+        description=strings.PREFERENCES_PROFILE_AES_KEY,
         subtype="PASSWORD",
         default="",
     )
+    aes_key_unmasked: StringProperty(
+        name="AES Key",
+        description=strings.PREFERENCES_PROFILE_AES_KEY,
+        get=lambda self: self.aes_key,
+        set=lambda self, value: setattr(self, "aes_key", value),
+        options={"SKIP_SAVE"},
+    )
     pbr_albedo_parameter: StringProperty(
         name="Albedo",
-        description=tooltips.PREFERENCES_PROFILE_PBR_ALBEDO_PARAMETER,
+        description=strings.PREFERENCES_PROFILE_PBR_ALBEDO_PARAMETER,
         default="",
     )
     pbr_normal_parameter: StringProperty(
         name="Normal",
-        description=tooltips.PREFERENCES_PROFILE_PBR_NORMAL_PARAMETER,
+        description=strings.PREFERENCES_PROFILE_PBR_NORMAL_PARAMETER,
         default="",
     )
     pbr_metalness_parameter: StringProperty(
         name="Metalness",
-        description=tooltips.PREFERENCES_PROFILE_PBR_METALNESS_PARAMETER,
+        description=strings.PREFERENCES_PROFILE_PBR_METALNESS_PARAMETER,
         default="",
     )
     pbr_metalness_channel: bpy.props.EnumProperty(
@@ -340,7 +436,7 @@ class SQEX_PG_generic_unreal_profile(PropertyGroup):
     )
     pbr_roughness_parameter: StringProperty(
         name="Roughness",
-        description=tooltips.PREFERENCES_PROFILE_PBR_ROUGHNESS_PARAMETER,
+        description=strings.PREFERENCES_PROFILE_PBR_ROUGHNESS_PARAMETER,
         default="",
     )
     pbr_roughness_channel: bpy.props.EnumProperty(
@@ -350,7 +446,7 @@ class SQEX_PG_generic_unreal_profile(PropertyGroup):
     )
     pbr_alpha_parameter: StringProperty(
         name="Alpha",
-        description=tooltips.PREFERENCES_PROFILE_PBR_ALPHA_PARAMETER,
+        description=strings.PREFERENCES_PROFILE_PBR_ALPHA_PARAMETER,
         default="",
     )
     pbr_alpha_channel: bpy.props.EnumProperty(
@@ -358,6 +454,8 @@ class SQEX_PG_generic_unreal_profile(PropertyGroup):
         items=_CHANNEL_ITEMS,
         default="A",
     )
+    hidden_object_patterns: CollectionProperty(type=SQEX_PG_generic_unreal_hide_pattern)
+
     pbr_slot_matches: CollectionProperty(type=SQEX_PG_generic_unreal_slot_match)
     pbr_slot_matches_initialized: BoolProperty(default=False, options={"HIDDEN"})
     pbr_slot_match_channels_initialized: BoolProperty(default=False, options={"HIDDEN"})
@@ -408,6 +506,50 @@ class SQEX_OT_remove_generic_unreal_profile(Operator):
 def _generic_profile_by_id(preferences, profile_id):
     profiles = ensure_generic_unreal_profiles(preferences)
     return next((profile for profile in profiles if profile.profile_id == profile_id), None)
+
+
+class SQEX_OT_reset_generic_unreal_profile(Operator):
+    bl_idname = "preferences.sqex_reset_generic_unreal_profile"
+    bl_label = "Reset Profile to Template"
+    bl_description = strings.PREFERENCES_RESET_GENERIC_PROFILE
+    bl_options = {"INTERNAL"}
+
+    profile_id: StringProperty(options={"HIDDEN"})
+
+    def execute(self, _context):
+        template = next((item for item in _DEFAULT_GENERIC_UNREAL_PROFILES if item[0] == self.profile_id), None)
+        preferences = _addon_preferences()
+        profile = _generic_profile_by_id(preferences, self.profile_id) if preferences else None
+        if template is None or profile is None:
+            self.report({"WARNING"}, "This profile has no available shipped template.")
+            return {"CANCELLED"}
+        from ..formats.unreal_mesh import profile_test
+
+        profile_test.cancel(self.profile_id)
+        _apply_generic_profile_template(profile, template)
+        return {"FINISHED"}
+
+
+class SQEX_OT_edit_generic_unreal_hide_pattern(Operator):
+    bl_idname = "preferences.sqex_edit_generic_unreal_hide_pattern"
+    bl_label = "Edit Default Hide Patterns"
+    bl_options = {"INTERNAL"}
+
+    profile_id: StringProperty(options={"HIDDEN"})
+    pattern_index: bpy.props.IntProperty(default=-1, options={"HIDDEN"})
+
+    def execute(self, _context):
+        preferences = _addon_preferences()
+        profile = _generic_profile_by_id(preferences, self.profile_id) if preferences else None
+        if profile is None:
+            return {"CANCELLED"}
+        if self.pattern_index == -1:
+            profile.hidden_object_patterns.add()
+        elif 0 <= self.pattern_index < len(profile.hidden_object_patterns):
+            profile.hidden_object_patterns.remove(self.pattern_index)
+        else:
+            return {"CANCELLED"}
+        return {"FINISHED"}
 
 
 class SQEX_OT_add_generic_unreal_pbr_slot_match(Operator):
@@ -555,7 +697,7 @@ def _draw_pbr_slot_matches(layout, profile, slot):
 class SQEX_OT_test_generic_unreal_profile(Operator):
     bl_idname = "preferences.sqex_test_generic_unreal_profile"
     bl_label = "Test Profile"
-    bl_description = tooltips.PREFERENCES_TEST_GENERIC_PROFILE
+    bl_description = strings.PREFERENCES_TEST_GENERIC_PROFILE
     bl_options = {"INTERNAL"}
 
     profile_id: StringProperty(options={"HIDDEN"})
@@ -606,9 +748,8 @@ class SQEX_OT_edit_generic_unreal_profiles(Operator):
     def draw(self, _context):
         layout = self.layout
         preferences = _addon_preferences()
-        # Keep this method read-only.  Blender suppresses the rest of a
-        # dialog's layout if an operator mutates preference data while it is
-        # drawing, which previously left this popup looking empty.
+        # Keep this method read-only. Blender suppresses the rest of a
+        # dialog's layout if an operator mutates preferences while drawing.
         profiles = preferences.generic_unreal_profiles if preferences else ()
         if not profiles:
             layout.label(text="Add a profile to begin.", icon="INFO")
@@ -627,11 +768,17 @@ class SQEX_OT_edit_generic_unreal_profiles(Operator):
         )
         remove.profile_id = profile.profile_id
 
+        if any(item[0] == profile.profile_id for item in _DEFAULT_GENERIC_UNREAL_PROFILES):
+            reset = layout.operator(SQEX_OT_reset_generic_unreal_profile.bl_idname,
+                                    text="Reset to Template", icon="LOOP_BACK")
+            reset.profile_id = profile.profile_id
+
         layout.prop(profile, "name")
         layout.prop(profile, "game_path")
         layout.prop(profile, "game_version")
         _draw_usmap_path(layout, profile, "usmap_path", profile_id=profile.profile_id)
-        layout.prop(profile, "aes_key")
+        # Keep the not-applicable marker readable and editable; real keys stay masked.
+        layout.prop(profile, "aes_key_unmasked" if profile.aes_key.strip().casefold() == "n/a" else "aes_key")
 
         from ..formats.unreal_mesh import profile_test
 
@@ -651,6 +798,20 @@ class SQEX_OT_edit_generic_unreal_profiles(Operator):
             else:
                 layout.label(text="Profile settings changed. Run the test again.", icon="INFO")
 
+        filtering = layout.box()
+        header = filtering.row(align=True)
+        header.label(text="Hide Objects by Default", icon="HIDE_ON")
+        add = header.operator(SQEX_OT_edit_generic_unreal_hide_pattern.bl_idname, text="", icon="ADD")
+        add.profile_id = profile.profile_id
+        filtering.label(text="Match uasset, actor or component names; * and ? wildcards.")
+        filtering.label(text="Case-insensitive. Applied on import to viewport and render.")
+        for index, item in enumerate(profile.hidden_object_patterns):
+            row = filtering.row(align=True)
+            row.prop(item, "pattern", text="")
+            remove = row.operator(SQEX_OT_edit_generic_unreal_hide_pattern.bl_idname, text="", icon="X")
+            remove.profile_id = profile.profile_id
+            remove.pattern_index = index
+
         mapping_box = layout.box()
         mapping_box.label(text="PBR Slot Mapping")
         mapping_box.label(
@@ -663,6 +824,7 @@ class SQEX_OT_edit_generic_unreal_profiles(Operator):
         _draw_pbr_slot_matches(mapping_box, profile, "metalness")
         _draw_pbr_slot_matches(mapping_box, profile, "roughness")
         _draw_pbr_slot_matches(mapping_box, profile, "alpha")
+        _draw_pbr_slot_matches(mapping_box, profile, "emission")
 
     def execute(self, _context):
         """Remember the selected profile only after the dialog is confirmed."""
@@ -712,80 +874,92 @@ class SQEX_ImportPreferences(AddonPreferences):
 
     show_remake_settings: BoolProperty(
         name="Show Remake Intergrade Settings",
-        description=tooltips.PREFERENCES_SHOW_REMAKE_SETTINGS,
+        description=strings.PREFERENCES_SHOW_REMAKE_SETTINGS,
         default=False,
     )
     show_rebirth_settings: BoolProperty(
         name="Show Rebirth Settings",
-        description=tooltips.PREFERENCES_SHOW_REBIRTH_SETTINGS,
+        description=strings.PREFERENCES_SHOW_REBIRTH_SETTINGS,
         default=False,
     )
     show_crisis_core_settings: BoolProperty(
         name="Show Crisis Core Reunion Settings",
-        description=tooltips.PREFERENCES_SHOW_CRISIS_CORE_SETTINGS,
+        description=strings.PREFERENCES_SHOW_CRISIS_CORE_SETTINGS,
         default=False,
     )
     show_kingdom_hearts_iii_settings: BoolProperty(
         name="Show Kingdom Hearts III Settings",
-        description=tooltips.PREFERENCES_SHOW_KINGDOM_HEARTS_III_SETTINGS,
+        description=strings.PREFERENCES_SHOW_KINGDOM_HEARTS_III_SETTINGS,
         default=False,
     )
     show_kingdom_hearts_0_2_settings: BoolProperty(
         name="Show Kingdom Hearts 0.2 Settings",
         description=(
-            tooltips.PREFERENCES_SHOW_KINGDOM_HEARTS_0_2_SETTINGS
+            strings.PREFERENCES_SHOW_KINGDOM_HEARTS_0_2_SETTINGS
         ),
         default=False,
     )
     oodle_dll: StringProperty(
         name="Oodle DLL",
-        description=tooltips.PREFERENCES_OODLE_DLL,
+        description=strings.PREFERENCES_OODLE_DLL,
         subtype="FILE_PATH",
         default="",
     )
     generic_unreal_profiles: CollectionProperty(type=SQEX_PG_generic_unreal_profile)
     generic_unreal_profiles_initialized: BoolProperty(default=False, options={"HIDDEN"})
+    generic_unreal_profile_templates_seen: StringProperty(default="", options={"HIDDEN"})
     generic_unreal_active_profile: StringProperty(default="", options={"HIDDEN"})
+    texture_browser_last_game: StringProperty(default="NONE", options={"HIDDEN"})
 
     remake_install_root: StringProperty(
         name="Remake Intergrade Install Folder",
-        description=tooltips.PREFERENCES_REMAKE_INSTALL_ROOT,
+        description=strings.PREFERENCES_REMAKE_INSTALL_ROOT,
         subtype="DIR_PATH",
         default="",
     )
     remake_usmap_path: StringProperty(
         name="Remake Mapping File",
         description=(
-            tooltips.PREFERENCES_REMAKE_USMAP_PATH
+            strings.PREFERENCES_REMAKE_USMAP_PATH
         ),
         default=str(_detected_remake_usmap) if _detected_remake_usmap.is_file() else "",
     )
     remake_aes_key: StringProperty(
         name="Remake AES Key",
-        description=tooltips.PREFERENCES_REMAKE_AES_KEY,
+        description=strings.PREFERENCES_REMAKE_AES_KEY,
         subtype="PASSWORD",
-        default="0x23989837645C9D28BA58072B2076E895B853A7C9E1C5591B814C4FD2A2D7B782",
+        default="",
     )
     rebirth_install_root: StringProperty(
         name="Rebirth Install Folder",
-        description=tooltips.PREFERENCES_REBIRTH_INSTALL_ROOT,
+        description=strings.PREFERENCES_REBIRTH_INSTALL_ROOT,
         subtype="DIR_PATH",
         default="",
     )
     rebirth_usmap_path: StringProperty(
         name="Rebirth Mapping File",
-        description=tooltips.PREFERENCES_REBIRTH_USMAP_PATH,
+        description=strings.PREFERENCES_REBIRTH_USMAP_PATH,
         default="",
+    )
+    rebirth_import_all_material_switches: BoolProperty(
+        name="Always Import All Material Switches",
+        description=strings.PREFERENCES_REBIRTH_IMPORT_ALL_MATERIAL_SWITCHES,
+        default=False,
+    )
+    rebirth_replace_empty_image_textures: BoolProperty(
+        name="Replace Empty Image Textures with Color Constants",
+        description=strings.PREFERENCES_REBIRTH_REPLACE_EMPTY_IMAGE_TEXTURES,
+        default=False,
     )
     crisis_core_install_root: StringProperty(
         name="Crisis Core Reunion Install Folder",
-        description=tooltips.PREFERENCES_CRISIS_CORE_INSTALL_ROOT,
+        description=strings.PREFERENCES_CRISIS_CORE_INSTALL_ROOT,
         subtype="DIR_PATH",
         default="",
     )
     crisis_core_usmap_path: StringProperty(
         name="Crisis Core Mapping File",
-        description=tooltips.PREFERENCES_CRISIS_CORE_USMAP_PATH,
+        description=strings.PREFERENCES_CRISIS_CORE_USMAP_PATH,
         default=(
             str(_detected_crisis_core_usmap)
             if _detected_crisis_core_usmap.is_file()
@@ -794,31 +968,31 @@ class SQEX_ImportPreferences(AddonPreferences):
     )
     kingdom_hearts_iii_install_root: StringProperty(
         name="Kingdom Hearts III Game Folder",
-        description=tooltips.PREFERENCES_KINGDOM_HEARTS_III_INSTALL_ROOT,
+        description=strings.PREFERENCES_KINGDOM_HEARTS_III_INSTALL_ROOT,
         subtype="DIR_PATH",
         default="",
     )
     kingdom_hearts_iii_aes_key: StringProperty(
         name="AES Key",
-        description=tooltips.PREFERENCES_KINGDOM_HEARTS_III_AES_KEY,
+        description=strings.PREFERENCES_KINGDOM_HEARTS_III_AES_KEY,
         subtype="PASSWORD",
         default="",
     )
     kingdom_hearts_0_2_install_root: StringProperty(
         name="Kingdom Hearts 0.2 Game Folder",
-        description=tooltips.PREFERENCES_KINGDOM_HEARTS_0_2_INSTALL_ROOT,
+        description=strings.PREFERENCES_KINGDOM_HEARTS_0_2_INSTALL_ROOT,
         subtype="DIR_PATH",
         default="",
     )
     kingdom_hearts_0_2_aes_key: StringProperty(
         name="AES Key",
-        description=tooltips.PREFERENCES_KINGDOM_HEARTS_0_2_AES_KEY,
+        description=strings.PREFERENCES_KINGDOM_HEARTS_0_2_AES_KEY,
         subtype="PASSWORD",
         default="",
     )
     map_scale_factor: FloatProperty(
         name="Map Scale",
-        description=tooltips.PREFERENCES_MAP_SCALE_FACTOR,
+        description=strings.PREFERENCES_MAP_SCALE_FACTOR,
         default=0.01,
         min=0.0001,
         max=100.0,
@@ -828,31 +1002,31 @@ class SQEX_ImportPreferences(AddonPreferences):
     offset_mec_opposite_faces: BoolProperty(
         name="Offset MEC Opposite Faces",
         description=(
-            tooltips.PREFERENCES_OFFSET_MEC_OPPOSITE_FACES
+            strings.PREFERENCES_OFFSET_MEC_OPPOSITE_FACES
         ),
         default=True,
     )
     game_texture_root: StringProperty(
         name="Texture Content Root",
-        description=tooltips.PREFERENCES_GAME_TEXTURE_ROOT,
+        description=strings.PREFERENCES_GAME_TEXTURE_ROOT,
         default="",
         subtype="DIR_PATH",
     )
     texture_extension: StringProperty(
         name="Texture Extension",
-        description=tooltips.PREFERENCES_TEXTURE_EXTENSION,
+        description=strings.PREFERENCES_TEXTURE_EXTENSION,
         default="dds",
     )
     texture_match_by_filename: BoolProperty(
         name="Match Textures by Filename Only",
         description=(
-            tooltips.PREFERENCES_TEXTURE_MATCH_BY_FILENAME
+            strings.PREFERENCES_TEXTURE_MATCH_BY_FILENAME
         ),
         default=False,
     )
     last_import_settings_json: StringProperty(
         name="Last Import Settings",
-        description=tooltips.PREFERENCES_LAST_IMPORT_SETTINGS_JSON,
+        description=strings.PREFERENCES_LAST_IMPORT_SETTINGS_JSON,
         default="{}",
         options={"HIDDEN"},
     )
@@ -873,6 +1047,8 @@ class SQEX_ImportPreferences(AddonPreferences):
         if self.show_rebirth_settings:
             rebirth_box.prop(self, "map_scale_factor")
             rebirth_box.prop(self, "offset_mec_opposite_faces")
+            rebirth_box.prop(self, "rebirth_import_all_material_switches")
+            rebirth_box.prop(self, "rebirth_replace_empty_image_textures")
         _draw_game_path_settings(
             layout, self, crisis_core_profile.PROFILE, "show_crisis_core_settings"
         )
@@ -896,6 +1072,21 @@ class SQEX_ImportPreferences(AddonPreferences):
         row.label(text="Extension:")
         row.prop(self, "texture_extension", text="")
         texture_box.prop(self, "texture_match_by_filename")
+        from ..formats.mec import texture_hashes
+        generating = texture_hashes.running()
+        texture_box.operator(
+            SQEX_OT_generate_rebirth_texture_hashes.bl_idname,
+            text="Cancel Hash Generation" if generating else "Generate Texture Hash Lookup",
+            icon="CANCEL" if generating else "FILE_REFRESH",
+        )
+        texture_box.label(text="Optional: uses the Rebirth game folder, mappings and shared Oodle DLL above.")
+        if texture_hashes.STATUS:
+            for line in textwrap.wrap(texture_hashes.STATUS, width=85):
+                texture_box.label(text=line)
+        elif texture_hashes.cache_path().is_file():
+            texture_box.label(text="Generated texture lookup is available.", icon="CHECKMARK")
+        else:
+            texture_box.label(text="No generated lookup. Direct package imports do not need one.", icon="INFO")
 
         layout.operator(
             SQEX_OT_edit_generic_unreal_profiles.bl_idname,
@@ -906,10 +1097,14 @@ class SQEX_ImportPreferences(AddonPreferences):
 
 CLASSES = (
     SQEX_OT_select_usmap,
+    SQEX_OT_generate_rebirth_texture_hashes,
     SQEX_PG_generic_unreal_slot_match,
+    SQEX_PG_generic_unreal_hide_pattern,
     SQEX_PG_generic_unreal_profile,
+    SQEX_OT_edit_generic_unreal_hide_pattern,
     SQEX_OT_add_generic_unreal_profile,
     SQEX_OT_remove_generic_unreal_profile,
+    SQEX_OT_reset_generic_unreal_profile,
     SQEX_OT_add_generic_unreal_pbr_slot_match,
     SQEX_OT_remove_generic_unreal_pbr_slot_match,
     SQEX_OT_move_generic_unreal_pbr_slot_match,

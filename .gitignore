@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.pyc
+/addon/formats/mec/texture_hashes.csv
 
 # .NET build output (bridge/ is source-only; build artifacts land here, not in addon/bridge)
 bin/
@@ -23,6 +24,8 @@ docs/
 docs/*
 !docs/BNM_FORMAT_REFERENCE.md
 !docs/GENERIC_UNREAL_SEQUENCES.md
+!docs/niagara/
+!docs/niagara/**
 *.usmap
 bridge/PC0000_00_BodyA_C.dds
 textures/PC0000_00_BodyA_C.dds

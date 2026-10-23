@@ -7,5 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../TextureMipSelection.cs" Link="TextureMipSelection.cs" />
+    <Compile Include="../RemakeTextureResidentMip.cs" Link="RemakeTextureResidentMip.cs" />
+    <Compile Include="../RemakeColorLut.cs" Link="RemakeColorLut.cs" />
   </ItemGroup>
 </Project>

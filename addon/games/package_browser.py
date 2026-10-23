@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..language import tooltips
+from ..language import strings
 
 import re
 from typing import Any
@@ -15,6 +15,7 @@ from ..core.blender.reporting import SQEX_LoggedOperator
 _ACTIVE_BROWSER: dict[str, Any] | None = None
 _NATURAL_TOKEN = re.compile(r"(\d+)")
 _SHORTCUT_KEYMAP_ITEMS: list[tuple[Any, Any]] = []
+_DIALOG_SESSION: dict[str, Any] | None = None
 
 
 def _natural_path_key(path: str):
@@ -51,7 +52,7 @@ class SQEX_PG_package_asset_browser(bpy.types.PropertyGroup):
     current_directory: bpy.props.StringProperty(default="")
     filter_text: bpy.props.StringProperty(
         name="Search",
-        description=tooltips.SHARED_PACKAGE_ASSET_BROWSER_FILTER_TEXT,
+        description=strings.SHARED_PACKAGE_ASSET_BROWSER_FILTER_TEXT,
         options={"TEXTEDIT_UPDATE"},
         update=_filter_changed,
     )
@@ -119,9 +120,9 @@ class SQEX_OT_package_asset_selection(SQEX_LoggedOperator):
     bl_label = "Change Package Asset Selection"
     bl_options = {"INTERNAL"}
     mode: bpy.props.EnumProperty(items=(
-        ("SELECT", "Select Visible", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_SELECT),
-        ("CLEAR", "Clear All", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_CLEAR),
-        ("INVERT", "Invert Visible", tooltips.SHARED_PACKAGE_ASSET_SELECTION_MODE_INVERT),
+        ("SELECT", "Select Visible", strings.SHARED_PACKAGE_ASSET_SELECTION_MODE_SELECT),
+        ("CLEAR", "Clear All", strings.SHARED_PACKAGE_ASSET_SELECTION_MODE_CLEAR),
+        ("INVERT", "Invert Visible", strings.SHARED_PACKAGE_ASSET_SELECTION_MODE_INVERT),
     ))
 
     def execute(self, context):
@@ -150,10 +151,112 @@ def _package_browser_dialog_is_open(context) -> bool:
     if _ACTIVE_BROWSER is None:
         return False
     owner_idname = _ACTIVE_BROWSER.get("dialog_operator")
+    if _DIALOG_SESSION is not None:
+        return (
+            _DIALOG_SESSION["owner"] == owner_idname
+            and _DIALOG_SESSION["window"] == context.window
+        )
     return bool(owner_idname) and any(
         getattr(operator, "bl_idname", None) == owner_idname
         for operator in context.window_manager.operators
     )
+
+
+def invoke_dialog(operator, context, *, width):
+    """Listen ahead of the popup handler, which consumes window keymaps."""
+    global _DIALOG_SESSION
+    if bpy.app.background:
+        return context.window_manager.invoke_props_dialog(operator, width=width)
+    _DIALOG_SESSION = {
+        "owner": operator.bl_idname,
+        "window": context.window,
+        "region": None,
+        "select_all_events": _file_select_all_events(context),
+    }
+    try:
+        result = context.window_manager.invoke_props_dialog(operator, width=width)
+        if result == {"RUNNING_MODAL"}:
+            # The last modal handler added runs first. Adding this before the
+            # popup would leave Space trapped in Blender's popup handler.
+            bpy.ops.wm.sqex_package_asset_dialog_shortcuts('INVOKE_DEFAULT')
+        else:
+            close_dialog(operator)
+        return result
+    except Exception:
+        close_dialog(operator)
+        raise
+
+
+def close_dialog(operator) -> None:
+    global _DIALOG_SESSION
+    if _DIALOG_SESSION is not None and _DIALOG_SESSION["owner"] == operator.bl_idname:
+        _DIALOG_SESSION = None
+
+
+def _list_has_keyboard_focus(context, region) -> bool:
+    # Query Blender's active UI property rather than estimating row positions.
+    # While editing Search (even after moving the mouse onto a row), this is
+    # still filter_text, so spaces and select-all remain text-editing events.
+    with context.temp_override(region=region):
+        active_property = getattr(context, "property", None)
+    if not active_property:
+        return False
+    data, path, _index = active_property
+    return data == context.window_manager and (
+        path == "sqex_package_asset_browser.active_index"
+        or (path.startswith("sqex_package_asset_browser.entries[") and path.endswith(".selected"))
+    )
+
+
+def _shortcut_is_available(context) -> bool:
+    return _package_browser_dialog_is_open(context) and (
+        _DIALOG_SESSION is None or context.region == _DIALOG_SESSION["region"]
+    )
+
+
+def _matches_shortcut(event, binding, held_keys=()) -> bool:
+    event_type, value, any_modifier, shift, ctrl, alt, oskey, key_modifier, repeat = binding
+    return (
+        event.type == event_type and event.value == value
+        and (repeat or not event.is_repeat)
+        and (any_modifier or (event.shift, event.ctrl, event.alt, event.oskey) == (shift, ctrl, alt, oskey))
+        and (key_modifier == "NONE" or key_modifier in held_keys)
+    )
+
+
+class SQEX_OT_package_asset_dialog_shortcuts(bpy.types.Operator):
+    bl_idname = "wm.sqex_package_asset_dialog_shortcuts"
+    bl_label = "Package Asset Dialog Shortcuts"
+    bl_options = {"INTERNAL"}
+
+    def invoke(self, context, _event):
+        if not _package_browser_dialog_is_open(context):
+            return {"CANCELLED"}
+        self._session = _DIALOG_SESSION
+        self._held_keys = set()
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if _DIALOG_SESSION is not self._session:
+            return {"FINISHED", "PASS_THROUGH"}
+        if event.value == 'PRESS':
+            self._held_keys.add(event.type)
+        elif event.value == 'RELEASE':
+            self._held_keys.discard(event.type)
+        region = self._session["region"]
+        if region is None or not _list_has_keyboard_focus(context, region):
+            return {"PASS_THROUGH"}
+        space = ("SPACE", "PRESS", False, False, False, False, False, "NONE", False)
+        with context.temp_override(region=region):
+            if _matches_shortcut(event, space, self._held_keys):
+                bpy.ops.wm.sqex_package_asset_toggle_highlighted()
+            elif any(_matches_shortcut(event, binding, self._held_keys) for binding in self._session["select_all_events"]):
+                bpy.ops.wm.sqex_package_asset_select_all_visible()
+            else:
+                return {"PASS_THROUGH"}
+        region.tag_redraw()
+        return {"RUNNING_MODAL"}
 
 
 class SQEX_OT_package_asset_select_all_visible(SQEX_LoggedOperator):
@@ -165,7 +268,7 @@ class SQEX_OT_package_asset_select_all_visible(SQEX_LoggedOperator):
 
     @classmethod
     def poll(cls, context):
-        return _package_browser_dialog_is_open(context)
+        return _shortcut_is_available(context)
 
     def execute(self, context):
         state = _ACTIVE_BROWSER
@@ -191,7 +294,7 @@ class SQEX_OT_package_asset_toggle_highlighted(SQEX_LoggedOperator):
 
     @classmethod
     def poll(cls, context):
-        return _package_browser_dialog_is_open(context)
+        return _shortcut_is_available(context)
 
     def execute(self, context):
         if _ACTIVE_BROWSER is None:
@@ -214,6 +317,7 @@ CLASSES = (
     SQEX_OT_package_asset_folder,
     SQEX_OT_package_asset_up,
     SQEX_OT_package_asset_selection,
+    SQEX_OT_package_asset_dialog_shortcuts,
     SQEX_OT_package_asset_select_all_visible,
     SQEX_OT_package_asset_toggle_highlighted,
 )
@@ -226,8 +330,9 @@ def register_runtime_properties():
 
 
 def unregister_runtime_properties():
-    global _ACTIVE_BROWSER
+    global _ACTIVE_BROWSER, _DIALOG_SESSION
     _ACTIVE_BROWSER = None
+    _DIALOG_SESSION = None
     if hasattr(bpy.types.WindowManager, "sqex_package_asset_browser"):
         del bpy.types.WindowManager.sqex_package_asset_browser
 
@@ -427,6 +532,8 @@ def activate(
 
 
 def draw(layout, context, state: dict[str, Any], *, rows: int = 12) -> None:
+    if _DIALOG_SESSION is not None and _DIALOG_SESSION["owner"] == state.get("dialog_operator"):
+        _DIALOG_SESSION["region"] = getattr(context, "region_popup", None) or context.region
     browser = context.window_manager.sqex_package_asset_browser
     header = layout.row(align=True)
     header.label(

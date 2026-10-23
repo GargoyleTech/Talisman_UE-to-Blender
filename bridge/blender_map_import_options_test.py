@@ -23,6 +23,7 @@ from addon.formats.unreal_package.session import PackageAssetSession
 from addon.formats import unreal_package
 from addon.games import conventional_map
 from addon.core.profiles import GamePaths
+from addon.ui.nanite import NANITE_OPTION_NAMES
 
 
 def rna(cls):
@@ -50,6 +51,14 @@ for cls in map_classes:
     assert not ({"build_skeleton", "bind_active_armature", "face_y_forward"} & set(properties.keys()))
     assert properties["import_lights"].is_hidden
     assert set(MAP_OPTION_NAMES) <= set(cls._persisted_props)
+    assert properties['bake_light_parameters'].default is True
+    assert properties['exposure'].default == 5.0
+    assert properties['offset_opposite_faces'].default is True
+    assert properties['import_light_probes'].default is False
+    assert properties['import_landscapes'].default is True
+    assert properties['landscape_lod'].default == 1
+    assert properties['max_landscape_vertices'].default == 1_000_000
+    assert properties['landscape_layer_preview'].default is False
 
 static = rna(importer.SQEX_OT_import_generic_unreal_static_mesh).properties
 skeletal = rna(importer.SQEX_OT_import_generic_unreal_skeletal_mesh).properties
@@ -58,6 +67,10 @@ assert "build_skeleton" in skeletal and "import_lights" not in skeletal
 assert "recursive_import" not in static and "recursive_import" not in skeletal
 assert "mesh_kind" not in static and "mesh_kind" not in skeletal
 assert "mesh_kind" in rna(importer.SQEX_OT_import_generic_unreal_mesh).properties
+for cls in (importer.SQEX_OT_import_generic_unreal_umap, importer.SQEX_OT_import_generic_unreal_mesh):
+    assert rna(cls).properties["import_splines"].default is True
+    assert "import_splines" in cls._persisted_props
+assert "import_splines" not in static and "import_splines" not in skeletal
 
 
 class Layout:
@@ -88,7 +101,7 @@ class Layout:
 for cls in map_classes:
     operator = SimpleNamespace(**{
         name: prop.default for name, prop in rna(cls).properties.items()
-        if name in {*MAP_OPTION_NAMES, "import_originals", "import_sway", "lod_mode", "lod_quality", "lod_level"}
+        if name in {*MAP_OPTION_NAMES, *NANITE_OPTION_NAMES, "max_texture_resolution_choice", "import_splines", "import_originals", "import_sway", "lod_mode", "lod_quality", "lod_level"}
     })
     layout = Layout()
     rebirth = cls is addon.game_packages.FF7R_REBIRTH_OT_import_mec_game_packages
@@ -96,26 +109,42 @@ for cls in map_classes:
     rows = [child.all_props() for child in layout.children if child.kind == "row"]
     assert rows == [
         ["recursive_import", "scale_factor"],
-        ["import_models", "offset_opposite_faces", "import_textures"],
-        ["import_point_lights", "import_spot_lights", "always_cast_shadows"],
-        ["exposure", "attenuation_radius_mult", "import_light_probes"],
+        ["import_models", "offset_opposite_faces", "import_textures"] + (["import_splines"] if hasattr(operator, "import_splines") else []),
+        ["import_point_lights", "import_spot_lights", "import_rect_lights", "import_directional_lights"],
+        ["bake_light_parameters", "always_cast_shadows", "import_light_probes"],
+        ["exposure", "attenuation_radius_mult"],
     ], rows
-    assert set(MAP_OPTION_NAMES) == set(layout.all_props()) & set(MAP_OPTION_NAMES)
+    drawn = {"max_texture_resolution" if name == "max_texture_resolution_choice" else name for name in layout.all_props()}
+    assert set(MAP_OPTION_NAMES) == drawn & set(MAP_OPTION_NAMES)
     assert ("lod_mode" in layout.all_props()) == rebirth
+    has_nanite = cls is importer.SQEX_OT_import_generic_unreal_umap
+    assert ("nanite_mode" in layout.all_props()) == has_nanite
+    if has_nanite:
+        assert set(NANITE_OPTION_NAMES) <= set(cls._persisted_props)
+        assert operator.nanite_mode == "FALLBACK"
     operator.import_models = False
-    operator.import_point_lights = operator.import_spot_lights = False
+    operator.import_point_lights = operator.import_spot_lights = operator.import_rect_lights = False
+    operator.import_directional_lights = False
     layout = Layout()
     draw_package_map_options(layout, operator, massive_environment=rebirth)
     rows = [child for child in layout.children if child.kind == "row"]
     assert not rows[1].children[1].enabled and not rows[1].children[2].enabled
-    assert not rows[2].children[2].enabled
+    if hasattr(operator, "import_splines"):
+        assert rows[1].children[3].enabled  # Curves can be imported without meshes.
     assert not rows[3].children[0].enabled and not rows[3].children[1].enabled
     assert rows[3].children[2].enabled  # Probes are independent of local lights.
+    assert not rows[4].children[0].enabled
+    operator.import_directional_lights = True
+    layout = Layout()
+    draw_package_map_options(layout, operator, massive_environment=rebirth)
+    rows = [child for child in layout.children if child.kind == "row"]
+    assert rows[3].children[0].enabled and rows[3].children[1].enabled
+    assert rows[4].children[0].enabled and not rows[4].children[1].enabled
 
-migration = SimpleNamespace(import_lights=False, import_point_lights=True, import_spot_lights=True,
+migration = SimpleNamespace(import_lights=False, import_point_lights=True, import_spot_lights=True, import_rect_lights=True,
                             _load_last_import_settings=lambda context: None)
 load_map_import_settings(migration, None)
-assert migration.import_lights and not migration.import_point_lights and not migration.import_spot_lights
+assert migration.import_lights and not migration.import_point_lights and not migration.import_spot_lights and not migration.import_rect_lights and not migration.import_directional_lights
 
 
 # Changing one width must affect every game and generic Unreal. Their lifecycle
@@ -164,18 +193,19 @@ assert queue.paths == paths, queue.paths
 
 entries = [
     {"Type": kind + "LightComponent", "Name": kind, "Properties": {"Intensity": 100}}
-    for kind in ("Point", "Spot")
+    for kind in ("Point", "Spot", "Rect")
 ]
-for point, spot in ((True, False), (False, True), (False, False), (True, True)):
+for point, spot, rect in ((True, False, False), (False, True, False), (False, False, True), (False, False, False), (True, True, True)):
     before = set(bpy.data.objects)
     count, missing = map_import.import_map_entries(
-        entries, f"LightOptions{point}{spot}.umap", 1.0, 1.0,
+        entries, f"LightOptions{point}{spot}{rect}.umap", 1.0, 1.0,
         import_models=False, import_reflection_probes=False,
         import_point_lights=point, import_spot_lights=spot,
+        import_rect_lights=rect,
     )
     lights = {obj.data.type for obj in set(bpy.data.objects) - before if obj.type == "LIGHT"}
-    expected = ({"POINT"} if point else set()) | ({"SPOT"} if spot else set())
-    assert lights == expected and count == int(point) + int(spot), (lights, count)
+    expected = ({"POINT"} if point else set()) | ({"SPOT"} if spot else set()) | ({"AREA"} if rect else set())
+    assert lights == expected and count == int(point) + int(spot) + int(rect), (lights, count)
 
 profile = addon.remake_profile.PROFILE
 for mounted in (
@@ -194,9 +224,12 @@ for mounted in (
 # mesh properties and recursive lights-only imports through all three routes.
 class SessionFixture:
     cache_namespace = "map-options-runtime"
+    hidden_object_patterns = ()
     game_version = "GAME_UE4_27"
     mount_info = {"contentRoot": "Fixture/Content/"}
     failed = failed_materials = 0
+    nanite_fallbacks = {}
+    def geometry_summary(self): return "Fixture geometry."
     calls = []
     settings = []
     payload = {
@@ -215,6 +248,7 @@ class SessionFixture:
     def skeletal_mesh(self, path, **kwargs): return self.payload
     def extract_raw(self, *args, **kwargs): pass
     def release_batch_memory(self): pass
+    def color_lut(self, path): return None
 
     def umap_actors(self, path):
         self.calls.append(path)
@@ -226,22 +260,34 @@ class SessionFixture:
 
 runtime_paths = ["Fixture/Content/Maps/A.umap", "Fixture/Content/Maps/B.umap"]
 options = dict(virtual_path=runtime_paths[0], import_models=False, import_textures=False,
-               import_point_lights=False, import_spot_lights=True, import_light_probes=False,
-               recursive_import=True)
+               import_point_lights=False, import_spot_lights=True, import_rect_lights=False, import_light_probes=False,
+               recursive_import=True, bake_light_parameters=True)
+
+
+def assert_baked_import(before):
+    created = [obj for obj in set(bpy.data.objects) - before if obj.type == 'LIGHT']
+    assert created
+    assert all(obj.get('ue_light_parameters_baked') for obj in created)
+    assert all(not obj.data.animation_data or not obj.data.animation_data.drivers for obj in created)
 with (
     patch.object(importer, "_paths", lambda *args: GamePaths("fixture")),
     patch.object(importer, "_game_version", lambda *args: "GAME_UE4_27"),
     patch.object(importer, "_pbr_mapping", lambda *args: {}),
+    patch.object(importer, "_hidden_object_patterns", lambda *args: ()),
     patch.object(importer, "_current_index", lambda *args: {"umaps": runtime_paths}),
     patch.object(importer.session, "GenericSession", SessionFixture),
 ):
     assert bpy.ops.import_scene.sqex_generic_unreal_static_mesh(virtual_path="/Game/Mesh.Mesh") == {"FINISHED"}
     assert bpy.ops.import_scene.sqex_generic_unreal_skeletal_mesh(virtual_path="/Game/Rig.Rig") == {"FINISHED"}
+    before = set(bpy.data.objects)
     assert bpy.ops.import_scene.sqex_generic_unreal_umap(**options) == {"FINISHED"}
+    assert_baked_import(before)
     assert SessionFixture.calls == runtime_paths
     assert SessionFixture.settings[-1]["import_textures"] is False
     SessionFixture.calls.clear()
+    before = set(bpy.data.objects)
     assert bpy.ops.import_scene.sqex_generic_unreal_mesh(mesh_kind="UMAP", **options) == {"FINISHED"}
+    assert_baked_import(before)
     assert SessionFixture.calls == runtime_paths
 
 test_cls = conventional_map.make_umap_importer(
@@ -258,7 +304,9 @@ try:
     ):
         # Conventional maps resolve /Game references using their title root.
         runtime_paths[:] = [path.replace("Fixture/Content", "End/Content") for path in runtime_paths]
+        before = set(bpy.data.objects)
         assert bpy.ops.import_scene.sqex_fixture_umap(**dict(options, virtual_path=runtime_paths[0])) == {"FINISHED"}
+        assert_baked_import(before)
         assert SessionFixture.calls == runtime_paths
 finally:
     bpy.utils.unregister_class(test_cls)
@@ -270,9 +318,12 @@ with (
         rebirth_install_root="fixture", oodle_dll="", rebirth_usmap_path="")),
     patch.object(rebirth, "_VIRTUAL_UMAPS", list(runtime_paths)),
     patch.object(rebirth, "PackageAssetSession", SessionFixture),
+    patch.object(SessionFixture, "extract_raw", side_effect=AssertionError("Models disabled must skip raw extraction")),
     patch.object(rebirth, "import_umap_paths", side_effect=AssertionError("Models disabled must skip MEC")),
 ):
+    before = set(bpy.data.objects)
     assert bpy.ops.import_scene.ff7r_rebirth_mec_game_packages(**dict(options, virtual_path=runtime_paths[0])) == {"FINISHED"}
+    assert_baked_import(before)
     assert SessionFixture.calls == runtime_paths
 
 # Registration and hot reload must keep all three concrete generic operators.

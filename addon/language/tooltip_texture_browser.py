@@ -1,0 +1,11 @@
+"""Shader Editor > Add > Texture > Unreal Engine Texture."""
+
+TEXTURE_BROWSER_NODE = "Browse mounted Unreal Engine game packages and load textures into native image shaders"
+TEXTURE_BROWSER_NONE = "None: do not mount game packages or load textures"
+TEXTURE_BROWSER_GAME = "Choose a custom game profile or supported Square Enix title. A blank selection loads no textures"
+TEXTURE_BROWSER_EXPAND = "Show this node's package folders, texture checklist, and selected-texture preview"
+TEXTURE_BROWSER_SEARCH = "Find textures whose package or object path contains every space-separated search term"
+TEXTURE_BROWSER_PREVIEW = "Preview the highlighted texture using a small image decoded asynchronously by the bridge"
+TEXTURE_BROWSER_REFRESH = "Remount the selected game and rebuild its texture index, discarding cached browser results"
+TEXTURE_BROWSER_POPUP = "Open a larger view of this node's texture browser and selection"
+TEXTURE_BROWSER_LOAD = "Load checked textures as separate nodes, or use the highlighted texture if none are checked. Escape stops the remaining imports"

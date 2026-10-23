@@ -10,12 +10,15 @@ from ...core.blender.skeletons import _bones_from_gargoyle, build_armature_from_
 from ..ue_map import map_import
 from .mesh_import import (
     MeshImportHooks,
+    SharedSkinWeights,
     import_static_mesh_asset,
+    import_static_mesh_datablock,
     import_skeletal_mesh_asset,
 )
 from .options import SKELETON_ASSET_PATH_PROPERTY
 from .paths import _game_asset_path_to_virtual_uasset
 from .session import PackageAssetSession
+from .skeleton_data import mesh_bind_skeleton
 
 
 class PackageStaticMeshResolver:
@@ -54,7 +57,7 @@ class PackageStaticMeshResolver:
             return mesh
 
         static_mesh = self.session.static_mesh(virtual_path)
-        source_obj = import_static_mesh_asset(
+        mesh = import_static_mesh_datablock(
             self.context,
             static_mesh,
             virtual_path,
@@ -64,9 +67,7 @@ class PackageStaticMeshResolver:
             material_builder=self.material_builder,
             hooks=self.hooks,
         )
-        mesh = source_obj.data
-        bpy.data.objects.remove(source_obj, do_unlink=True)
-        mesh["sqex_virtual_path"] = virtual_path
+        mesh["ue_virtual_path"] = virtual_path
         self._mesh_cache[cache_key] = mesh
         return mesh
 
@@ -115,7 +116,8 @@ class PackageSkeletalMeshResolver:
         skeleton_path = skeletal_mesh.get("skeletonPath")
         armature_obj = None
         try:
-            skeleton_key = (skeleton_path or f"{virtual_path}#inline").casefold()
+            # Meshes sharing a Skeleton can have different authored bind poses.
+            skeleton_key = virtual_path.casefold()
             armature_data = self._skeleton_cache.get(skeleton_key)
             if armature_data is not None:
                 armature_obj = bpy.data.objects.new(armature_data.name, armature_data)
@@ -130,7 +132,7 @@ class PackageSkeletalMeshResolver:
                             f"  Warning: linked Skeleton '{skeleton_path}' could not be loaded; "
                             f"using the SkeletalMesh reference skeleton: {exc}"
                         )
-                skeleton = skeleton or skeletal_mesh.get("inlineSkeleton") or {}
+                skeleton = mesh_bind_skeleton(skeletal_mesh, skeleton)
                 if not skeleton.get("bones"):
                     raise ValueError(
                         "The associated Skeleton has no usable linked or inline bones."
@@ -151,7 +153,7 @@ class PackageSkeletalMeshResolver:
             print(f"  Warning: Skeleton for '{virtual_path}' could not be built: {exc}")
             armature_obj = None
 
-        mesh_obj, _weighted_vertices, _influence_count = import_skeletal_mesh_asset(
+        mesh_obj, weighted_vertices, influence_count = import_skeletal_mesh_asset(
             self.context,
             skeletal_mesh,
             virtual_path,
@@ -161,9 +163,13 @@ class PackageSkeletalMeshResolver:
             material_session=self.session if self.build_materials else None,
             material_builder=self.material_builder,
             hooks=self.hooks,
+            _select_object=False,
         )
 
         mesh = mesh_obj.data
+        shared_weights = SharedSkinWeights.capture(
+            mesh_obj, skeletal_mesh, weighted_vertices, influence_count
+        )
         armature_data = armature_obj.data if armature_obj is not None else None
         if armature_obj is not None:
             # The temporary pair only builds the shared datablocks. Every map
@@ -175,6 +181,7 @@ class PackageSkeletalMeshResolver:
             armature=armature_data,
             skeletal_mesh=skeletal_mesh,
             virtual_path=virtual_path,
+            shared_weights=shared_weights,
         )
         self._asset_cache[cache_key] = asset
         return asset
